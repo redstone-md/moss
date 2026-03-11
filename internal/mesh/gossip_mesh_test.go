@@ -61,18 +61,22 @@ func TestRecalculateIPColocationPenalties(t *testing.T) {
 	}
 	node.peers["peer-a"] = &peerConn{id: "peer-a", addr: "198.51.100.10:41030"}
 	node.peers["peer-b"] = &peerConn{id: "peer-b", addr: "198.51.100.10:41031"}
-	node.peers["peer-c"] = &peerConn{id: "peer-c", addr: "203.0.113.20:41032"}
+	node.peers["peer-c"] = &peerConn{id: "peer-c", addr: "198.51.100.10:41032"}
+	node.peers["peer-d"] = &peerConn{id: "peer-d", addr: "203.0.113.20:41033"}
 
 	node.recalculateIPColocationPenalties()
 
-	if score := node.scoring.Score("peer-a"); score != -5 {
-		t.Fatalf("expected peer-a colocation penalty -5, got %f", score)
+	if score := node.scoring.Score("peer-a"); score != -1 {
+		t.Fatalf("expected peer-a colocation penalty -1, got %f", score)
 	}
-	if score := node.scoring.Score("peer-b"); score != -5 {
-		t.Fatalf("expected peer-b colocation penalty -5, got %f", score)
+	if score := node.scoring.Score("peer-b"); score != -1 {
+		t.Fatalf("expected peer-b colocation penalty -1, got %f", score)
 	}
-	if score := node.scoring.Score("peer-c"); score != 0 {
-		t.Fatalf("expected peer-c to have no colocation penalty, got %f", score)
+	if score := node.scoring.Score("peer-c"); score != -1 {
+		t.Fatalf("expected peer-c colocation penalty -1, got %f", score)
+	}
+	if score := node.scoring.Score("peer-d"); score != 0 {
+		t.Fatalf("expected peer-d to have no colocation penalty, got %f", score)
 	}
 }
 

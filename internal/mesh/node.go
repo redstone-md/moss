@@ -707,6 +707,12 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 		_ = session.Close()
 		return
 	}
+	if peerID == n.localPeerID() {
+		delete(n.trackerSeeds, addr)
+		n.mu.Unlock()
+		_ = session.Close()
+		return
+	}
 	if existing, exists := n.peers[peerID]; exists {
 		if !shouldReplaceDuplicatePeer(n.localPeerID(), peerID, existing.outbound, outbound) {
 			n.mu.Unlock()

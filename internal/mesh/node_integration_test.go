@@ -368,6 +368,31 @@ func TestDirectPeerAnnouncementDoesNotOverwriteSessionAddress(t *testing.T) {
 	}
 }
 
+func TestNodeRejectsSelfPeerConnection(t *testing.T) {
+	host, ok := bestLocalAdvertiseHost()
+	if !ok {
+		t.Skip("no non-loopback local address available")
+	}
+
+	cfg := DefaultConfig()
+	cfg.Trackers = nil
+	cfg.LANDiscoveryEnabled = false
+	node, err := NewNode("mesh-self-peer", nil, cfg)
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+	if code := node.Start(); code != MOSS_OK {
+		t.Fatalf("node.Start failed: %d", code)
+	}
+	defer node.Stop()
+
+	addr := net.JoinHostPort(host, strconv.Itoa(node.ListenPort()))
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = node.connectPeer(ctx, addr)
+	waitForPeerCountAtMost(t, node, 0, 500*time.Millisecond)
+}
+
 func TestRelaySessionDeliversThroughIntermediatePeer(t *testing.T) {
 	cfgRelay := DefaultConfig()
 	cfgRelay.Trackers = nil
