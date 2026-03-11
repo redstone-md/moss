@@ -2756,6 +2756,7 @@ func (n *Node) applyExternalObservation(observed string, deadline time.Time) boo
 		return false
 	}
 	previous := n.natProfile.Load().(nat.Profile)
+	observed = preferredExternalAddr(previous.ExternalAddress, observed)
 	profile := n.profiler.WithExternalAddress(previous, observed)
 	n.mu.Lock()
 	n.bindingHistory = appendObservation(n.bindingHistory, observed)
@@ -3345,7 +3346,9 @@ func (n *Node) probePortMapping(ctx context.Context, listenAddr string, port int
 		mapper.Close()
 		return
 	}
-	profile := n.profiler.WithExternalAddress(n.profiler.Detect(listenAddr), mappedAddr)
+	current := n.natProfile.Load().(nat.Profile)
+	mappedAddr = preferredExternalAddr(current.ExternalAddress, mappedAddr)
+	profile := n.profiler.WithExternalAddress(current, mappedAddr)
 	n.natProfile.Store(profile)
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -3395,6 +3398,24 @@ func isCarrierGradeAddr(addr netip.Addr) bool {
 		return false
 	}
 	return netip.MustParsePrefix("100.64.0.0/10").Contains(addr)
+}
+
+func preferredExternalAddr(current, candidate string) string {
+	if candidate == "" {
+		return current
+	}
+	if current == "" {
+		return candidate
+	}
+	currentRank := knownPeerAddrRank(current)
+	candidateRank := knownPeerAddrRank(candidate)
+	if candidateRank > currentRank {
+		return candidate
+	}
+	if candidateRank < currentRank {
+		return current
+	}
+	return candidate
 }
 
 func eligibleForIPColocationPenalty(host string) bool {
