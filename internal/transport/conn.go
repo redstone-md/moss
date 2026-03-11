@@ -1,16 +1,21 @@
 package transport
 
 import (
-	"encoding/binary"
-	"io"
 	"net"
 	"sync"
 
 	"github.com/flynn/noise"
 )
 
+type carrier interface {
+	WritePacket([]byte) error
+	ReadPacket() ([]byte, error)
+	RemoteAddr() net.Addr
+	Close() error
+}
+
 type Session struct {
-	conn       net.Conn
+	carrier    carrier
 	sendCipher *noise.CipherState
 	recvCipher *noise.CipherState
 	writeMu    sync.Mutex
@@ -18,9 +23,9 @@ type Session struct {
 	remoteID   [32]byte
 }
 
-func NewSession(conn net.Conn, sendCipher, recvCipher *noise.CipherState, remoteID [32]byte) (*Session, error) {
+func NewSession(carrier carrier, sendCipher, recvCipher *noise.CipherState, remoteID [32]byte) (*Session, error) {
 	return &Session{
-		conn:       conn,
+		carrier:    carrier,
 		sendCipher: sendCipher,
 		recvCipher: recvCipher,
 		remoteID:   remoteID,
@@ -34,25 +39,14 @@ func (s *Session) WritePacket(packet []byte) error {
 	if err != nil {
 		return err
 	}
-	header := make([]byte, 4)
-	binary.BigEndian.PutUint32(header, uint32(len(ciphertext)))
-	if _, err := s.conn.Write(header); err != nil {
-		return err
-	}
-	_, err = s.conn.Write(ciphertext)
-	return err
+	return s.carrier.WritePacket(ciphertext)
 }
 
 func (s *Session) ReadPacket() ([]byte, error) {
 	s.readMu.Lock()
 	defer s.readMu.Unlock()
-	header := make([]byte, 4)
-	if _, err := io.ReadFull(s.conn, header); err != nil {
-		return nil, err
-	}
-	size := binary.BigEndian.Uint32(header)
-	buf := make([]byte, size)
-	if _, err := io.ReadFull(s.conn, buf); err != nil {
+	buf, err := s.carrier.ReadPacket()
+	if err != nil {
 		return nil, err
 	}
 	return s.recvCipher.Decrypt(nil, nil, buf)
@@ -63,9 +57,9 @@ func (s *Session) RemoteID() [32]byte {
 }
 
 func (s *Session) RemoteAddr() net.Addr {
-	return s.conn.RemoteAddr()
+	return s.carrier.RemoteAddr()
 }
 
 func (s *Session) Close() error {
-	return s.conn.Close()
+	return s.carrier.Close()
 }
