@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import json
+import socket
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -161,6 +162,26 @@ def format_peer(peer_id: str) -> str:
     if len(peer_id) < 10:
         return peer_id
     return f"{peer_id[:8]}..{peer_id[-4:]}"
+
+
+def detect_share_host() -> str | None:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("8.8.8.8", 80))
+            host = sock.getsockname()[0]
+    except OSError:
+        host = None
+    if host and not host.startswith("127."):
+        return host
+    try:
+        candidates = socket.getaddrinfo(socket.gethostname(), None, family=socket.AF_INET)
+    except socket.gaierror:
+        return None
+    for candidate in candidates:
+        host = candidate[4][0]
+        if host and not host.startswith("127."):
+            return host
+    return None
 
 
 @dataclass
@@ -353,6 +374,7 @@ class MossChatApp:
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._mesh_info: dict = {}
+        self.share_host = detect_share_host()
         self.rooms: dict[str, RoomState] = {
             SYSTEM_ROOM: RoomState(SYSTEM_ROOM, False, "System"),
         }
@@ -457,6 +479,16 @@ class MossChatApp:
             f"Connected as {self.nickname}. Active mesh: {self.client.mesh_id}. "
             "Use F2/F3 to switch rooms and /help for commands."
         )
+        if self.share_host:
+            self._system_message(
+                "For another machine, connect with "
+                f"--peer {self.share_host}:{self.client.listen_port or 'PORT'} "
+                "(do not use 127.0.0.1 across hosts)."
+            )
+        else:
+            self._system_message(
+                "Use a LAN-reachable address or hostname for cross-machine peers, not 127.0.0.1."
+            )
         self._refresh_views()
         status_thread = threading.Thread(target=self._status_loop, daemon=True)
         status_thread.start()
@@ -661,7 +693,11 @@ class MossChatApp:
         elif name == "supernode_revoked":
             message = f"Local node is no longer relay-capable ({detail.get('nat_type', 'unknown')})."
         elif name == "tracker_announce":
-            message = f"Tracker announce returned {detail.get('peers', 0)} peers."
+            message = (
+                "Tracker returned "
+                f"{detail.get('candidate_peers', detail.get('peers', 0))} candidate peers; "
+                f"connected now: {detail.get('connected_peers', '?')}."
+            )
         elif name == "tracker_failure":
             message = f"Tracker error: {detail.get('error', 'unknown')}"
         elif name == "relay_migrated":

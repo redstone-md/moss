@@ -94,16 +94,20 @@ func ParseConfig(raw string) (Config, error) {
 	if raw == "" {
 		return cfg, nil
 	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &fields); err != nil {
+		return Config{}, err
+	}
 	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
 		return Config{}, err
 	}
-	cfg.applyDefaults()
+	cfg.applyDefaults(fields)
 	return cfg, nil
 }
 
-func (c *Config) applyDefaults() {
+func (c *Config) applyDefaults(fields map[string]json.RawMessage) {
 	d := DefaultConfig()
-	if len(c.Trackers) == 0 {
+	if _, ok := fields["trackers"]; !ok && len(c.Trackers) == 0 {
 		c.Trackers = d.Trackers
 	}
 	if c.AnnounceIntervalSec <= 0 {
@@ -116,13 +120,49 @@ func (c *Config) applyDefaults() {
 		c.BootstrapTimeoutSec = d.BootstrapTimeoutSec
 	}
 	if c.GossipSub.D <= 0 {
-		c.GossipSub = d.GossipSub
+		c.GossipSub.D = d.GossipSub.D
+	}
+	if c.GossipSub.DLo <= 0 {
+		c.GossipSub.DLo = d.GossipSub.DLo
+	}
+	if c.GossipSub.DHigh <= 0 {
+		c.GossipSub.DHigh = d.GossipSub.DHigh
+	}
+	if c.GossipSub.DOut <= 0 {
+		c.GossipSub.DOut = d.GossipSub.DOut
+	}
+	if c.GossipSub.DLazy <= 0 {
+		c.GossipSub.DLazy = d.GossipSub.DLazy
+	}
+	if c.GossipSub.HeartbeatMS <= 0 {
+		c.GossipSub.HeartbeatMS = d.GossipSub.HeartbeatMS
 	}
 	if c.NAT.SuperNodeMinUptimeSec <= 0 {
-		c.NAT = d.NAT
+		c.NAT.SuperNodeMinUptimeSec = d.NAT.SuperNodeMinUptimeSec
+	}
+	if c.NAT.RelayMaxBandwidthKBPS <= 0 {
+		c.NAT.RelayMaxBandwidthKBPS = d.NAT.RelayMaxBandwidthKBPS
+	}
+	if c.NAT.RelayMaxSessions <= 0 {
+		c.NAT.RelayMaxSessions = d.NAT.RelayMaxSessions
+	}
+	if c.NAT.RelaySessionTTLSec <= 0 {
+		c.NAT.RelaySessionTTLSec = d.NAT.RelaySessionTTLSec
+	}
+	if c.NAT.HolePunchAttempts <= 0 {
+		c.NAT.HolePunchAttempts = d.NAT.HolePunchAttempts
 	}
 	if c.Security.HandshakeTimeoutSec <= 0 {
-		c.Security = d.Security
+		c.Security.HandshakeTimeoutSec = d.Security.HandshakeTimeoutSec
+	}
+	if c.Security.MaxMessageSizeBytes <= 0 {
+		c.Security.MaxMessageSizeBytes = d.Security.MaxMessageSizeBytes
+	}
+	if c.Security.RateLimitBurst <= 0 {
+		c.Security.RateLimitBurst = d.Security.RateLimitBurst
+	}
+	if c.Security.RateLimitSustained <= 0 {
+		c.Security.RateLimitSustained = d.Security.RateLimitSustained
 	}
 }
 
