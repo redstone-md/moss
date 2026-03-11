@@ -418,7 +418,40 @@ func TestRefreshExternalAddressPreservesListenPort(t *testing.T) {
 	}
 }
 
-func TestAttemptHolePunchEstablishesDirectPeer(t *testing.T) {
+func TestDirectUDPConnectRegistersPeer(t *testing.T) {
+	cfgA := DefaultConfig()
+	cfgA.Trackers = nil
+	nodeA, err := NewNode("mesh-udp-direct", nil, cfgA)
+	if err != nil {
+		t.Fatalf("NewNode nodeA failed: %v", err)
+	}
+	if code := nodeA.Start(); code != MOSS_OK {
+		t.Fatalf("nodeA.Start failed: %d", code)
+	}
+	defer nodeA.Stop()
+
+	cfgB := DefaultConfig()
+	cfgB.Trackers = nil
+	nodeB, err := NewNode("mesh-udp-direct", nil, cfgB)
+	if err != nil {
+		t.Fatalf("NewNode nodeB failed: %v", err)
+	}
+	if code := nodeB.Start(); code != MOSS_OK {
+		t.Fatalf("nodeB.Start failed: %d", code)
+	}
+	defer nodeB.Stop()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	nodeA.connectPeerUDP(ctx, net.JoinHostPort("127.0.0.1", strconv.Itoa(nodeB.ListenPort())))
+	cancel()
+
+	targetPub := nodeB.PublicKey()
+	sourcePub := nodeA.PublicKey()
+	waitForDirectPeer(t, nodeA, hex.EncodeToString(targetPub[:]))
+	waitForDirectPeer(t, nodeB, hex.EncodeToString(sourcePub[:]))
+}
+
+func TestTryHolePunchDialEstablishesDirectPeer(t *testing.T) {
 	cfgRelay := DefaultConfig()
 	cfgRelay.Trackers = nil
 	cfgRelay.GossipSub.HeartbeatMS = 50
@@ -461,12 +494,15 @@ func TestAttemptHolePunchEstablishesDirectPeer(t *testing.T) {
 	targetPub := nodeB.PublicKey()
 	targetID := hex.EncodeToString(targetPub[:])
 	waitForKnownPeer(t, nodeA, targetID)
-
-	if !nodeA.attemptHolePunch(targetID, 2*time.Second) {
-		t.Fatal("attemptHolePunch did not establish a direct peer")
-	}
-
+	waitForKnownPeerPort(t, nodeA, targetID, strconv.Itoa(nodeB.ListenPort()))
 	sourcePub := nodeA.PublicKey()
+	waitForKnownPeerPort(t, nodeB, hex.EncodeToString(sourcePub[:]), strconv.Itoa(nodeA.ListenPort()))
+
+	nodeA.mu.RLock()
+	targetAddr := nodeA.knownPeers[targetID].addr
+	nodeA.mu.RUnlock()
+	nodeA.tryHolePunchDial(targetID, targetAddr)
+
 	waitForDirectPeer(t, nodeA, targetID)
 	waitForDirectPeer(t, nodeB, hex.EncodeToString(sourcePub[:]))
 }
@@ -516,6 +552,8 @@ func TestDirectPeerConnectionMigratesRelaySession(t *testing.T) {
 
 	relayPub := relayNode.PublicKey()
 	targetPub := nodeB.PublicKey()
+	targetID := hex.EncodeToString(targetPub[:])
+	waitForKnownPeerPort(t, nodeA, targetID, strconv.Itoa(nodeB.ListenPort()))
 	sessionID, err := nodeA.OpenRelaySession(hex.EncodeToString(relayPub[:]), hex.EncodeToString(targetPub[:]), 2*time.Second)
 	if err != nil {
 		t.Fatalf("OpenRelaySession failed: %v", err)
@@ -529,7 +567,8 @@ func TestDirectPeerConnectionMigratesRelaySession(t *testing.T) {
 	cancel()
 
 	sourcePub := nodeA.PublicKey()
-	waitForDirectPeer(t, nodeA, hex.EncodeToString(targetPub[:]))
+	waitForKnownPeerPort(t, nodeB, hex.EncodeToString(sourcePub[:]), strconv.Itoa(nodeA.ListenPort()))
+	waitForDirectPeer(t, nodeA, targetID)
 	waitForDirectPeer(t, nodeB, hex.EncodeToString(sourcePub[:]))
 	waitForRelaySessionClosed(t, nodeA, sessionID)
 	waitForRelaySessionClosed(t, nodeB, sessionID)
@@ -816,6 +855,24 @@ func waitForDirectPeer(t *testing.T, node *Node, wantPeerID string) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("direct peer %s was not connected", wantPeerID)
+}
+
+func waitForKnownPeerPort(t *testing.T, node *Node, wantPeerID, wantPort string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		node.mu.RLock()
+		info, ok := node.knownPeers[wantPeerID]
+		node.mu.RUnlock()
+		if ok {
+			_, port, err := net.SplitHostPort(info.addr)
+			if err == nil && port == wantPort {
+				return
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("known peer %s did not converge to port %s", wantPeerID, wantPort)
 }
 
 func waitForRelaySession(t *testing.T, node *Node, sessionID string) {
