@@ -103,11 +103,14 @@ type relayLocalSession struct {
 }
 
 type knownPeer struct {
-	id           string
-	addr         string
-	direct       bool
-	lastSeen     time.Time
-	observations []string
+	id              string
+	addr            string
+	direct          bool
+	natType         nat.Type
+	publicReachable bool
+	relayCapable    bool
+	lastSeen        time.Time
+	observations    []string
 }
 
 type meshInfo struct {
@@ -576,18 +579,22 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 		return
 	}
 	peer := &peerConn{id: peerID, addr: addr, session: session, outbound: outbound}
+	current := n.knownPeers[peerID]
 	n.peers[peerID] = peer
 	n.knownPeers[peerID] = knownPeer{
-		id:           peerID,
-		addr:         addr,
-		direct:       true,
-		lastSeen:     time.Now(),
-		observations: appendObservation(nil, addr),
+		id:              peerID,
+		addr:            addr,
+		direct:          true,
+		natType:         current.natType,
+		publicReachable: current.publicReachable,
+		relayCapable:    current.relayCapable,
+		lastSeen:        time.Now(),
+		observations:    appendObservation(current.observations, addr),
 	}
 	n.scoring.Ensure(peerID)
 	n.mu.Unlock()
 	n.sendKnownPeerSnapshot(peer)
-	n.broadcastPeerAnnouncement(peerID, addr, peerID)
+	n.broadcastPeerAnnouncement(n.localKnownPeer(), peerID)
 	go n.refreshExternalAddress(time.Now().Add(n.config.HandshakeTimeout()))
 	n.mu.Lock()
 	delete(n.directProbes, peerID)
@@ -720,11 +727,7 @@ func (n *Node) sendEnvelope(peer *peerConn, env gossip.Envelope) {
 }
 
 func (n *Node) sendKnownPeerSnapshot(peer *peerConn) {
-	n.sendEnvelope(peer, gossip.Envelope{
-		Type:             gossip.TypePeerAnnounce,
-		AdvertisedPeerID: n.localPeerID(),
-		AdvertisedAddr:   n.advertisedListenAddr(),
-	})
+	n.sendEnvelope(peer, n.peerAnnouncementEnvelope(n.localKnownPeer()))
 
 	n.mu.RLock()
 	known := make([]knownPeer, 0, len(n.knownPeers))
@@ -736,23 +739,39 @@ func (n *Node) sendKnownPeerSnapshot(peer *peerConn) {
 		if info.id == peer.id || info.addr == "" {
 			continue
 		}
-		n.sendEnvelope(peer, gossip.Envelope{
-			Type:             gossip.TypePeerAnnounce,
-			AdvertisedPeerID: info.id,
-			AdvertisedAddr:   info.addr,
-		})
+		n.sendEnvelope(peer, n.peerAnnouncementEnvelope(info))
 	}
 }
 
-func (n *Node) broadcastPeerAnnouncement(peerID, addr, excludePeerID string) {
-	if peerID == "" || addr == "" {
+func (n *Node) broadcastPeerAnnouncement(info knownPeer, excludePeerID string) {
+	if info.id == "" || info.addr == "" {
 		return
 	}
-	n.broadcastToAll(gossip.Envelope{
-		Type:             gossip.TypePeerAnnounce,
-		AdvertisedPeerID: peerID,
-		AdvertisedAddr:   addr,
-	}, excludePeerID)
+	n.broadcastToAll(n.peerAnnouncementEnvelope(info), excludePeerID)
+}
+
+func (n *Node) peerAnnouncementEnvelope(info knownPeer) gossip.Envelope {
+	return gossip.Envelope{
+		Type:                   gossip.TypePeerAnnounce,
+		AdvertisedPeerID:       info.id,
+		AdvertisedAddr:         info.addr,
+		AdvertisedNATType:      string(info.natType),
+		AdvertisedReachable:    info.publicReachable,
+		AdvertisedRelayCapable: info.relayCapable,
+	}
+}
+
+func (n *Node) localKnownPeer() knownPeer {
+	profile := n.natProfile.Load().(nat.Profile)
+	return knownPeer{
+		id:              n.localPeerID(),
+		addr:            n.advertisedListenAddr(),
+		direct:          true,
+		natType:         profile.Type,
+		publicReachable: profile.PublicReachable,
+		relayCapable:    n.supernodeReady(profile),
+		lastSeen:        time.Now(),
+	}
 }
 
 func (n *Node) handlePeerAnnounce(peer *peerConn, env gossip.Envelope) {
@@ -762,23 +781,34 @@ func (n *Node) handlePeerAnnounce(peer *peerConn, env gossip.Envelope) {
 	changed := false
 	n.mu.Lock()
 	current, ok := n.knownPeers[env.AdvertisedPeerID]
-	if !ok || current.addr != env.AdvertisedAddr || !current.direct {
+	if !ok || current.addr != env.AdvertisedAddr || !current.direct || current.natType != nat.Type(env.AdvertisedNATType) || current.publicReachable != env.AdvertisedReachable || current.relayCapable != env.AdvertisedRelayCapable {
 		direct := false
 		if ok && current.direct {
 			direct = true
 		}
 		n.knownPeers[env.AdvertisedPeerID] = knownPeer{
-			id:           env.AdvertisedPeerID,
-			addr:         env.AdvertisedAddr,
-			direct:       direct,
-			lastSeen:     time.Now(),
-			observations: appendObservation(current.observations, env.AdvertisedAddr),
+			id:              env.AdvertisedPeerID,
+			addr:            env.AdvertisedAddr,
+			direct:          direct,
+			natType:         nat.Type(env.AdvertisedNATType),
+			publicReachable: env.AdvertisedReachable,
+			relayCapable:    env.AdvertisedRelayCapable,
+			lastSeen:        time.Now(),
+			observations:    appendObservation(current.observations, env.AdvertisedAddr),
 		}
 		changed = true
 	}
 	n.mu.Unlock()
 	if changed {
-		n.broadcastPeerAnnouncement(env.AdvertisedPeerID, env.AdvertisedAddr, peer.id)
+		n.broadcastPeerAnnouncement(knownPeer{
+			id:              env.AdvertisedPeerID,
+			addr:            env.AdvertisedAddr,
+			direct:          false,
+			natType:         nat.Type(env.AdvertisedNATType),
+			publicReachable: env.AdvertisedReachable,
+			relayCapable:    env.AdvertisedRelayCapable,
+			lastSeen:        time.Now(),
+		}, peer.id)
 	}
 }
 
@@ -1779,11 +1809,14 @@ func (n *Node) updateKnownPeer(peerID, addr string, direct bool) {
 		direct = true
 	}
 	n.knownPeers[peerID] = knownPeer{
-		id:           peerID,
-		addr:         addr,
-		direct:       direct,
-		lastSeen:     time.Now(),
-		observations: appendObservation(current.observations, addr),
+		id:              peerID,
+		addr:            addr,
+		direct:          direct,
+		natType:         current.natType,
+		publicReachable: current.publicReachable,
+		relayCapable:    current.relayCapable,
+		lastSeen:        time.Now(),
+		observations:    appendObservation(current.observations, addr),
 	}
 }
 
@@ -1812,6 +1845,11 @@ func (n *Node) selectRelayPeer(targetPeerID string) (string, error) {
 		return "", errors.New("no relay-capable peer is connected")
 	}
 	sort.Slice(candidates, func(i, j int) bool {
+		infoI := n.knownPeers[candidates[i]]
+		infoJ := n.knownPeers[candidates[j]]
+		if rankI, rankJ := relayCandidateRank(infoI), relayCandidateRank(infoJ); rankI != rankJ {
+			return rankI > rankJ
+		}
 		scoreI := n.scoring.Score(candidates[i])
 		scoreJ := n.scoring.Score(candidates[j])
 		if scoreI == scoreJ {
@@ -1820,6 +1858,21 @@ func (n *Node) selectRelayPeer(targetPeerID string) (string, error) {
 		return scoreI > scoreJ
 	})
 	return candidates[0], nil
+}
+
+func relayCandidateRank(info knownPeer) int {
+	rank := 0
+	if info.relayCapable {
+		rank += 4
+	}
+	if info.publicReachable {
+		rank += 2
+	}
+	switch info.natType {
+	case nat.TypePublic, nat.TypeFullCone:
+		rank++
+	}
+	return rank
 }
 
 func (n *Node) probePortMapping(ctx context.Context, listenAddr string, port int) {
