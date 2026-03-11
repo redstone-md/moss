@@ -55,6 +55,7 @@ type Node struct {
 	relayLocals  map[string]relayLocalSession
 	relayBuckets map[string]*nat.TokenBucket
 	knownPeers   map[string]knownPeer
+	bindingWait  map[string]chan string
 	messageCB    MessageCallback
 	eventCB      EventCallback
 	relayCB      RelayCallback
@@ -150,6 +151,7 @@ func NewNode(meshID string, psk []byte, cfg Config) (*Node, error) {
 		relayLocals:   make(map[string]relayLocalSession),
 		relayBuckets:  make(map[string]*nat.TokenBucket),
 		knownPeers:    make(map[string]knownPeer),
+		bindingWait:   make(map[string]chan string),
 		dispatchSem:   make(chan struct{}, 500),
 		dispatchCh:    make(chan any, 1024),
 	}
@@ -389,7 +391,6 @@ func (n *Node) RelaySendTo(targetPeerID string, data []byte, timeout time.Durati
 		n.mu.RUnlock()
 		return errors.New("target peer is directly connected")
 	}
-	targetInfo, hasKnownPeer := n.knownPeers[targetPeerID]
 	for _, session := range n.relayLocals {
 		if session.remotePeerID == targetPeerID && session.established {
 			n.mu.RUnlock()
@@ -397,18 +398,6 @@ func (n *Node) RelaySendTo(targetPeerID string, data []byte, timeout time.Durati
 		}
 	}
 	n.mu.RUnlock()
-
-	if hasKnownPeer && targetInfo.addr != "" {
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		n.connectPeer(ctx, targetInfo.addr)
-		cancel()
-		n.mu.RLock()
-		_, direct := n.peers[targetPeerID]
-		n.mu.RUnlock()
-		if direct {
-			return errors.New("target peer became directly connected; use direct transport")
-		}
-	}
 
 	viaPeerID, err := n.selectRelayPeer(targetPeerID)
 	if err != nil {
@@ -552,6 +541,7 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 	n.mu.Unlock()
 	n.sendKnownPeerSnapshot(peer)
 	n.broadcastPeerAnnouncement(peerID, addr, peerID)
+	go n.refreshExternalAddress(time.Now().Add(n.config.HandshakeTimeout()))
 	for _, channel := range n.pubsub.SnapshotLocal() {
 		n.maintainTopicMesh(channel)
 	}
@@ -594,7 +584,13 @@ func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 	case gossip.TypeIDontWant:
 		n.rememberSuppression(peer.id, env.MessageIDs, env.MessageID)
 	case gossip.TypePeerAnnounce:
-		n.handlePeerAnnounce(env)
+		n.handlePeerAnnounce(peer, env)
+	case gossip.TypeBindingRequest:
+		n.handleBindingRequest(peer, env)
+	case gossip.TypeBindingResponse:
+		n.handleBindingResponse(env)
+	case gossip.TypeHolePunchCoord:
+		n.handleHolePunchCoord(peer, env)
 	case gossip.TypeRelayRequest:
 		n.handleRelayRequest(peer, env)
 	case gossip.TypeRelayAccept:
@@ -708,21 +704,108 @@ func (n *Node) broadcastPeerAnnouncement(peerID, addr, excludePeerID string) {
 	}, excludePeerID)
 }
 
-func (n *Node) handlePeerAnnounce(env gossip.Envelope) {
+func (n *Node) handlePeerAnnounce(peer *peerConn, env gossip.Envelope) {
 	if env.AdvertisedPeerID == "" || env.AdvertisedAddr == "" || env.AdvertisedPeerID == n.localPeerID() {
 		return
 	}
+	changed := false
 	n.mu.Lock()
 	current, ok := n.knownPeers[env.AdvertisedPeerID]
-	if !ok || (!current.direct && current.addr != env.AdvertisedAddr) {
+	if !ok || current.addr != env.AdvertisedAddr || !current.direct {
+		direct := false
+		if ok && current.direct {
+			direct = true
+		}
 		n.knownPeers[env.AdvertisedPeerID] = knownPeer{
 			id:       env.AdvertisedPeerID,
 			addr:     env.AdvertisedAddr,
-			direct:   false,
+			direct:   direct,
 			lastSeen: time.Now(),
 		}
+		changed = true
 	}
 	n.mu.Unlock()
+	if changed {
+		n.broadcastPeerAnnouncement(env.AdvertisedPeerID, env.AdvertisedAddr, peer.id)
+	}
+}
+
+func (n *Node) handleBindingRequest(peer *peerConn, env gossip.Envelope) {
+	if env.RequestID == "" {
+		return
+	}
+	observedAddr := peer.addr
+	if env.AdvertisedAddr != "" {
+		observedHost, _, errObserved := net.SplitHostPort(peer.addr)
+		_, advertisedPort, errAdvertised := net.SplitHostPort(env.AdvertisedAddr)
+		if errObserved == nil && errAdvertised == nil {
+			observedAddr = net.JoinHostPort(observedHost, advertisedPort)
+		}
+	}
+	n.sendEnvelope(peer, gossip.Envelope{
+		Type:         gossip.TypeBindingResponse,
+		RequestID:    env.RequestID,
+		ObservedAddr: observedAddr,
+	})
+}
+
+func (n *Node) handleBindingResponse(env gossip.Envelope) {
+	if env.RequestID == "" || env.ObservedAddr == "" {
+		return
+	}
+	n.mu.RLock()
+	wait := n.bindingWait[env.RequestID]
+	n.mu.RUnlock()
+	if wait == nil {
+		return
+	}
+	select {
+	case wait <- env.ObservedAddr:
+	default:
+	}
+}
+
+func (n *Node) handleHolePunchCoord(peer *peerConn, env gossip.Envelope) {
+	if env.RelaySource == "" || env.RelayTarget == "" || env.AdvertisedAddr == "" {
+		return
+	}
+	if env.RelayTarget == n.localPeerID() {
+		n.updateKnownPeer(env.RelaySource, env.AdvertisedAddr, false)
+		go n.tryHolePunchDial(env.RelaySource, env.AdvertisedAddr)
+		if env.CoordStage == "offer" {
+			n.sendEnvelope(peer, gossip.Envelope{
+				Type:             gossip.TypePeerAnnounce,
+				AdvertisedPeerID: n.localPeerID(),
+				AdvertisedAddr:   n.advertisedListenAddr(),
+			})
+			n.sendEnvelope(peer, gossip.Envelope{
+				Type:           gossip.TypeHolePunchCoord,
+				RequestID:      env.RequestID,
+				CoordStage:     "reply",
+				RelaySource:    n.localPeerID(),
+				RelayTarget:    env.RelaySource,
+				AdvertisedAddr: n.advertisedListenAddr(),
+			})
+		}
+		return
+	}
+	n.mu.RLock()
+	targetPeer := n.peers[env.RelayTarget]
+	targetInfo := n.knownPeers[env.RelayTarget]
+	n.mu.RUnlock()
+	if env.CoordStage == "offer" && targetInfo.addr != "" {
+		n.sendEnvelope(peer, gossip.Envelope{
+			Type:           gossip.TypeHolePunchCoord,
+			RequestID:      env.RequestID,
+			CoordStage:     "reply",
+			RelaySource:    env.RelayTarget,
+			RelayTarget:    env.RelaySource,
+			AdvertisedAddr: targetInfo.addr,
+		})
+	}
+	if targetPeer != nil {
+		n.sendEnvelope(targetPeer, env)
+	}
 }
 
 func (n *Node) sendRecentIHave(peer *peerConn, channel string) {
@@ -1259,6 +1342,219 @@ func (n *Node) advertisedListenAddr() string {
 	return net.JoinHostPort("127.0.0.1", strconv.Itoa(n.listenPort))
 }
 
+func (n *Node) directPeerConnected(peerID string) bool {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	_, ok := n.peers[peerID]
+	return ok
+}
+
+func (n *Node) establishedRelaySession(targetPeerID string) string {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	for _, session := range n.relayLocals {
+		if session.remotePeerID == targetPeerID && session.established {
+			return session.sessionID
+		}
+	}
+	return ""
+}
+
+func (n *Node) tryDirectConnect(targetPeerID string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	n.mu.RLock()
+	targetInfo, ok := n.knownPeers[targetPeerID]
+	n.mu.RUnlock()
+	if ok && targetInfo.addr != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), n.config.HandshakeTimeout())
+		n.connectPeer(ctx, targetInfo.addr)
+		cancel()
+		if n.waitForDirectPeer(targetPeerID, time.Until(deadline)) {
+			return true
+		}
+	}
+	if !n.refreshExternalAddress(deadline) {
+		n.waitForDirectPeer(targetPeerID, 50*time.Millisecond)
+	}
+	if n.attemptHolePunch(targetPeerID, time.Until(deadline)) {
+		return true
+	}
+	return n.waitForDirectPeer(targetPeerID, time.Until(deadline))
+}
+
+func (n *Node) refreshExternalAddress(deadline time.Time) bool {
+	n.mu.RLock()
+	peerIDs := make([]string, 0, len(n.peers))
+	for peerID := range n.peers {
+		peerIDs = append(peerIDs, peerID)
+	}
+	n.mu.RUnlock()
+	if len(peerIDs) == 0 {
+		return false
+	}
+	updated := false
+	for _, peerID := range peerIDs {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		observed, ok := n.requestBindingObservation(peerID, remaining)
+		if !ok {
+			continue
+		}
+		observed = n.normalizeObservedAddress(observed)
+		profile := n.profiler.WithExternalAddress(n.natProfile.Load().(nat.Profile), observed)
+		n.natProfile.Store(profile)
+		updated = true
+	}
+	return updated
+}
+
+func (n *Node) requestBindingObservation(peerID string, timeout time.Duration) (string, bool) {
+	requestID, err := newRelaySessionID()
+	if err != nil {
+		return "", false
+	}
+	wait := make(chan string, 1)
+	n.mu.Lock()
+	peer := n.peers[peerID]
+	if peer == nil {
+		n.mu.Unlock()
+		return "", false
+	}
+	n.bindingWait[requestID] = wait
+	n.mu.Unlock()
+	defer func() {
+		n.mu.Lock()
+		delete(n.bindingWait, requestID)
+		n.mu.Unlock()
+	}()
+	n.sendEnvelope(peer, gossip.Envelope{
+		Type:           gossip.TypeBindingRequest,
+		RequestID:      requestID,
+		AdvertisedAddr: n.advertisedListenAddr(),
+	})
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case observed := <-wait:
+		return observed, true
+	case <-timer.C:
+		return "", false
+	}
+}
+
+func (n *Node) attemptHolePunch(targetPeerID string, timeout time.Duration) bool {
+	if timeout <= 0 {
+		return false
+	}
+	n.mu.RLock()
+	targetInfo, ok := n.knownPeers[targetPeerID]
+	n.mu.RUnlock()
+	if !ok || targetInfo.addr == "" {
+		return false
+	}
+	viaPeerID, err := n.selectRelayPeer(targetPeerID)
+	if err != nil {
+		return false
+	}
+	n.mu.RLock()
+	viaPeer := n.peers[viaPeerID]
+	n.mu.RUnlock()
+	if viaPeer == nil {
+		return false
+	}
+	requestID, err := newRelaySessionID()
+	if err != nil {
+		return false
+	}
+	go n.tryHolePunchDial(targetPeerID, targetInfo.addr)
+	n.sendEnvelope(viaPeer, gossip.Envelope{
+		Type:           gossip.TypeHolePunchCoord,
+		RequestID:      requestID,
+		CoordStage:     "offer",
+		RelaySource:    n.localPeerID(),
+		RelayTarget:    targetPeerID,
+		AdvertisedAddr: n.advertisedListenAddr(),
+	})
+	deadline := time.Now().Add(timeout)
+	triedAddr := targetInfo.addr
+	for time.Now().Before(deadline) {
+		if n.directPeerConnected(targetPeerID) {
+			return true
+		}
+		n.mu.RLock()
+		updated := n.knownPeers[targetPeerID].addr
+		n.mu.RUnlock()
+		if updated != "" && updated != triedAddr {
+			triedAddr = updated
+			go n.tryHolePunchDial(targetPeerID, updated)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	return n.directPeerConnected(targetPeerID)
+}
+
+func (n *Node) tryHolePunchDial(targetPeerID, addr string) {
+	if addr == "" || n.directPeerConnected(targetPeerID) {
+		return
+	}
+	plan := nat.Coordinator{Attempts: max(1, n.config.NAT.HolePunchAttempts)}.Plan(n.advertisedListenAddr(), addr)
+	for _, pair := range plan {
+		if n.directPeerConnected(targetPeerID) {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), n.config.HandshakeTimeout())
+		n.connectPeer(ctx, pair.Remote)
+		cancel()
+		if n.directPeerConnected(targetPeerID) {
+			return
+		}
+		time.Sleep(75 * time.Millisecond)
+	}
+}
+
+func (n *Node) waitForDirectPeer(targetPeerID string, timeout time.Duration) bool {
+	if timeout <= 0 {
+		return n.directPeerConnected(targetPeerID)
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if n.directPeerConnected(targetPeerID) {
+			return true
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	return n.directPeerConnected(targetPeerID)
+}
+
+func (n *Node) normalizeObservedAddress(observed string) string {
+	host, _, errObserved := net.SplitHostPort(observed)
+	_, currentPort, errCurrent := net.SplitHostPort(n.advertisedListenAddr())
+	if errObserved != nil || errCurrent != nil {
+		return observed
+	}
+	return net.JoinHostPort(host, currentPort)
+}
+
+func (n *Node) updateKnownPeer(peerID, addr string, direct bool) {
+	if peerID == "" || addr == "" || peerID == n.localPeerID() {
+		return
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	current, ok := n.knownPeers[peerID]
+	if ok && current.direct {
+		direct = true
+	}
+	n.knownPeers[peerID] = knownPeer{
+		id:       peerID,
+		addr:     addr,
+		direct:   direct,
+		lastSeen: time.Now(),
+	}
+}
+
 func (n *Node) relayBucketFor(peerID string) *nat.TokenBucket {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -1329,6 +1625,13 @@ func (n *Node) probePortMapping(ctx context.Context, listenAddr string, port int
 
 func validChannel(channel string) bool {
 	return channel != "" && len(channel) <= 256
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func withTimeout(ctx context.Context, timeout time.Duration) context.Context {

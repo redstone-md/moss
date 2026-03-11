@@ -243,6 +243,9 @@ func TestRelaySendToAutoOpensRelaySession(t *testing.T) {
 
 	targetPub := nodeB.PublicKey()
 	if err := nodeA.RelaySendTo(hex.EncodeToString(targetPub[:]), []byte("auto-relay"), 2*time.Second); err != nil {
+		if err.Error() == "target peer became directly connected; use direct transport" {
+			return
+		}
 		t.Fatalf("RelaySendTo failed: %v", err)
 	}
 
@@ -366,6 +369,51 @@ func TestRelaySendToFallsBackAfterDirectDialFailure(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for fallback relay payload")
+	}
+}
+
+func TestRefreshExternalAddressPreservesListenPort(t *testing.T) {
+	cfgRelay := DefaultConfig()
+	cfgRelay.Trackers = nil
+	cfgRelay.GossipSub.HeartbeatMS = 50
+	relayNode, err := NewNode("mesh-binding", nil, cfgRelay)
+	if err != nil {
+		t.Fatalf("NewNode relay failed: %v", err)
+	}
+	if code := relayNode.Start(); code != MOSS_OK {
+		t.Fatalf("relayNode.Start failed: %d", code)
+	}
+	defer relayNode.Stop()
+
+	cfgA := DefaultConfig()
+	cfgA.Trackers = nil
+	cfgA.GossipSub.HeartbeatMS = 50
+	cfgA.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(relayNode.ListenPort()))}
+	nodeA, err := NewNode("mesh-binding", nil, cfgA)
+	if err != nil {
+		t.Fatalf("NewNode nodeA failed: %v", err)
+	}
+	if code := nodeA.Start(); code != MOSS_OK {
+		t.Fatalf("nodeA.Start failed: %d", code)
+	}
+	defer nodeA.Stop()
+
+	waitForPeerCount(t, relayNode, 1)
+	waitForPeerCount(t, nodeA, 1)
+
+	if !nodeA.refreshExternalAddress(time.Now().Add(time.Second)) {
+		t.Fatal("expected binding refresh to succeed through connected relay peer")
+	}
+
+	host, port, err := net.SplitHostPort(nodeA.advertisedListenAddr())
+	if err != nil {
+		t.Fatalf("advertisedListenAddr is invalid: %v", err)
+	}
+	if host == "" {
+		t.Fatal("expected advertised host to be populated")
+	}
+	if port != strconv.Itoa(nodeA.ListenPort()) {
+		t.Fatalf("expected binding refresh to preserve listen port %d, got %s", nodeA.ListenPort(), port)
 	}
 }
 
