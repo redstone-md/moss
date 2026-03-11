@@ -73,6 +73,53 @@ func TestTwoNodesExchangePubSubMessages(t *testing.T) {
 	}
 }
 
+func TestInvalidPayloadClosesPeerOnBothSides(t *testing.T) {
+	cfgA := DefaultConfig()
+	cfgA.Trackers = nil
+	cfgA.GossipSub.HeartbeatMS = 50
+	nodeA, err := NewNode("mesh-invalid-payload", nil, cfgA)
+	if err != nil {
+		t.Fatalf("NewNode nodeA failed: %v", err)
+	}
+	if code := nodeA.Start(); code != MOSS_OK {
+		t.Fatalf("nodeA.Start failed: %d", code)
+	}
+	defer nodeA.Stop()
+
+	cfgB := DefaultConfig()
+	cfgB.Trackers = nil
+	cfgB.GossipSub.HeartbeatMS = 50
+	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(nodeA.ListenPort()))}
+	nodeB, err := NewNode("mesh-invalid-payload", nil, cfgB)
+	if err != nil {
+		t.Fatalf("NewNode nodeB failed: %v", err)
+	}
+	if code := nodeB.Start(); code != MOSS_OK {
+		t.Fatalf("nodeB.Start failed: %d", code)
+	}
+	defer nodeB.Stop()
+
+	waitForPeerCount(t, nodeA, 1)
+	waitForPeerCount(t, nodeB, 1)
+
+	nodeB.mu.RLock()
+	var peer *peerConn
+	for _, current := range nodeB.peers {
+		peer = current
+		break
+	}
+	nodeB.mu.RUnlock()
+	if peer == nil {
+		t.Fatal("expected connected peer on nodeB")
+	}
+	if err := peer.session.WritePacket([]byte("{")); err != nil {
+		t.Fatalf("WritePacket invalid payload failed: %v", err)
+	}
+
+	waitForPeerCountEventually(t, nodeA, 0)
+	waitForPeerCountEventually(t, nodeB, 0)
+}
+
 func TestLateSubscriberRequestsCachedMessageViaIHaveIWant(t *testing.T) {
 	cfg1 := DefaultConfig()
 	cfg1.Trackers = nil

@@ -801,6 +801,7 @@ func shouldReplaceDuplicatePeer(localPeerID, remotePeerID string, existingOutbou
 func (n *Node) readPeer(peer *peerConn) {
 	defer n.wg.Done()
 	defer n.removePeer(peer.id, peer.session)
+	defer peer.session.Close()
 	for {
 		packet, err := peer.session.ReadPacket()
 		if err != nil {
