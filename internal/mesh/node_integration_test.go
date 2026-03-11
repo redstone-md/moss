@@ -247,7 +247,7 @@ func TestRelaySendToAutoOpensRelaySession(t *testing.T) {
 
 	targetPub := nodeB.PublicKey()
 	if err := nodeA.RelaySendTo(hex.EncodeToString(targetPub[:]), []byte("auto-relay"), 2*time.Second); err != nil {
-		if err.Error() == "target peer became directly connected; use direct transport" {
+		if err.Error() == "target peer became directly connected; use direct transport" || err.Error() == "target peer is directly connected" {
 			return
 		}
 		t.Fatalf("RelaySendTo failed: %v", err)

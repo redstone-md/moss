@@ -5,6 +5,14 @@ import (
 	"time"
 )
 
+const (
+	BaselineThreshold           = 0.0
+	GossipThreshold             = -10.0
+	PublishThreshold            = -100.0
+	GraylistThreshold           = -10000.0
+	OpportunisticGraftThreshold = 1.0
+)
+
 type PeerScore struct {
 	TimeInMesh             float64
 	FirstMessageDeliveries float64
@@ -56,6 +64,7 @@ func (e *Engine) ApplyIPColocationPenalty(peerID string, count int) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	peer := e.ensureLocked(peerID)
+	peer.IPColocationPenalty = 0
 	if count > 1 {
 		peer.IPColocationPenalty = -5.0 * float64(count-1)
 	}
