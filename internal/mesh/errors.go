@@ -11,4 +11,5 @@ const (
 	MOSS_ERR_TRACKER_FAIL      int32 = -7
 	MOSS_ERR_CONFIG_INVALID    int32 = -8
 	MOSS_ERR_OUT_OF_MEMORY     int32 = -9
+	MOSS_ERR_CONNECT_FAILED    int32 = -10
 )

@@ -150,6 +150,15 @@ func Moss_Subscribe(handle C.MossHandle, channel *C.char) C.int32_t {
 	return C.int32_t(node.Subscribe(C.GoString(channel)))
 }
 
+//export Moss_Connect
+func Moss_Connect(handle C.MossHandle, addr *C.char) C.int32_t {
+	node, code := getNode(int64(handle))
+	if code != mesh.MOSS_OK {
+		return C.int32_t(code)
+	}
+	return C.int32_t(node.Connect(C.GoString(addr)))
+}
+
 //export Moss_Unsubscribe
 func Moss_Unsubscribe(handle C.MossHandle, channel *C.char) C.int32_t {
 	node, code := getNode(int64(handle))

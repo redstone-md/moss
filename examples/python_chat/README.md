@@ -61,6 +61,8 @@ Supported commands:
 - `/nick NAME`
 - `/rooms`
 - `/status`
+- `/diag`
+- `/connect HOST:PORT`
 - `/help`
 - `/quit`
 
@@ -68,5 +70,6 @@ Supported commands:
 
 - For the local demo, the second client needs `--peer 127.0.0.1:PORT_OF_FIRST_CLIENT`.
 - For Raspberry Pi / LAN testing, use `--peer HOSTNAME_OR_LAN_IP:PORT` and make sure the port is allowed by the local firewall.
+- A node with no `--peer` and no trackers is isolated until another peer dials it or you run `/connect HOST:PORT`.
 - Each nickname gets its own persisted Moss identity in `examples/python_chat/.state/`.
 - The app loads the shared library from the repository root: `moss.dll`, `libmoss.so`, or `libmoss.dylib`.

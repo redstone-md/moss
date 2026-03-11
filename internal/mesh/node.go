@@ -363,6 +363,21 @@ func (n *Node) ListenPort() int {
 	return n.listenPort
 }
 
+func (n *Node) Connect(addr string) int32 {
+	n.mu.RLock()
+	started := n.started
+	n.mu.RUnlock()
+	if !started {
+		return MOSS_ERR_NOT_STARTED
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), n.config.HandshakeTimeout())
+	defer cancel()
+	if err := n.connectPeer(ctx, addr); err != nil {
+		return MOSS_ERR_CONNECT_FAILED
+	}
+	return MOSS_OK
+}
+
 func (n *Node) OpenRelaySession(viaPeerID, targetPeerID string, timeout time.Duration) (string, error) {
 	if viaPeerID == "" || targetPeerID == "" {
 		return "", errors.New("via and target peer IDs are required")
@@ -542,33 +557,33 @@ func (n *Node) announceAndConnect(ctx context.Context, event bootstrap.Event) {
 	})
 }
 
-func (n *Node) connectPeer(ctx context.Context, addr string) {
+func (n *Node) connectPeer(ctx context.Context, addr string) error {
 	if addr == "" {
-		return
+		return errors.New("peer address is required")
 	}
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
-		return
+		return err
 	}
 	if port == strconv.Itoa(n.listenPort) && (host == "127.0.0.1" || host == "localhost") {
-		return
+		return nil
 	}
 	n.mu.RLock()
 	if len(n.peers) >= n.config.MaxPeers {
 		n.mu.RUnlock()
-		return
+		return errors.New("max peers reached")
 	}
 	for _, peer := range n.peers {
 		if peer.addr == addr {
 			n.mu.RUnlock()
-			return
+			return nil
 		}
 	}
 	n.mu.RUnlock()
 	dialer := &net.Dialer{Timeout: n.config.HandshakeTimeout()}
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
-		return
+		return err
 	}
 	session, err := transport.ClientHandshake(withTimeout(ctx, n.config.HandshakeTimeout()), conn, transport.HandshakeConfig{
 		MeshID:   n.meshID,
@@ -577,9 +592,10 @@ func (n *Node) connectPeer(ctx context.Context, addr string) {
 	})
 	if err != nil {
 		_ = conn.Close()
-		return
+		return err
 	}
 	n.registerPeer(session, true)
+	return nil
 }
 
 func (n *Node) registerPeer(session *transport.Session, outbound bool) {

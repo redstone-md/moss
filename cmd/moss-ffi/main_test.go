@@ -60,6 +60,9 @@ func TestBuildSharedLibrary(t *testing.T) {
 	if !strings.Contains(string(headerBytes), "Moss_SetKeyStore") {
 		t.Fatal("generated header is missing Moss_SetKeyStore")
 	}
+	if !strings.Contains(string(headerBytes), "Moss_Connect") {
+		t.Fatal("generated header is missing Moss_Connect")
+	}
 }
 
 func TestInitNodeUsesPersistentIdentityFromKeyStore(t *testing.T) {
