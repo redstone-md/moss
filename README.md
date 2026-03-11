@@ -9,6 +9,8 @@ Moss is an embeddable P2P mesh core written in Go and exported through CGO as a 
 - C FFI surface with examples for C, C++, Python (`ctypes`), and Rust
 - unit, integration, and shared-library smoke tests
 
+API reference: [docs/API.md](/D:/code/moss/docs/API.md)
+
 ## Layout
 
 ```text
@@ -53,22 +55,25 @@ GOCACHE=$PWD/.gocache GOTMPDIR=$PWD/.gotmp go test ./...
 
 ## FFI API
 
-The exported API matches the PRD lifecycle/pubsub/callback surface:
+Current exported functions:
 
 - `Moss_Init`
 - `Moss_Start`
 - `Moss_Stop`
 - `Moss_Subscribe`
+- `Moss_Connect`
 - `Moss_Unsubscribe`
 - `Moss_Publish`
 - `Moss_SetCallback`
 - `Moss_SetEventCallback`
+- `Moss_SetScoringCallback`
+- `Moss_SetKeyStore`
 - `Moss_GetMeshInfo`
 - `Moss_GetPublicKey`
 - `Moss_GetNATType`
 - `Moss_Free`
 
-`Moss_GetMeshInfo`, `Moss_GetPublicKey`, and `Moss_GetNATType` allocate memory on the Go side. Free returned pointers with `Moss_Free`.
+See [docs/API.md](/D:/code/moss/docs/API.md) for signatures, config fields, event IDs, and error codes.
 
 ## Local integration example
 
