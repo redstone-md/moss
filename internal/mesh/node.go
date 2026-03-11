@@ -664,18 +664,22 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 	addr := session.RemoteAddr().String()
 	remoteStatic := session.RemoteStaticPublic()
 	var overflowPeer *peerConn
+	var replacedPeer *peerConn
 	n.mu.Lock()
 	if !n.started {
 		n.mu.Unlock()
 		_ = session.Close()
 		return
 	}
-	if _, exists := n.peers[peerID]; exists {
-		n.mu.Unlock()
-		_ = session.Close()
-		return
+	if existing, exists := n.peers[peerID]; exists {
+		if !shouldReplaceDuplicatePeer(n.localPeerID(), peerID, existing.outbound, outbound) {
+			n.mu.Unlock()
+			_ = session.Close()
+			return
+		}
+		replacedPeer = existing
 	}
-	if len(n.peers) >= n.config.MaxPeers {
+	if replacedPeer == nil && len(n.peers) >= n.config.MaxPeers {
 		overflowPeer = n.selectOverflowPrunePeerLocked()
 		n.mu.Unlock()
 		if overflowPeer != nil {
@@ -700,6 +704,9 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 	}
 	n.scoring.Ensure(peerID)
 	n.mu.Unlock()
+	if replacedPeer != nil {
+		_ = replacedPeer.session.Close()
+	}
 	n.recalculateIPColocationPenalties()
 	n.sendKnownPeerSnapshot(peer)
 	n.broadcastPeerAnnouncement(n.localKnownPeer(), peerID)
@@ -712,7 +719,9 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 	for _, channel := range n.pubsub.SnapshotLocal() {
 		n.maintainTopicMesh(channel)
 	}
-	n.enqueueEvent(EventPeerJoined, map[string]string{"peer": peerID, "addr": addr})
+	if replacedPeer == nil {
+		n.enqueueEvent(EventPeerJoined, map[string]string{"peer": peerID, "addr": addr})
+	}
 	n.wg.Add(1)
 	go n.readPeer(peer)
 }
@@ -771,9 +780,17 @@ func comparePrunePriority(a, b *peerConn, node *Node) int {
 	}
 }
 
+func shouldReplaceDuplicatePeer(localPeerID, remotePeerID string, existingOutbound, newOutbound bool) bool {
+	if existingOutbound == newOutbound {
+		return false
+	}
+	wantOutbound := localPeerID < remotePeerID
+	return newOutbound == wantOutbound
+}
+
 func (n *Node) readPeer(peer *peerConn) {
 	defer n.wg.Done()
-	defer n.removePeer(peer.id)
+	defer n.removePeer(peer.id, peer.session)
 	for {
 		packet, err := peer.session.ReadPacket()
 		if err != nil {
@@ -843,10 +860,9 @@ func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 			return
 		}
 		n.observeMeshDelivery(env.Channel, env.MessageID, peer.id)
-		if n.cache.Seen(env.MessageID) {
+		if !n.cache.StoreIfNew(env) {
 			return
 		}
-		n.cache.Store(env)
 		n.scoring.RewardFirstDelivery(peer.id)
 		n.deliverLocal(env)
 		n.broadcastEnvelope(env, peer.id)
@@ -1281,12 +1297,14 @@ func (n *Node) sendToPeers(peerIDs []string, env gossip.Envelope) bool {
 	return sent.Load()
 }
 
-func (n *Node) removePeer(peerID string) {
+func (n *Node) removePeer(peerID string, session *transport.Session) {
 	n.mu.Lock()
 	peer := n.peers[peerID]
-	if peer != nil {
-		delete(n.peers, peerID)
+	if peer == nil || peer.session != session {
+		n.mu.Unlock()
+		return
 	}
+	delete(n.peers, peerID)
 	delete(n.suppress, peerID)
 	delete(n.relayBuckets, peerID)
 	delete(n.directProbes, peerID)

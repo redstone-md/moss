@@ -51,6 +51,22 @@ func (c *Cache) Store(env Envelope) {
 	}
 }
 
+func (c *Cache) StoreIfNew(env Envelope) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.purgeLocked(time.Now())
+	if _, ok := c.items[env.MessageID]; ok {
+		return false
+	}
+	c.items[env.MessageID] = CacheEntry{
+		SeenAt:     time.Now(),
+		Channel:    env.Channel,
+		Envelope:   env,
+		HasPayload: true,
+	}
+	return true
+}
+
 func (c *Cache) Get(id string) (Envelope, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

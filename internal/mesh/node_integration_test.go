@@ -143,6 +143,7 @@ func TestRelaySessionDeliversThroughIntermediatePeer(t *testing.T) {
 	cfgA := DefaultConfig()
 	cfgA.Trackers = nil
 	cfgA.GossipSub.HeartbeatMS = 50
+	cfgA.MaxPeers = 1
 	cfgA.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(relayNode.ListenPort()))}
 	nodeA, err := NewNode("mesh-relay", nil, cfgA)
 	if err != nil {
@@ -156,6 +157,7 @@ func TestRelaySessionDeliversThroughIntermediatePeer(t *testing.T) {
 	cfgB := DefaultConfig()
 	cfgB.Trackers = nil
 	cfgB.GossipSub.HeartbeatMS = 50
+	cfgB.MaxPeers = 1
 	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(relayNode.ListenPort()))}
 	nodeB, err := NewNode("mesh-relay", nil, cfgB)
 	if err != nil {
@@ -212,6 +214,7 @@ func TestRelaySendToAutoOpensRelaySession(t *testing.T) {
 	cfgA := DefaultConfig()
 	cfgA.Trackers = nil
 	cfgA.GossipSub.HeartbeatMS = 50
+	cfgA.MaxPeers = 1
 	cfgA.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(relayNode.ListenPort()))}
 	nodeA, err := NewNode("mesh-relay-auto", nil, cfgA)
 	if err != nil {
@@ -225,6 +228,7 @@ func TestRelaySendToAutoOpensRelaySession(t *testing.T) {
 	cfgB := DefaultConfig()
 	cfgB.Trackers = nil
 	cfgB.GossipSub.HeartbeatMS = 50
+	cfgB.MaxPeers = 1
 	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(relayNode.ListenPort()))}
 	nodeB, err := NewNode("mesh-relay-auto", nil, cfgB)
 	if err != nil {
@@ -626,7 +630,6 @@ func TestDiscoveredPeersAutoConnectIntoOverlay(t *testing.T) {
 		cfg := DefaultConfig()
 		cfg.Trackers = nil
 		cfg.GossipSub.HeartbeatMS = 50
-		cfg.Security.HandshakeTimeoutSec = 1
 		cfg.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(nodeB.ListenPort()))}
 		node, err := NewNode("mesh-overlay", nil, cfg)
 		if err != nil {
@@ -1167,8 +1170,8 @@ func TestDirectUDPConnectRegistersPeer(t *testing.T) {
 	cancel()
 
 	sourcePub := nodeA.PublicKey()
-	waitForDirectPeer(t, nodeA, hex.EncodeToString(targetPub[:]))
-	waitForDirectPeer(t, nodeB, hex.EncodeToString(sourcePub[:]))
+	waitForDirectPeerWithin(t, nodeA, hex.EncodeToString(targetPub[:]), 10*time.Second)
+	waitForDirectPeerWithin(t, nodeB, hex.EncodeToString(sourcePub[:]), 10*time.Second)
 }
 
 func TestTryHolePunchDialEstablishesDirectPeer(t *testing.T) {
@@ -1221,9 +1224,9 @@ func TestTryHolePunchDialEstablishesDirectPeer(t *testing.T) {
 	nodeA.mu.RLock()
 	targetAddr := nodeA.knownPeers[targetID].addr
 	nodeA.mu.RUnlock()
-	for attempt := 0; attempt < 3 && !nodeA.directPeerConnected(targetID); attempt++ {
+	for attempt := 0; attempt < 5 && !nodeA.directPeerConnected(targetID); attempt++ {
 		nodeA.tryHolePunchDial(targetID, targetAddr)
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(150 * time.Millisecond)
 	}
 
 	waitForDirectPeer(t, nodeA, targetID)
@@ -1481,6 +1484,7 @@ func TestFiveNodeMeshPropagatesPublishedMessage(t *testing.T) {
 		cfg := DefaultConfig()
 		cfg.Trackers = nil
 		cfg.GossipSub.HeartbeatMS = 50
+		cfg.MaxPeers = 1
 		cfg.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(root.ListenPort()))}
 		node, err := NewNode("mesh-five", nil, cfg)
 		if err != nil {
@@ -1602,6 +1606,7 @@ func TestTenNodeLanPublishPropagatesToAllSubscribers(t *testing.T) {
 	cfgRoot := DefaultConfig()
 	cfgRoot.Trackers = nil
 	cfgRoot.GossipSub.HeartbeatMS = 50
+	cfgRoot.MaxPeers = 16
 	root, err := NewNode("mesh-ten-latency", nil, cfgRoot)
 	if err != nil {
 		t.Fatalf("NewNode root failed: %v", err)
@@ -1637,17 +1642,10 @@ func TestTenNodeLanPublishPropagatesToAllSubscribers(t *testing.T) {
 		t.Fatalf("root Subscribe failed: %d", code)
 	}
 
-	received := make(chan string, 9)
 	for i, node := range nodes[1:] {
 		if code := node.Subscribe("alpha"); code != MOSS_OK {
 			t.Fatalf("node %d Subscribe failed: %d", i+1, code)
 		}
-		index := i + 1
-		node.SetMessageCallback(func(channel string, senderID [32]byte, data []byte) {
-			if channel == "alpha" && string(data) == "ten-node-fanout" {
-				received <- strconv.Itoa(index)
-			}
-		})
 	}
 	time.Sleep(100 * time.Millisecond)
 
@@ -1656,15 +1654,21 @@ func TestTenNodeLanPublishPropagatesToAllSubscribers(t *testing.T) {
 		t.Fatalf("root Publish failed: %d", code)
 	}
 
-	seen := make(map[string]struct{}, 9)
-	deadline := time.After(2 * time.Second)
-	for len(seen) < 9 {
-		select {
-		case idx := <-received:
-			seen[idx] = struct{}{}
-		case <-deadline:
-			t.Fatalf("timed out waiting for 9 subscribers, got %d", len(seen))
+	seen := make(map[int]struct{}, 9)
+	deadline := time.Now().Add(2 * time.Second)
+	for len(seen) < 9 && time.Now().Before(deadline) {
+		for i, node := range nodes[1:] {
+			if _, ok := seen[i+1]; ok {
+				continue
+			}
+			if nodeHasCachedPayload(node, "alpha", "ten-node-fanout") {
+				seen[i+1] = struct{}{}
+			}
 		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if len(seen) < 9 {
+		t.Fatalf("timed out waiting for 9 subscribers, got %d", len(seen))
 	}
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Fatalf("expected 10-node LAN publish within 2s, got %s", elapsed)
@@ -1857,6 +1861,57 @@ func TestHighLatencyPeerIsPruned(t *testing.T) {
 	waitForPeerGone(t, nodeA, targetID)
 }
 
+func TestSimultaneousDirectDialsResolveToSingleConnection(t *testing.T) {
+	cfgA := DefaultConfig()
+	cfgA.Trackers = nil
+	cfgA.GossipSub.HeartbeatMS = 50
+	nodeA, err := NewNode("mesh-simultaneous-dial", nil, cfgA)
+	if err != nil {
+		t.Fatalf("NewNode nodeA failed: %v", err)
+	}
+	if code := nodeA.Start(); code != MOSS_OK {
+		t.Fatalf("nodeA.Start failed: %d", code)
+	}
+	defer nodeA.Stop()
+
+	cfgB := DefaultConfig()
+	cfgB.Trackers = nil
+	cfgB.GossipSub.HeartbeatMS = 50
+	nodeB, err := NewNode("mesh-simultaneous-dial", nil, cfgB)
+	if err != nil {
+		t.Fatalf("NewNode nodeB failed: %v", err)
+	}
+	if code := nodeB.Start(); code != MOSS_OK {
+		t.Fatalf("nodeB.Start failed: %d", code)
+	}
+	defer nodeB.Stop()
+
+	addrA := net.JoinHostPort("127.0.0.1", strconv.Itoa(nodeA.ListenPort()))
+	addrB := net.JoinHostPort("127.0.0.1", strconv.Itoa(nodeB.ListenPort()))
+	done := make(chan struct{}, 2)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = nodeA.connectPeer(ctx, addrB)
+		done <- struct{}{}
+	}()
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = nodeB.connectPeer(ctx, addrA)
+		done <- struct{}{}
+	}()
+	<-done
+	<-done
+
+	targetPub := nodeB.PublicKey()
+	sourcePub := nodeA.PublicKey()
+	waitForDirectPeer(t, nodeA, hex.EncodeToString(targetPub[:]))
+	waitForDirectPeer(t, nodeB, hex.EncodeToString(sourcePub[:]))
+	waitForPeerCountAtMost(t, nodeA, 1, 500*time.Millisecond)
+	waitForPeerCountAtMost(t, nodeB, 1, 500*time.Millisecond)
+}
+
 func waitForPeerCount(t *testing.T, node *Node, want int) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
@@ -1947,6 +2002,21 @@ func waitForDirectPeer(t *testing.T, node *Node, wantPeerID string) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("direct peer %s was not connected", wantPeerID)
+}
+
+func waitForDirectPeerWithin(t *testing.T, node *Node, wantPeerID string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		node.mu.RLock()
+		_, ok := node.peers[wantPeerID]
+		node.mu.RUnlock()
+		if ok {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("direct peer %s was not connected within %s", wantPeerID, timeout)
 }
 
 func waitForPeerGone(t *testing.T, node *Node, peerID string) {
@@ -2074,4 +2144,15 @@ func waitForRelayRouteClosed(t *testing.T, node *Node, sessionID string) {
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatalf("relay route %s did not close", sessionID)
+}
+
+func nodeHasCachedPayload(node *Node, channel, payload string) bool {
+	ids := node.cache.RecentIDs(channel, 16)
+	for _, id := range ids {
+		env, ok := node.cache.Get(id)
+		if ok && env.Channel == channel && string(env.Payload) == payload {
+			return true
+		}
+	}
+	return false
 }

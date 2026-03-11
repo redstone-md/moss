@@ -40,3 +40,24 @@ func TestCacheStoresEnvelopeAndRecentIDs(t *testing.T) {
 		t.Fatalf("unexpected recent order: %#v", ids)
 	}
 }
+
+func TestCacheStoreIfNewRejectsDuplicateMessageID(t *testing.T) {
+	cache := NewCache(time.Minute)
+	first := Envelope{Type: TypePublish, Channel: "alpha", MessageID: "m1", Payload: []byte("one")}
+	second := Envelope{Type: TypePublish, Channel: "alpha", MessageID: "m1", Payload: []byte("two")}
+
+	if !cache.StoreIfNew(first) {
+		t.Fatal("expected first store to succeed")
+	}
+	if cache.StoreIfNew(second) {
+		t.Fatal("expected duplicate message id to be rejected")
+	}
+
+	env, ok := cache.Get("m1")
+	if !ok {
+		t.Fatal("expected cached envelope")
+	}
+	if string(env.Payload) != "one" {
+		t.Fatalf("expected original payload to be preserved, got %q", string(env.Payload))
+	}
+}
