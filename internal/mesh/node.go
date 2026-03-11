@@ -363,6 +363,34 @@ func (n *Node) RelaySend(sessionID string, data []byte) error {
 	return nil
 }
 
+func (n *Node) RelaySendTo(targetPeerID string, data []byte, timeout time.Duration) error {
+	if targetPeerID == "" {
+		return errors.New("target peer ID is required")
+	}
+	n.mu.RLock()
+	if _, direct := n.peers[targetPeerID]; direct {
+		n.mu.RUnlock()
+		return errors.New("target peer is directly connected")
+	}
+	for _, session := range n.relayLocals {
+		if session.remotePeerID == targetPeerID && session.established {
+			n.mu.RUnlock()
+			return n.RelaySend(session.sessionID, data)
+		}
+	}
+	n.mu.RUnlock()
+
+	viaPeerID, err := n.selectRelayPeer(targetPeerID)
+	if err != nil {
+		return err
+	}
+	sessionID, err := n.OpenRelaySession(viaPeerID, targetPeerID, timeout)
+	if err != nil {
+		return err
+	}
+	return n.RelaySend(sessionID, data)
+}
+
 func (n *Node) acceptLoop(ctx context.Context) {
 	defer n.wg.Done()
 	for {
@@ -1136,6 +1164,30 @@ func (n *Node) relayBucketFor(peerID string) *nat.TokenBucket {
 		n.relayBuckets[peerID] = bucket
 	}
 	return bucket
+}
+
+func (n *Node) selectRelayPeer(targetPeerID string) (string, error) {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	candidates := make([]string, 0, len(n.peers))
+	for peerID := range n.peers {
+		if peerID == targetPeerID {
+			continue
+		}
+		candidates = append(candidates, peerID)
+	}
+	if len(candidates) == 0 {
+		return "", errors.New("no relay-capable peer is connected")
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		scoreI := n.scoring.Score(candidates[i])
+		scoreJ := n.scoring.Score(candidates[j])
+		if scoreI == scoreJ {
+			return candidates[i] < candidates[j]
+		}
+		return scoreI > scoreJ
+	})
+	return candidates[0], nil
 }
 
 func validChannel(channel string) bool {
