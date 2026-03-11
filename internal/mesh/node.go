@@ -35,6 +35,7 @@ type Node struct {
 	cache         *gossip.Cache
 	scoring       *gossip.Engine
 	profiler      *nat.Profiler
+	portMapper    nat.PortMapper
 	listener      *transport.Listener
 	relaySessions *nat.SessionManager
 	listenPort    int
@@ -173,11 +174,13 @@ func (n *Node) Start() int32 {
 	n.startedAt = time.Now()
 	n.cancel = cancel
 	n.natProfile.Store(n.profiler.Detect(ln.Addr().String()))
+	n.portMapper = nil
 	n.wg.Add(4)
 	go n.acceptLoop(ctx)
 	go n.dispatchLoop(ctx)
 	go n.bootstrapLoop(ctx)
 	go n.maintenanceLoop(ctx)
+	go n.probePortMapping(ctx, ln.Addr().String(), port)
 	return MOSS_OK
 }
 
@@ -190,6 +193,8 @@ func (n *Node) Stop() int32 {
 	n.started = false
 	cancel := n.cancel
 	listener := n.listener
+	portMapper := n.portMapper
+	n.portMapper = nil
 	peers := make([]*peerConn, 0, len(n.peers))
 	for _, peer := range n.peers {
 		peers = append(peers, peer)
@@ -199,6 +204,9 @@ func (n *Node) Stop() int32 {
 	cancel()
 	if listener != nil {
 		_ = listener.Close()
+	}
+	if portMapper != nil {
+		portMapper.Close()
 	}
 	for _, peer := range peers {
 		_ = peer.session.Close()
@@ -1284,6 +1292,39 @@ func (n *Node) selectRelayPeer(targetPeerID string) (string, error) {
 		return scoreI > scoreJ
 	})
 	return candidates[0], nil
+}
+
+func (n *Node) probePortMapping(ctx context.Context, listenAddr string, port int) {
+	mapper := nat.NewPortMapper(nat.MappingOptions{
+		EnableUPnP:   n.config.NAT.UPnPEnabled,
+		EnableNATPMP: n.config.NAT.NATPMPEnabled,
+		EnablePCP:    n.config.NAT.PCPEnabled,
+		Description:  "moss",
+		Lifetime:     30 * time.Minute,
+	})
+	mappedAddr, ok := mapper.Map(port)
+	select {
+	case <-ctx.Done():
+		mapper.Close()
+		return
+	default:
+	}
+	if !ok {
+		mapper.Close()
+		return
+	}
+	profile := n.profiler.WithExternalAddress(n.profiler.Detect(listenAddr), mappedAddr)
+	n.natProfile.Store(profile)
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if !n.started {
+		mapper.Close()
+		return
+	}
+	if n.portMapper != nil {
+		n.portMapper.Close()
+	}
+	n.portMapper = mapper
 }
 
 func validChannel(channel string) bool {

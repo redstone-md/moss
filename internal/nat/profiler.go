@@ -2,7 +2,7 @@ package nat
 
 import (
 	"net"
-	"strings"
+	"net/netip"
 )
 
 type Type string
@@ -34,18 +34,50 @@ func (p *Profiler) Detect(listenAddr string) Profile {
 	if err != nil {
 		return Profile{Type: TypeUnknown}
 	}
-	ip := net.ParseIP(host)
-	if ip == nil {
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
 		return Profile{Type: TypeUnknown}
 	}
-	if ip.IsLoopback() {
+	if addr.IsLoopback() {
 		return Profile{Type: TypeRestrictedCone, ExternalAddress: listenAddr}
 	}
-	if ip.IsPrivate() || strings.HasPrefix(host, "100.") {
-		if strings.HasPrefix(host, "100.") {
-			return Profile{Type: TypeCGNAT, ExternalAddress: listenAddr}
-		}
+	if addr.IsUnspecified() {
+		return Profile{Type: TypeUnknown}
+	}
+	if isCarrierGrade(addr) {
+		return Profile{Type: TypeCGNAT, ExternalAddress: listenAddr}
+	}
+	if addr.IsPrivate() {
 		return Profile{Type: TypeFullCone, ExternalAddress: listenAddr}
 	}
+	if !addr.IsGlobalUnicast() {
+		return Profile{Type: TypeUnknown}
+	}
 	return Profile{Type: TypePublic, PublicReachable: true, ExternalAddress: listenAddr}
+}
+
+func (p *Profiler) WithExternalAddress(profile Profile, externalAddr string) Profile {
+	host, _, err := net.SplitHostPort(externalAddr)
+	if err != nil {
+		return profile
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return profile
+	}
+	profile.ExternalAddress = externalAddr
+	if addr.IsGlobalUnicast() && !addr.IsPrivate() && !isCarrierGrade(addr) {
+		profile.PublicReachable = true
+		if profile.Type != TypePublic && profile.Type != TypeCGNAT {
+			profile.Type = TypeFullCone
+		}
+	}
+	return profile
+}
+
+func isCarrierGrade(addr netip.Addr) bool {
+	if !addr.Is4() {
+		return false
+	}
+	return netip.MustParsePrefix("100.64.0.0/10").Contains(addr)
 }
