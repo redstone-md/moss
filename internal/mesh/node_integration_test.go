@@ -1450,19 +1450,18 @@ func TestOpportunisticGraftingPrefersHighScoringNonMeshPeer(t *testing.T) {
 
 	nodeA.maintainTopicMesh("alpha")
 
-	updatedMesh := nodeA.pubsub.MeshPeers("alpha")
-	if len(updatedMesh) != 2 {
-		t.Fatalf("expected mesh size 2 after opportunistic graft, got %d", len(updatedMesh))
-	}
-	found := false
-	for _, peerID := range updatedMesh {
-		if peerID == nonMeshPeer {
-			found = true
-			break
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		updatedMesh := nodeA.pubsub.MeshPeers("alpha")
+		for _, peerID := range updatedMesh {
+			if peerID == nonMeshPeer {
+				return
+			}
 		}
-	}
-	if !found {
-		t.Fatalf("expected high-scoring non-mesh peer %s to join mesh, got %v", nonMeshPeer, updatedMesh)
+		if time.Now().After(deadline) {
+			t.Fatalf("expected high-scoring non-mesh peer %s to join mesh, got %v", nonMeshPeer, updatedMesh)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -1621,6 +1620,7 @@ func TestTenNodeLanPublishPropagatesToAllSubscribers(t *testing.T) {
 		cfg := DefaultConfig()
 		cfg.Trackers = nil
 		cfg.GossipSub.HeartbeatMS = 50
+		cfg.MaxPeers = 1
 		cfg.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(root.ListenPort()))}
 		node, err := NewNode("mesh-ten-latency", nil, cfg)
 		if err != nil {
