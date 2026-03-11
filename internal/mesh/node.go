@@ -1201,14 +1201,14 @@ func (n *Node) handleHolePunchCoord(peer *peerConn, env gossip.Envelope) {
 		return
 	}
 	coordAt := time.UnixMilli(env.CoordAt)
-	if env.CoordAt == 0 {
-		coordAt = time.Now().Add(250 * time.Millisecond)
+	if env.CoordAt == 0 || time.Until(coordAt) < 300*time.Millisecond {
+		coordAt = time.Now().Add(600 * time.Millisecond)
 	}
 	if env.RelayTarget == n.localPeerID() {
 		n.updateKnownPeer(env.RelaySource, env.AdvertisedAddr, false)
-		go n.tryHolePunchDialAt(env.RelaySource, env.AdvertisedAddr, coordAt)
 		if env.CoordStage == "offer" {
 			replyAddr := n.freshObservedUDPAddr(peer.id, minDuration(750*time.Millisecond, n.config.HandshakeTimeout()/2))
+			go n.tryHolePunchDialAt(env.RelaySource, env.AdvertisedAddr, coordAt)
 			n.sendEnvelope(peer, gossip.Envelope{
 				Type:             gossip.TypePeerAnnounce,
 				AdvertisedPeerID: n.localPeerID(),
@@ -2756,9 +2756,9 @@ func (n *Node) attemptHolePunch(targetPeerID string, timeout time.Duration) bool
 	if err != nil {
 		return false
 	}
-	coordAt := time.Now().Add(300 * time.Millisecond)
 	sourceAddr := n.freshObservedUDPAddr(viaPeerID, minDuration(750*time.Millisecond, timeout/3))
-	go n.tryHolePunchDial(targetPeerID, targetInfo.addr)
+	coordAt := time.Now().Add(750 * time.Millisecond)
+	go n.tryHolePunchDialAt(targetPeerID, targetInfo.addr, coordAt)
 	n.sendEnvelope(viaPeer, gossip.Envelope{
 		Type:           gossip.TypeHolePunchCoord,
 		RequestID:      requestID,
