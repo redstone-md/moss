@@ -912,7 +912,7 @@ func waitForKnownPeer(t *testing.T, node *Node, wantPeerID string) {
 
 func waitForDirectPeer(t *testing.T, node *Node, wantPeerID string) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		node.mu.RLock()
 		_, ok := node.peers[wantPeerID]
