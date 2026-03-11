@@ -628,6 +628,7 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 	}
 	n.scoring.Ensure(peerID)
 	n.mu.Unlock()
+	n.recalculateIPColocationPenalties()
 	n.sendKnownPeerSnapshot(peer)
 	n.broadcastPeerAnnouncement(n.localKnownPeer(), peerID)
 	go n.refreshExternalAddress(time.Now().Add(n.config.HandshakeTimeout()))
@@ -662,6 +663,9 @@ func (n *Node) readPeer(peer *peerConn) {
 }
 
 func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
+	if peer != nil && n.isPeerGraylisted(peer.id) {
+		return
+	}
 	switch env.Type {
 	case gossip.TypeGraft:
 		n.pubsub.SetPeerSubscription(peer.id, env.Channel, true)
@@ -676,6 +680,9 @@ func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 	case gossip.TypeIWant:
 		n.handleIWant(peer, env)
 	case gossip.TypeIDontWant:
+		if !n.canGossipWithPeer(peer.id) {
+			return
+		}
 		n.rememberSuppression(peer.id, env.MessageIDs, env.MessageID)
 	case gossip.TypePeerAnnounce:
 		n.handlePeerAnnounce(peer, env)
@@ -702,6 +709,9 @@ func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 	case gossip.TypeRelayClose:
 		n.handleRelayClose(peer, env)
 	case gossip.TypePublish:
+		if n.isPeerBelowPublishThreshold(peer.id) {
+			return
+		}
 		if env.Channel == "" || env.MessageID == "" {
 			n.scoring.PenalizeInvalid(peer.id)
 			return
@@ -977,6 +987,9 @@ func (n *Node) handleHolePunchCoord(peer *peerConn, env gossip.Envelope) {
 }
 
 func (n *Node) sendRecentIHave(peer *peerConn, channel string) {
+	if peer == nil || !n.canGossipWithPeer(peer.id) {
+		return
+	}
 	ids := n.cache.RecentIDs(channel, n.config.GossipSub.DLazy)
 	if len(ids) == 0 {
 		return
@@ -989,6 +1002,9 @@ func (n *Node) sendRecentIHave(peer *peerConn, channel string) {
 }
 
 func (n *Node) handleIHave(peer *peerConn, env gossip.Envelope) {
+	if peer == nil || !n.canGossipWithPeer(peer.id) {
+		return
+	}
 	if env.Channel == "" || len(env.MessageIDs) == 0 || !n.pubsub.IsLocalSubscriber(env.Channel) {
 		return
 	}
@@ -1009,6 +1025,9 @@ func (n *Node) handleIHave(peer *peerConn, env gossip.Envelope) {
 }
 
 func (n *Node) handleIWant(peer *peerConn, env gossip.Envelope) {
+	if peer == nil || !n.canGossipWithPeer(peer.id) {
+		return
+	}
 	for _, id := range env.MessageIDs {
 		if n.isSuppressed(peer.id, id) {
 			continue
@@ -1037,11 +1056,11 @@ func (n *Node) broadcastIDontWant(channel string, ids []string, excludePeerID st
 	if channel == "" || len(ids) == 0 {
 		return
 	}
-	n.broadcastToAll(gossip.Envelope{
+	n.sendToPeers(n.meshGossipPeers(channel, excludePeerID), gossip.Envelope{
 		Type:       gossip.TypeIDontWant,
 		Channel:    channel,
 		MessageIDs: ids,
-	}, excludePeerID)
+	})
 }
 
 func (n *Node) broadcastToAll(env gossip.Envelope, excludePeerID string) bool {
@@ -1127,6 +1146,7 @@ func (n *Node) removePeer(peerID string) {
 	}
 	n.mu.Unlock()
 	n.pubsub.RemovePeer(peerID)
+	n.recalculateIPColocationPenalties()
 	if peer != nil {
 		n.enqueueEvent(EventPeerLeft, map[string]string{"peer": peerID, "addr": peer.addr})
 	}
@@ -1508,10 +1528,17 @@ func (n *Node) selectMeshCandidates(channel string, limit int) []string {
 		}
 		return scoreI > scoreJ
 	})
-	if len(candidates) > limit {
-		candidates = candidates[:limit]
+	filtered := make([]string, 0, len(candidates))
+	for _, peerID := range candidates {
+		if n.isPeerBelowBaseline(peerID) {
+			continue
+		}
+		filtered = append(filtered, peerID)
+		if len(filtered) == limit {
+			break
+		}
 	}
-	return candidates
+	return filtered
 }
 
 func (n *Node) opportunisticGraft(channel string) {
@@ -1543,6 +1570,9 @@ func (n *Node) selectHighScoringCandidates(channel string, limit int, threshold 
 	candidates := n.selectMeshCandidates(channel, n.config.MaxPeers)
 	filtered := make([]string, 0, len(candidates))
 	for _, peerID := range candidates {
+		if n.isPeerBelowBaseline(peerID) {
+			continue
+		}
 		if n.peerScore(peerID) <= threshold {
 			continue
 		}
@@ -2305,6 +2335,62 @@ func (n *Node) peerScore(peerID string) float64 {
 	return cb(decodePeerID(peerID), base)
 }
 
+func (n *Node) isPeerBelowBaseline(peerID string) bool {
+	return n.peerScore(peerID) < gossip.BaselineThreshold
+}
+
+func (n *Node) canGossipWithPeer(peerID string) bool {
+	return n.peerScore(peerID) >= gossip.GossipThreshold
+}
+
+func (n *Node) isPeerBelowPublishThreshold(peerID string) bool {
+	return n.peerScore(peerID) < gossip.PublishThreshold
+}
+
+func (n *Node) isPeerGraylisted(peerID string) bool {
+	return n.peerScore(peerID) < gossip.GraylistThreshold
+}
+
+func (n *Node) meshGossipPeers(channel, excludePeerID string) []string {
+	meshPeers := n.pubsub.MeshPeers(channel)
+	selected := make([]string, 0, len(meshPeers))
+	for _, peerID := range meshPeers {
+		if peerID == excludePeerID || !n.canGossipWithPeer(peerID) {
+			continue
+		}
+		selected = append(selected, peerID)
+	}
+	return selected
+}
+
+func (n *Node) recalculateIPColocationPenalties() {
+	type peerAddr struct {
+		id   string
+		host string
+	}
+	n.mu.RLock()
+	peers := make([]peerAddr, 0, len(n.peers))
+	for peerID, peer := range n.peers {
+		host, _, err := net.SplitHostPort(peer.addr)
+		if err != nil {
+			host = peer.addr
+		}
+		peers = append(peers, peerAddr{id: peerID, host: host})
+	}
+	n.mu.RUnlock()
+
+	counts := make(map[string]int, len(peers))
+	for _, peer := range peers {
+		if !eligibleForIPColocationPenalty(peer.host) {
+			continue
+		}
+		counts[peer.host]++
+	}
+	for _, peer := range peers {
+		n.scoring.ApplyIPColocationPenalty(peer.id, counts[peer.host])
+	}
+}
+
 func (n *Node) medianMeshScore(peers []string) float64 {
 	if len(peers) == 0 {
 		return 0
@@ -2398,6 +2484,17 @@ func isCarrierGradeAddr(addr netip.Addr) bool {
 	return netip.MustParsePrefix("100.64.0.0/10").Contains(addr)
 }
 
+func eligibleForIPColocationPenalty(host string) bool {
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	if addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() || addr.IsMulticast() || addr.IsUnspecified() {
+		return false
+	}
+	return addr.IsGlobalUnicast() && !isCarrierGradeAddr(addr)
+}
+
 func validChannel(channel string) bool {
 	return channel != "" && len(channel) <= 256
 }
@@ -2421,7 +2518,7 @@ func (n *Node) selectLazyPeers(channel, excludePeerID string, limit int) []strin
 	})
 	selected := make([]string, 0, limit)
 	for _, peerID := range peers {
-		if peerID == excludePeerID {
+		if peerID == excludePeerID || !n.canGossipWithPeer(peerID) {
 			continue
 		}
 		selected = append(selected, peerID)
