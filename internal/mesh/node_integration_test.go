@@ -640,6 +640,74 @@ func TestOpportunisticGraftingPrefersHighScoringNonMeshPeer(t *testing.T) {
 	}
 }
 
+func TestFiveNodeMeshPropagatesPublishedMessage(t *testing.T) {
+	cfg0 := DefaultConfig()
+	cfg0.Trackers = nil
+	cfg0.GossipSub.HeartbeatMS = 50
+	root, err := NewNode("mesh-five", nil, cfg0)
+	if err != nil {
+		t.Fatalf("NewNode root failed: %v", err)
+	}
+	if code := root.Start(); code != MOSS_OK {
+		t.Fatalf("root.Start failed: %d", code)
+	}
+	defer root.Stop()
+
+	nodes := []*Node{root}
+	for i := 0; i < 4; i++ {
+		cfg := DefaultConfig()
+		cfg.Trackers = nil
+		cfg.GossipSub.HeartbeatMS = 50
+		cfg.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(root.ListenPort()))}
+		node, err := NewNode("mesh-five", nil, cfg)
+		if err != nil {
+			t.Fatalf("NewNode peer %d failed: %v", i, err)
+		}
+		if code := node.Start(); code != MOSS_OK {
+			t.Fatalf("peer %d Start failed: %d", i, code)
+		}
+		defer node.Stop()
+		nodes = append(nodes, node)
+	}
+
+	waitForPeerCount(t, root, 4)
+	for _, node := range nodes[1:] {
+		waitForPeerCount(t, node, 1)
+	}
+
+	received := make(chan string, 4)
+	for i, node := range nodes[:4] {
+		if code := node.Subscribe("alpha"); code != MOSS_OK {
+			t.Fatalf("node %d Subscribe failed: %d", i, code)
+		}
+		index := i
+		node.SetMessageCallback(func(channel string, senderID [32]byte, data []byte) {
+			if channel == "alpha" && string(data) == "fanout" {
+				received <- strconv.Itoa(index)
+			}
+		})
+	}
+	if code := nodes[4].Subscribe("alpha"); code != MOSS_OK {
+		t.Fatalf("publisher Subscribe failed: %d", code)
+	}
+	time.Sleep(250 * time.Millisecond)
+
+	if code := nodes[4].Publish("alpha", []byte("fanout")); code != MOSS_OK {
+		t.Fatalf("publisher Publish failed: %d", code)
+	}
+
+	seen := make(map[string]struct{}, 4)
+	deadline := time.After(4 * time.Second)
+	for len(seen) < 4 {
+		select {
+		case idx := <-received:
+			seen[idx] = struct{}{}
+		case <-deadline:
+			t.Fatalf("timed out waiting for 4 subscribers, got %d", len(seen))
+		}
+	}
+}
+
 func waitForPeerCount(t *testing.T, node *Node, want int) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
