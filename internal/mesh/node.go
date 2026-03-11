@@ -174,7 +174,7 @@ func (n *Node) Subscribe(channel string) int32 {
 		return MOSS_ERR_INVALID_CHANNEL
 	}
 	n.pubsub.Subscribe(channel)
-	n.broadcastToAll(gossip.Envelope{Type: gossip.TypeGraft, Channel: channel}, "")
+	n.maintainTopicMesh(channel)
 	return MOSS_OK
 }
 
@@ -182,8 +182,16 @@ func (n *Node) Unsubscribe(channel string) int32 {
 	if !validChannel(channel) {
 		return MOSS_ERR_INVALID_CHANNEL
 	}
+	for _, peerID := range n.pubsub.MeshPeers(channel) {
+		n.mu.RLock()
+		peer := n.peers[peerID]
+		n.mu.RUnlock()
+		if peer != nil {
+			n.sendEnvelope(peer, gossip.Envelope{Type: gossip.TypePrune, Channel: channel})
+		}
+		n.pubsub.SetMeshPeer(channel, peerID, false)
+	}
 	n.pubsub.Unsubscribe(channel)
-	n.broadcastToAll(gossip.Envelope{Type: gossip.TypePrune, Channel: channel}, "")
 	return MOSS_OK
 }
 
@@ -389,7 +397,7 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 	n.scoring.Ensure(peerID)
 	n.mu.Unlock()
 	for _, channel := range n.pubsub.SnapshotLocal() {
-		n.sendEnvelope(peer, gossip.Envelope{Type: gossip.TypeGraft, Channel: channel})
+		n.maintainTopicMesh(channel)
 	}
 	n.enqueueEvent(EventPeerJoined, map[string]string{"peer": peerID, "addr": addr})
 	n.wg.Add(1)
@@ -417,9 +425,12 @@ func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 	switch env.Type {
 	case gossip.TypeGraft:
 		n.pubsub.SetPeerSubscription(peer.id, env.Channel, true)
-		n.sendRecentIHave(peer, env.Channel)
+		if n.pubsub.IsLocalSubscriber(env.Channel) {
+			n.pubsub.SetMeshPeer(env.Channel, peer.id, true)
+			n.sendRecentIHave(peer, env.Channel)
+		}
 	case gossip.TypePrune:
-		n.pubsub.SetPeerSubscription(peer.id, env.Channel, false)
+		n.pubsub.SetMeshPeer(env.Channel, peer.id, false)
 	case gossip.TypeIHave:
 		n.handleIHave(peer, env)
 	case gossip.TypeIWant:
@@ -461,7 +472,7 @@ func (n *Node) deliverLocal(env gossip.Envelope) {
 }
 
 func (n *Node) broadcastEnvelope(env gossip.Envelope, excludePeerID string) bool {
-	targets := n.pubsub.Subscribers(env.Channel)
+	targets := n.pubsub.MeshPeers(env.Channel)
 	if len(targets) == 0 {
 		return false
 	}
@@ -544,7 +555,7 @@ func (n *Node) broadcastIHave(channel string, ids []string, excludePeerID string
 	if channel == "" || len(ids) == 0 {
 		return
 	}
-	n.broadcastEnvelope(gossip.Envelope{
+	n.broadcastToNonMesh(channel, gossip.Envelope{
 		Type:       gossip.TypeIHave,
 		Channel:    channel,
 		MessageIDs: ids,
@@ -555,7 +566,7 @@ func (n *Node) broadcastIDontWant(channel string, ids []string, excludePeerID st
 	if channel == "" || len(ids) == 0 {
 		return
 	}
-	n.broadcastEnvelope(gossip.Envelope{
+	n.broadcastToAll(gossip.Envelope{
 		Type:       gossip.TypeIDontWant,
 		Channel:    channel,
 		MessageIDs: ids,
@@ -572,6 +583,30 @@ func (n *Node) broadcastToAll(env gossip.Envelope, excludePeerID string) bool {
 	sent := false
 	for peerID, peer := range n.peers {
 		if peerID == excludePeerID {
+			continue
+		}
+		if err := peer.session.WritePacket(payload); err == nil {
+			sent = true
+		}
+	}
+	return sent
+}
+
+func (n *Node) broadcastToNonMesh(channel string, env gossip.Envelope, excludePeerID string) bool {
+	payload, err := json.Marshal(env)
+	if err != nil {
+		return false
+	}
+	targets := n.pubsub.NonMeshSubscribers(channel)
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	sent := false
+	for _, peerID := range targets {
+		if peerID == excludePeerID {
+			continue
+		}
+		peer := n.peers[peerID]
+		if peer == nil {
 			continue
 		}
 		if err := peer.session.WritePacket(payload); err == nil {
@@ -606,6 +641,9 @@ func (n *Node) maintenanceLoop(ctx context.Context) {
 		case <-ticker.C:
 			n.scoring.Tick()
 			n.pruneLowScoringPeers()
+			for _, channel := range n.pubsub.SnapshotLocal() {
+				n.maintainTopicMesh(channel)
+			}
 			profile := n.natProfile.Load().(nat.Profile)
 			if n.supernodeReady(profile) {
 				n.enqueueEvent(EventSupernodePromoted, map[string]string{"nat_type": string(profile.Type)})
@@ -729,6 +767,131 @@ func (n *Node) isSuppressed(peerID, messageID string) bool {
 		return false
 	}
 	return true
+}
+
+func (n *Node) maintainTopicMesh(channel string) {
+	if !n.pubsub.IsLocalSubscriber(channel) {
+		return
+	}
+	n.ensureTopicMeshMinimum(channel)
+	n.pruneTopicMeshExcess(channel)
+}
+
+func (n *Node) ensureTopicMeshMinimum(channel string) {
+	meshPeers := n.pubsub.MeshPeers(channel)
+	if len(meshPeers) >= n.config.GossipSub.DLo {
+		return
+	}
+	candidates := n.selectMeshCandidates(channel, n.config.GossipSub.D-len(meshPeers))
+	for _, peerID := range candidates {
+		n.mu.RLock()
+		peer := n.peers[peerID]
+		n.mu.RUnlock()
+		if peer == nil {
+			continue
+		}
+		n.pubsub.SetMeshPeer(channel, peerID, true)
+		n.sendEnvelope(peer, gossip.Envelope{Type: gossip.TypeGraft, Channel: channel})
+		n.sendRecentIHave(peer, channel)
+	}
+}
+
+func (n *Node) pruneTopicMeshExcess(channel string) {
+	meshPeers := n.pubsub.MeshPeers(channel)
+	if len(meshPeers) <= n.config.GossipSub.DHigh {
+		return
+	}
+	sort.Slice(meshPeers, func(i, j int) bool {
+		scoreI := n.scoring.Score(meshPeers[i])
+		scoreJ := n.scoring.Score(meshPeers[j])
+		if scoreI == scoreJ {
+			return meshPeers[i] > meshPeers[j]
+		}
+		return scoreI < scoreJ
+	})
+	excess := len(meshPeers) - n.config.GossipSub.D
+	if excess <= 0 {
+		excess = len(meshPeers) - n.config.GossipSub.DHigh
+	}
+	if excess <= 0 {
+		return
+	}
+	outboundLeft := n.countOutboundMesh(channel)
+	for _, peerID := range meshPeers {
+		if excess == 0 {
+			return
+		}
+		n.mu.RLock()
+		peer := n.peers[peerID]
+		n.mu.RUnlock()
+		if peer == nil {
+			continue
+		}
+		if peer.outbound && outboundLeft <= n.config.GossipSub.DOut {
+			continue
+		}
+		n.pubsub.SetMeshPeer(channel, peerID, false)
+		n.sendEnvelope(peer, gossip.Envelope{Type: gossip.TypePrune, Channel: channel})
+		if peer.outbound {
+			outboundLeft--
+		}
+		excess--
+	}
+}
+
+func (n *Node) selectMeshCandidates(channel string, limit int) []string {
+	if limit <= 0 {
+		return nil
+	}
+	candidates := n.pubsub.NonMeshSubscribers(channel)
+	if len(candidates) == 0 {
+		n.mu.RLock()
+		candidates = make([]string, 0, len(n.peers))
+		for peerID := range n.peers {
+			if n.pubsub.InMesh(channel, peerID) {
+				continue
+			}
+			candidates = append(candidates, peerID)
+		}
+		n.mu.RUnlock()
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		outI := n.isOutboundPeer(candidates[i])
+		outJ := n.isOutboundPeer(candidates[j])
+		if outI != outJ {
+			return outI
+		}
+		scoreI := n.scoring.Score(candidates[i])
+		scoreJ := n.scoring.Score(candidates[j])
+		if scoreI == scoreJ {
+			return candidates[i] < candidates[j]
+		}
+		return scoreI > scoreJ
+	})
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	return candidates
+}
+
+func (n *Node) countOutboundMesh(channel string) int {
+	count := 0
+	for _, peerID := range n.pubsub.MeshPeers(channel) {
+		if n.isOutboundPeer(peerID) {
+			count++
+		}
+	}
+	return count
+}
+
+func (n *Node) isOutboundPeer(peerID string) bool {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	peer := n.peers[peerID]
+	return peer != nil && peer.outbound
 }
 
 func validChannel(channel string) bool {
