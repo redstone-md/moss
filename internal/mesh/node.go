@@ -140,8 +140,11 @@ type knownPeer struct {
 type meshInfo struct {
 	MeshID         string   `json:"mesh_id"`
 	ListenPort     int      `json:"listen_port"`
+	AdvertisedAddr string   `json:"advertised_addr"`
 	PeerCount      int      `json:"peer_count"`
 	Peers          []string `json:"peers"`
+	KnownPeerCount int      `json:"known_peer_count"`
+	KnownPeers     []string `json:"known_peers,omitempty"`
 	Channels       []string `json:"channels"`
 	NATType        string   `json:"nat_type"`
 	PublicKey      string   `json:"public_key"`
@@ -362,6 +365,7 @@ func (n *Node) MeshInfoJSON() string {
 	info := meshInfo{
 		MeshID:         n.meshID,
 		ListenPort:     n.listenPort,
+		AdvertisedAddr: n.advertisedListenAddr(),
 		Channels:       n.pubsub.SnapshotLocal(),
 		NATType:        string(profile.Type),
 		PublicKey:      hex.EncodeToString(pubKey[:]),
@@ -372,8 +376,20 @@ func (n *Node) MeshInfoJSON() string {
 	for _, peer := range n.peers {
 		info.Peers = append(info.Peers, peer.addr)
 	}
+	info.KnownPeerCount = len(n.knownPeers)
+	for _, known := range n.knownPeers {
+		if known.id == "" || known.addr == "" {
+			continue
+		}
+		state := "known"
+		if known.direct {
+			state = "direct"
+		}
+		info.KnownPeers = append(info.KnownPeers, known.id[:min(8, len(known.id))]+"@"+known.addr+"["+state+"]")
+	}
 	n.mu.RUnlock()
 	sort.Strings(info.Peers)
+	sort.Strings(info.KnownPeers)
 	payload, _ := json.Marshal(info)
 	return string(payload)
 }
@@ -1078,7 +1094,9 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 	changed := false
 	n.mu.Lock()
 	current, ok := n.knownPeers[env.AdvertisedPeerID]
-	if !ok || current.addr != env.AdvertisedAddr || !current.direct || current.natType != nat.Type(env.AdvertisedNATType) || current.publicReachable != env.AdvertisedReachable || current.relayCapable != env.AdvertisedRelayCapable {
+	addr := preferredKnownPeerAddr(current, env.AdvertisedAddr)
+	lan := current.lan && knownPeerAddrRank(addr) <= 1
+	if !ok || current.addr != addr || !current.direct || current.natType != nat.Type(env.AdvertisedNATType) || current.publicReachable != env.AdvertisedReachable || current.relayCapable != env.AdvertisedRelayCapable {
 		direct := false
 		if ok && current.direct {
 			direct = true
@@ -1089,10 +1107,10 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 		}
 		n.knownPeers[env.AdvertisedPeerID] = knownPeer{
 			id:              env.AdvertisedPeerID,
-			addr:            env.AdvertisedAddr,
+			addr:            addr,
 			direct:          direct,
 			bootstrap:       bootstrap,
-			lan:             current.lan,
+			lan:             lan,
 			natType:         nat.Type(env.AdvertisedNATType),
 			publicReachable: env.AdvertisedReachable,
 			relayCapable:    env.AdvertisedRelayCapable,
@@ -1182,22 +1200,28 @@ func (n *Node) handleHolePunchCoord(peer *peerConn, env gossip.Envelope) {
 	if env.RelaySource == "" || env.RelayTarget == "" || env.AdvertisedAddr == "" {
 		return
 	}
+	coordAt := time.UnixMilli(env.CoordAt)
+	if env.CoordAt == 0 {
+		coordAt = time.Now().Add(250 * time.Millisecond)
+	}
 	if env.RelayTarget == n.localPeerID() {
 		n.updateKnownPeer(env.RelaySource, env.AdvertisedAddr, false)
-		go n.tryHolePunchDial(env.RelaySource, env.AdvertisedAddr)
+		go n.tryHolePunchDialAt(env.RelaySource, env.AdvertisedAddr, coordAt)
 		if env.CoordStage == "offer" {
+			replyAddr := n.freshObservedUDPAddr(peer.id, minDuration(750*time.Millisecond, n.config.HandshakeTimeout()/2))
 			n.sendEnvelope(peer, gossip.Envelope{
 				Type:             gossip.TypePeerAnnounce,
 				AdvertisedPeerID: n.localPeerID(),
-				AdvertisedAddr:   n.advertisedListenAddr(),
+				AdvertisedAddr:   replyAddr,
 			})
 			n.sendEnvelope(peer, gossip.Envelope{
 				Type:           gossip.TypeHolePunchCoord,
 				RequestID:      env.RequestID,
 				CoordStage:     "reply",
+				CoordAt:        coordAt.UnixMilli(),
 				RelaySource:    n.localPeerID(),
 				RelayTarget:    env.RelaySource,
-				AdvertisedAddr: n.advertisedListenAddr(),
+				AdvertisedAddr: replyAddr,
 			})
 		}
 		return
@@ -1211,6 +1235,7 @@ func (n *Node) handleHolePunchCoord(peer *peerConn, env gossip.Envelope) {
 			Type:           gossip.TypeHolePunchCoord,
 			RequestID:      env.RequestID,
 			CoordStage:     "reply",
+			CoordAt:        coordAt.UnixMilli(),
 			RelaySource:    env.RelayTarget,
 			RelayTarget:    env.RelaySource,
 			AdvertisedAddr: targetInfo.addr,
@@ -1783,9 +1808,11 @@ func (n *Node) discoveredPeerTargets() []discoveredPeerTarget {
 }
 
 func (n *Node) dialKnownPeer(peerID, addr string) {
-	ctx, cancel := context.WithTimeout(context.Background(), n.config.HandshakeTimeout())
-	defer cancel()
-	n.connectPeerWithHint(ctx, addr, peerID)
+	_ = addr
+	// Discovered peers should use the full direct-connect strategy so the
+	// maintenance loop can escalate from plain TCP dial to binding refresh and
+	// UDP hole-punch coordination through an already connected relay-capable peer.
+	n.tryDirectConnect(peerID, n.config.HandshakeTimeout())
 	n.mu.Lock()
 	delete(n.peerDials, peerID)
 	n.mu.Unlock()
@@ -2400,16 +2427,31 @@ func (n *Node) tryDirectConnect(targetPeerID string, timeout time.Duration) bool
 	n.mu.RLock()
 	targetInfo, ok := n.knownPeers[targetPeerID]
 	n.mu.RUnlock()
-	if ok && targetInfo.addr != "" {
-		ctx, cancel := context.WithTimeout(context.Background(), n.config.HandshakeTimeout())
-		n.connectPeerWithHint(ctx, targetInfo.addr, targetPeerID)
-		cancel()
-		if n.waitForDirectPeer(targetPeerID, time.Until(deadline)) {
-			return true
+	if remaining := time.Until(deadline); remaining > 0 {
+		refreshBudget := initialDirectRefreshBudget(remaining)
+		if refreshBudget > 0 {
+			n.refreshExternalAddress(time.Now().Add(refreshBudget))
+			if n.waitForDirectPeer(targetPeerID, minDuration(100*time.Millisecond, time.Until(deadline))) {
+				return true
+			}
 		}
 	}
-	if !n.refreshExternalAddress(deadline) {
-		n.waitForDirectPeer(targetPeerID, 50*time.Millisecond)
+	if ok && targetInfo.addr != "" {
+		dialBudget := initialDirectDialBudget(targetInfo, time.Until(deadline))
+		if dialBudget > 0 {
+			ctx, cancel := context.WithTimeout(context.Background(), dialBudget)
+			n.connectPeerWithHint(ctx, targetInfo.addr, targetPeerID)
+			cancel()
+			if n.waitForDirectPeer(targetPeerID, minDuration(250*time.Millisecond, time.Until(deadline))) {
+				return true
+			}
+		}
+	}
+	if time.Until(deadline) <= 0 {
+		return n.directPeerConnected(targetPeerID)
+	}
+	if !ok || targetInfo.addr == "" {
+		return n.waitForDirectPeer(targetPeerID, time.Until(deadline))
 	}
 	if n.shouldPreferRelayForTarget(targetPeerID) {
 		return n.waitForDirectPeer(targetPeerID, time.Until(deadline))
@@ -2417,7 +2459,121 @@ func (n *Node) tryDirectConnect(targetPeerID string, timeout time.Duration) bool
 	if n.attemptHolePunch(targetPeerID, time.Until(deadline)) {
 		return true
 	}
+	finalBudget := finalDirectDialBudget(targetInfo, time.Until(deadline))
+	if finalBudget > 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), finalBudget)
+		n.connectPeerWithHint(ctx, targetInfo.addr, targetPeerID)
+		cancel()
+		if n.waitForDirectPeer(targetPeerID, minDuration(250*time.Millisecond, time.Until(deadline))) {
+			return true
+		}
+	}
 	return n.waitForDirectPeer(targetPeerID, time.Until(deadline))
+}
+
+func initialDirectRefreshBudget(total time.Duration) time.Duration {
+	if total <= 0 {
+		return 0
+	}
+	budget := total / 3
+	if budget > time.Second {
+		budget = time.Second
+	}
+	if budget < 250*time.Millisecond {
+		return total
+	}
+	return budget
+}
+
+func initialDirectDialBudget(targetInfo knownPeer, total time.Duration) time.Duration {
+	if total <= 0 {
+		return 0
+	}
+	if shouldUseShortDirectProbe(targetInfo) {
+		budget := total / 4
+		if budget > 750*time.Millisecond {
+			budget = 750 * time.Millisecond
+		}
+		if budget < 250*time.Millisecond {
+			budget = minDuration(total, 250*time.Millisecond)
+		}
+		return budget
+	}
+	return total
+}
+
+func finalDirectDialBudget(targetInfo knownPeer, total time.Duration) time.Duration {
+	if total <= 0 {
+		return 0
+	}
+	if shouldUseShortDirectProbe(targetInfo) {
+		return minDuration(total, time.Second)
+	}
+	return total
+}
+
+func shouldUseShortDirectProbe(targetInfo knownPeer) bool {
+	if targetInfo.addr == "" {
+		return false
+	}
+	host, _, err := net.SplitHostPort(targetInfo.addr)
+	if err == nil {
+		if ip, err := netip.ParseAddr(host); err == nil {
+			ip = ip.Unmap()
+			if ip.IsLoopback() || ip.IsPrivate() {
+				return false
+			}
+		}
+	}
+	if targetInfo.lan || targetInfo.publicReachable {
+		return false
+	}
+	switch targetInfo.natType {
+	case nat.TypePublic:
+		return false
+	default:
+		return true
+	}
+}
+
+func preferredKnownPeerAddr(current knownPeer, candidate string) string {
+	if candidate == "" {
+		return current.addr
+	}
+	if current.addr == "" {
+		return candidate
+	}
+	currentRank := knownPeerAddrRank(current.addr)
+	candidateRank := knownPeerAddrRank(candidate)
+	if candidateRank > currentRank {
+		return candidate
+	}
+	if candidateRank < currentRank {
+		return current.addr
+	}
+	return candidate
+}
+
+func knownPeerAddrRank(addr string) int {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
+		return 0
+	}
+	ip = ip.Unmap()
+	switch {
+	case ip.IsGlobalUnicast() && !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() && !isCarrierGradeAddr(ip):
+		return 3
+	case isCarrierGradeAddr(ip):
+		return 2
+	case ip.IsPrivate():
+		return 1
+	default:
+		return 0
+	}
 }
 
 func (n *Node) refreshExternalAddress(deadline time.Time) bool {
@@ -2436,12 +2592,15 @@ func (n *Node) refreshExternalAddress(deadline time.Time) bool {
 		if remaining <= 0 {
 			break
 		}
-		observed, ok := n.requestBindingObservation(peerID, remaining)
+		observed, ok := n.requestUDPBindingObservation(peerID, remaining)
+		if !ok {
+			observed, ok = n.requestBindingObservation(peerID, remaining)
+		}
 		if !ok {
 			continue
 		}
-		observed = n.normalizeObservedAddress(observed)
-		profile := n.profiler.WithExternalAddress(n.natProfile.Load().(nat.Profile), observed)
+		previous := n.natProfile.Load().(nat.Profile)
+		profile := n.profiler.WithExternalAddress(previous, observed)
 		n.mu.Lock()
 		n.bindingHistory = appendObservation(n.bindingHistory, observed)
 		bindingHistory := append([]string(nil), n.bindingHistory...)
@@ -2451,9 +2610,36 @@ func (n *Node) refreshExternalAddress(deadline time.Time) bool {
 			profile = n.profiler.WithReachability(profile, n.confirmReachability(observed, deadline))
 		}
 		n.natProfile.Store(profile)
+		if profile.ExternalAddress != previous.ExternalAddress || profile.Type != previous.Type || profile.PublicReachable != previous.PublicReachable {
+			n.broadcastPeerAnnouncement(n.localKnownPeer(), "")
+		}
 		updated = true
 	}
 	return updated
+}
+
+func (n *Node) requestUDPBindingObservation(peerID string, timeout time.Duration) (string, bool) {
+	if n.udpListener == nil || timeout <= 0 {
+		return "", false
+	}
+	n.mu.RLock()
+	addr := n.knownPeers[peerID].addr
+	if addr == "" {
+		if peer := n.peers[peerID]; peer != nil {
+			addr = peer.addr
+		}
+	}
+	n.mu.RUnlock()
+	if addr == "" {
+		return "", false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	observed, err := n.udpListener.ObserveContext(ctx, addr)
+	if err != nil || observed == "" {
+		return "", false
+	}
+	return observed, true
 }
 
 func (n *Node) requestBindingObservation(peerID string, timeout time.Duration) (string, bool) {
@@ -2570,14 +2756,17 @@ func (n *Node) attemptHolePunch(targetPeerID string, timeout time.Duration) bool
 	if err != nil {
 		return false
 	}
+	coordAt := time.Now().Add(300 * time.Millisecond)
+	sourceAddr := n.freshObservedUDPAddr(viaPeerID, minDuration(750*time.Millisecond, timeout/3))
 	go n.tryHolePunchDial(targetPeerID, targetInfo.addr)
 	n.sendEnvelope(viaPeer, gossip.Envelope{
 		Type:           gossip.TypeHolePunchCoord,
 		RequestID:      requestID,
 		CoordStage:     "offer",
+		CoordAt:        coordAt.UnixMilli(),
 		RelaySource:    n.localPeerID(),
 		RelayTarget:    targetPeerID,
-		AdvertisedAddr: n.advertisedListenAddr(),
+		AdvertisedAddr: sourceAddr,
 	})
 	deadline := time.Now().Add(timeout)
 	triedAddr := targetInfo.addr
@@ -2598,8 +2787,18 @@ func (n *Node) attemptHolePunch(targetPeerID string, timeout time.Duration) bool
 }
 
 func (n *Node) tryHolePunchDial(targetPeerID, addr string) {
+	n.tryHolePunchDialAt(targetPeerID, addr, time.Time{})
+}
+
+func (n *Node) tryHolePunchDialAt(targetPeerID, addr string, at time.Time) {
 	if addr == "" || n.directPeerConnected(targetPeerID) {
 		return
+	}
+	if !at.IsZero() {
+		delay := time.Until(at)
+		if delay > 0 {
+			time.Sleep(delay)
+		}
 	}
 	n.mu.RLock()
 	localHistory := append([]string(nil), n.bindingHistory...)
@@ -2625,6 +2824,23 @@ func (n *Node) tryHolePunchDial(targetPeerID, addr string) {
 		}
 		time.Sleep(75 * time.Millisecond)
 	}
+}
+
+func (n *Node) freshObservedUDPAddr(peerID string, timeout time.Duration) string {
+	if timeout > 0 {
+		if observed, ok := n.requestUDPBindingObservation(peerID, timeout); ok && observed != "" {
+			previous := n.natProfile.Load().(nat.Profile)
+			profile := n.profiler.WithExternalAddress(previous, observed)
+			n.mu.Lock()
+			n.bindingHistory = appendObservation(n.bindingHistory, observed)
+			bindingHistory := append([]string(nil), n.bindingHistory...)
+			n.mu.Unlock()
+			profile = n.profiler.WithBindingObservations(profile, bindingHistory)
+			n.natProfile.Store(profile)
+			return observed
+		}
+	}
+	return n.advertisedListenAddr()
 }
 
 func (n *Node) connectPeerUDP(ctx context.Context, targetPeerID, addr string) {
@@ -2656,15 +2872,6 @@ func (n *Node) waitForDirectPeer(targetPeerID string, timeout time.Duration) boo
 	return n.directPeerConnected(targetPeerID)
 }
 
-func (n *Node) normalizeObservedAddress(observed string) string {
-	host, _, errObserved := net.SplitHostPort(observed)
-	_, currentPort, errCurrent := net.SplitHostPort(n.advertisedListenAddr())
-	if errObserved != nil || errCurrent != nil {
-		return observed
-	}
-	return net.JoinHostPort(host, currentPort)
-}
-
 func (n *Node) updateKnownPeer(peerID, addr string, direct bool) {
 	if peerID == "" || addr == "" || peerID == n.localPeerID() {
 		return
@@ -2675,12 +2882,13 @@ func (n *Node) updateKnownPeer(peerID, addr string, direct bool) {
 	if ok && current.direct {
 		direct = true
 	}
+	addr = preferredKnownPeerAddr(current, addr)
 	n.knownPeers[peerID] = knownPeer{
 		id:              peerID,
 		addr:            addr,
 		direct:          direct,
 		bootstrap:       current.bootstrap,
-		lan:             current.lan,
+		lan:             current.lan && knownPeerAddrRank(addr) <= 1,
 		natType:         current.natType,
 		publicReachable: current.publicReachable,
 		relayCapable:    current.relayCapable,
