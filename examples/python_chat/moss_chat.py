@@ -50,6 +50,7 @@ ERROR_NAMES = {
     -7: "tracker failure",
     -8: "invalid config",
     -9: "out of memory",
+    -10: "connect failed",
 }
 
 EVENT_NAMES = {
@@ -105,6 +106,7 @@ Moss_Init = bind_function(
 )
 Moss_Start = bind_function("Moss_Start", [ctypes.c_int64], ctypes.c_int32)
 Moss_Stop = bind_function("Moss_Stop", [ctypes.c_int64], ctypes.c_int32)
+Moss_Connect = bind_function("Moss_Connect", [ctypes.c_int64, ctypes.c_char_p], ctypes.c_int32)
 Moss_Subscribe = bind_function("Moss_Subscribe", [ctypes.c_int64, ctypes.c_char_p], ctypes.c_int32)
 Moss_Unsubscribe = bind_function("Moss_Unsubscribe", [ctypes.c_int64, ctypes.c_char_p], ctypes.c_int32)
 Moss_Publish = bind_function(
@@ -207,6 +209,8 @@ class MossClient:
         self.mesh_id = mesh_id
         self.listen_port = listen_port
         self.identity_path = identity_path
+        self.bootstrap_peers = list(peers)
+        self.trackers = list(trackers or [])
         self._message_handler: Callable[[str, str, bytes], None] | None = None
         self._event_handler: Callable[[int, dict], None] | None = None
         self._message_cb = MossMessageCallback(self._handle_message)
@@ -305,6 +309,9 @@ class MossClient:
 
     def subscribe(self, room: str) -> None:
         self._call(Moss_Subscribe(self.handle, room.encode("utf-8")), "Moss_Subscribe")
+
+    def connect(self, addr: str) -> None:
+        self._call(Moss_Connect(self.handle, addr.encode("utf-8")), "Moss_Connect")
 
     def unsubscribe(self, room: str) -> None:
         self._call(Moss_Unsubscribe(self.handle, room.encode("utf-8")), "Moss_Unsubscribe")
@@ -479,6 +486,10 @@ class MossChatApp:
             f"Connected as {self.nickname}. Active mesh: {self.client.mesh_id}. "
             "Use F2/F3 to switch rooms and /help for commands."
         )
+        if not self.client.bootstrap_peers and not self.client.trackers:
+            self._system_message(
+                "No bootstrap peers configured. This node stays isolated until another peer dials it or you use /connect HOST:PORT."
+            )
         if self.share_host:
             self._system_message(
                 "For another machine, connect with "
@@ -547,7 +558,7 @@ class MossChatApp:
 
         if command == "help":
             self._system_message(
-                "Commands: /join ROOM, /leave [ROOM], /goto ROOM, /nick NAME, /rooms, /status, /quit"
+                "Commands: /join ROOM, /leave [ROOM], /goto ROOM, /nick NAME, /rooms, /status, /diag, /connect HOST:PORT, /quit"
             )
             return
         if command in {"quit", "exit"}:
@@ -607,7 +618,37 @@ class MossChatApp:
                 f"mesh={self.client.mesh_id} room=#{self.current_room} peers={peers} nat={nat_type}"
             )
             return
+        if command == "diag":
+            self._show_diag()
+            return
+        if command == "connect":
+            if not argument:
+                self._system_message("Usage: /connect HOST:PORT")
+                return
+            try:
+                self.client.connect(argument.strip())
+            except Exception as exc:
+                self._system_message(f"connect failed: {exc}")
+                return
+            self._system_message(f"Connecting to {argument.strip()}...")
+            return
         self._system_message(f"Unknown command: /{command}")
+
+    def _show_diag(self) -> None:
+        info = self.client.mesh_info()
+        channels = ", ".join(f"#{room}" for room in info.get("channels", [])) or "(none)"
+        peers = ", ".join(info.get("peers", [])) or "(none)"
+        bootstrap = ", ".join(self.client.bootstrap_peers) or "(none)"
+        nat_type = info.get("nat_type", self.client.nat_type())
+        listen_port = info.get("listen_port", self.client.listen_port)
+        public_key = self.client.public_key_hex[:16]
+        share_host = self.share_host or "(unknown)"
+        self._system_message(
+            f"diag: peers={info.get('peer_count', 0)} listen={share_host}:{listen_port} nat={nat_type} relay={info.get('supernode_ready', False)}"
+        )
+        self._system_message(f"diag: bootstrap peers={bootstrap}")
+        self._system_message(f"diag: connected peers={peers}")
+        self._system_message(f"diag: rooms={channels} pubkey={public_key}...")
 
     def _join_room(self, room_name: str) -> None:
         if room_name == SYSTEM_ROOM:
