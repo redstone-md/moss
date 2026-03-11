@@ -71,8 +71,8 @@ func (e *Engine) ApplyIPColocationPenalty(peerID string, count int) {
 	defer e.mu.Unlock()
 	peer := e.ensureLocked(peerID)
 	peer.IPColocationPenalty = 0
-	if count > 1 {
-		peer.IPColocationPenalty = -5.0 * float64(count-1)
+	if count > 2 {
+		peer.IPColocationPenalty = -1.0 * float64(count-2)
 	}
 }
 
