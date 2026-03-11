@@ -403,6 +403,84 @@ func TestRelayNodeEnforcesConfiguredBandwidth(t *testing.T) {
 	}
 }
 
+func TestRelayBandwidthOverloadDemotesAndRecoversSupernode(t *testing.T) {
+	cfgRelay := DefaultConfig()
+	cfgRelay.Trackers = nil
+	cfgRelay.GossipSub.HeartbeatMS = 50
+	cfgRelay.NAT.SuperNodeMinUptimeSec = 0
+	cfgRelay.NAT.RelayMaxBandwidthKBPS = 1
+	cfgRelay.Security.RateLimitBurst = 1 << 20
+	cfgRelay.Security.RateLimitSustained = 1 << 20
+	relayNode, err := NewNode("mesh-relay-overload", nil, cfgRelay)
+	if err != nil {
+		t.Fatalf("NewNode relay failed: %v", err)
+	}
+	if code := relayNode.Start(); code != MOSS_OK {
+		t.Fatalf("relayNode.Start failed: %d", code)
+	}
+	defer relayNode.Stop()
+
+	cfgA := DefaultConfig()
+	cfgA.Trackers = nil
+	cfgA.GossipSub.HeartbeatMS = 50
+	cfgA.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(relayNode.ListenPort()))}
+	nodeA, err := NewNode("mesh-relay-overload", nil, cfgA)
+	if err != nil {
+		t.Fatalf("NewNode nodeA failed: %v", err)
+	}
+	if code := nodeA.Start(); code != MOSS_OK {
+		t.Fatalf("nodeA.Start failed: %d", code)
+	}
+	defer nodeA.Stop()
+
+	cfgB := DefaultConfig()
+	cfgB.Trackers = nil
+	cfgB.GossipSub.HeartbeatMS = 50
+	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(relayNode.ListenPort()))}
+	nodeB, err := NewNode("mesh-relay-overload", nil, cfgB)
+	if err != nil {
+		t.Fatalf("NewNode nodeB failed: %v", err)
+	}
+	if code := nodeB.Start(); code != MOSS_OK {
+		t.Fatalf("nodeB.Start failed: %d", code)
+	}
+	defer nodeB.Stop()
+
+	waitForPeerCount(t, relayNode, 2)
+	waitForPeerCount(t, nodeA, 1)
+	waitForPeerCount(t, nodeB, 1)
+
+	relayPub := relayNode.PublicKey()
+	relayID := hex.EncodeToString(relayPub[:])
+	waitForKnownPeer(t, nodeA, relayID)
+	relayNode.natProfile.Store(nat.Profile{
+		Type:            nat.TypePublic,
+		PublicReachable: true,
+		ExternalAddress: net.JoinHostPort("203.0.113.30", strconv.Itoa(relayNode.ListenPort())),
+	})
+	relayNode.refreshSupernodeStatus()
+	waitForKnownPeerRelayCapable(t, nodeA, relayID, true)
+
+	targetPub := nodeB.PublicKey()
+	sessionID, err := nodeA.OpenRelaySession(relayID, hex.EncodeToString(targetPub[:]), 2*time.Second)
+	if err != nil {
+		t.Fatalf("OpenRelaySession failed: %v", err)
+	}
+
+	firstPayload := bytes.Repeat([]byte("a"), 1024)
+	secondPayload := bytes.Repeat([]byte("b"), 1024)
+	if err := nodeA.RelaySend(sessionID, firstPayload); err != nil {
+		t.Fatalf("first RelaySend failed: %v", err)
+	}
+	if err := nodeA.RelaySend(sessionID, secondPayload); err != nil {
+		t.Fatalf("second RelaySend failed: %v", err)
+	}
+
+	waitForKnownPeerRelayCapable(t, nodeA, relayID, false)
+	time.Sleep(relayNode.relayOverloadCooldown() + 150*time.Millisecond)
+	waitForKnownPeerRelayCapable(t, nodeA, relayID, true)
+}
+
 func TestSupernodeStatusAnnounceAndRevokePropagatesOnce(t *testing.T) {
 	cfgA := DefaultConfig()
 	cfgA.Trackers = nil
