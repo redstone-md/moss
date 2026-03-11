@@ -75,6 +75,13 @@ func (m *SessionManager) Release(id string) {
 	delete(m.sessions, id)
 }
 
+func (m *SessionManager) Count() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.purgeLocked(time.Now())
+	return len(m.sessions)
+}
+
 func (m *SessionManager) purgeLocked(now time.Time) {
 	for id, ts := range m.sessions {
 		if now.Sub(ts) > m.ttl {

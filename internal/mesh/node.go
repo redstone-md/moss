@@ -1415,6 +1415,9 @@ func (n *Node) makePublishEnvelope(channel string, data []byte) gossip.Envelope 
 }
 
 func (n *Node) supernodeReady(profile nat.Profile) bool {
+	if n.config.NAT.RelayMaxSessions > 0 && n.relaySessions.Count() >= n.config.NAT.RelayMaxSessions {
+		return false
+	}
 	return nat.ShouldPromote(profile, time.Since(n.startedAt), n.config.NAT.RelayMaxBandwidthKBPS, 1.0, nat.PromotionPolicy{
 		MinUptime:          time.Duration(n.config.NAT.SuperNodeMinUptimeSec) * time.Second,
 		MinBandwidthKBytes: n.config.NAT.RelayMaxBandwidthKBPS,
@@ -1801,6 +1804,7 @@ func (n *Node) handleRelayRequest(peer *peerConn, env gossip.Envelope) {
 	n.mu.Lock()
 	n.relayRoutes[env.RelaySession] = relayRoute{initiator: env.RelaySource, target: env.RelayTarget}
 	n.mu.Unlock()
+	n.refreshSupernodeStatus()
 	n.sendEnvelope(targetPeer, env)
 }
 
@@ -1879,6 +1883,7 @@ func (n *Node) handleRelayClose(peer *peerConn, env gossip.Envelope) {
 	delete(n.relayRoutes, env.RelaySession)
 	n.mu.Unlock()
 	n.relaySessions.Release(env.RelaySession)
+	n.refreshSupernodeStatus()
 	if env.RelayTarget == "" || env.RelayTarget == n.localPeerID() {
 		return
 	}
