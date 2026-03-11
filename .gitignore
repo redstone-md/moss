@@ -1,0 +1,6 @@
+.gocache/
+.gotmp/
+*.dll
+*.so
+*.dylib
+*.h
