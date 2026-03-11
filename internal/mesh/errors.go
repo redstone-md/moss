@@ -1,0 +1,14 @@
+package mesh
+
+const (
+	MOSS_OK                    int32 = 0
+	MOSS_ERR_INVALID_HANDLE    int32 = -1
+	MOSS_ERR_ALREADY_STARTED   int32 = -2
+	MOSS_ERR_NOT_STARTED       int32 = -3
+	MOSS_ERR_INVALID_CHANNEL   int32 = -4
+	MOSS_ERR_MESSAGE_TOO_LARGE int32 = -5
+	MOSS_ERR_NO_PEERS          int32 = -6
+	MOSS_ERR_TRACKER_FAIL      int32 = -7
+	MOSS_ERR_CONFIG_INVALID    int32 = -8
+	MOSS_ERR_OUT_OF_MEMORY     int32 = -9
+)
