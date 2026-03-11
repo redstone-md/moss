@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pion/stun/v2"
+
 	mcrypto "moss/internal/crypto"
 )
 
@@ -188,6 +190,67 @@ func TestUDPObserveContextReportsObservedEndpoint(t *testing.T) {
 	observed, err := clientListener.ObserveContext(ctx, "127.0.0.1:"+strconv.Itoa(serverPort))
 	if err != nil {
 		t.Fatalf("ObserveContext failed: %v", err)
+	}
+	host, port, err := net.SplitHostPort(observed)
+	if err != nil {
+		t.Fatalf("observed endpoint invalid: %v", err)
+	}
+	if host != "127.0.0.1" {
+		t.Fatalf("unexpected observed host %s", host)
+	}
+	if port != strconv.Itoa(clientPort) {
+		t.Fatalf("expected observed port %d, got %s", clientPort, port)
+	}
+}
+
+func TestUDPObserveSTUNContextReportsObservedEndpoint(t *testing.T) {
+	identity, err := mcrypto.NewIdentity()
+	if err != nil {
+		t.Fatalf("identity failed: %v", err)
+	}
+	serverConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+	if err != nil {
+		t.Fatalf("ListenUDP STUN server failed: %v", err)
+	}
+	defer serverConn.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buffer := make([]byte, 2048)
+		for {
+			n, remote, readErr := serverConn.ReadFromUDP(buffer)
+			if readErr != nil {
+				return
+			}
+			msg := &stun.Message{Raw: append([]byte(nil), buffer[:n]...)}
+			if err := msg.Decode(); err != nil {
+				continue
+			}
+			response := stun.MustBuild(
+				stun.NewTransactionIDSetter(msg.TransactionID),
+				stun.BindingSuccess,
+				&stun.XORMappedAddress{IP: remote.IP, Port: remote.Port},
+				stun.Fingerprint,
+			)
+			_, _ = serverConn.WriteToUDP(response.Raw, remote)
+		}
+	}()
+
+	clientListener, clientPort, err := ListenUDP(0, HandshakeConfig{
+		MeshID:   "mesh-udp-stun-observe",
+		Identity: identity,
+	})
+	if err != nil {
+		t.Fatalf("ListenUDP client failed: %v", err)
+	}
+	defer clientListener.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	observed, err := clientListener.ObserveSTUNContext(ctx, "127.0.0.1:"+strconv.Itoa(serverConn.LocalAddr().(*net.UDPAddr).Port))
+	if err != nil {
+		t.Fatalf("ObserveSTUNContext failed: %v", err)
 	}
 	host, port, err := net.SplitHostPort(observed)
 	if err != nil {

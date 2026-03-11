@@ -18,6 +18,7 @@ type lanBeacon struct {
 	MeshID          string `json:"mesh_id"`
 	PeerID          string `json:"peer_id"`
 	ListenPort      int    `json:"listen_port"`
+	AdvertisedAddr  string `json:"advertised_addr,omitempty"`
 	NATType         string `json:"nat_type,omitempty"`
 	PublicReachable bool   `json:"public_reachable,omitempty"`
 	RelayCapable    bool   `json:"relay_capable,omitempty"`
@@ -78,18 +79,26 @@ func lanDiscoveryReceiver(groupAddr *net.UDPAddr) (net.PacketConn, error) {
 }
 
 func lanDiscoveryInterfaces() []net.Interface {
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		return nil
-	}
+	return lanDiscoveryInterfacesFrom(netInterfaces())
+}
+
+func lanDiscoveryInterfacesFrom(ifaces []net.Interface) []net.Interface {
 	selected := make([]net.Interface, 0, len(ifaces))
 	for _, iface := range ifaces {
-		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagMulticast == 0 {
+		if !eligibleLocalInterface(iface) || iface.Flags&net.FlagMulticast == 0 {
 			continue
 		}
 		selected = append(selected, iface)
 	}
 	return selected
+}
+
+func netInterfaces() []net.Interface {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	return ifaces
 }
 
 func lanDiscoveryBroadcastAddrs() []*net.UDPAddr {
@@ -150,23 +159,31 @@ func (n *Node) lanDiscoveryReadLoop(ctx context.Context, conn net.PacketConn) {
 		if err := json.Unmarshal(buffer[:length], &beacon); err != nil {
 			continue
 		}
+		if beacon.MeshID == n.meshID && beacon.PeerID != "" && beacon.PeerID != n.localPeerID() {
+			n.sendLANBeaconReply(conn, &net.UDPAddr{IP: udpSrc.IP, Port: n.config.LANDiscoveryPort})
+		}
 		n.handleLANBeacon(udpSrc, beacon)
 	}
+}
+
+func (n *Node) lanDiscoveryPayload() ([]byte, error) {
+	profile := n.natProfile.Load().(nat.Profile)
+	return json.Marshal(lanBeacon{
+		MeshID:          n.meshID,
+		PeerID:          n.localPeerID(),
+		ListenPort:      n.listenPort,
+		AdvertisedAddr:  n.advertisedListenAddr(),
+		NATType:         string(profile.Type),
+		PublicReachable: profile.PublicReachable,
+		RelayCapable:    n.supernodeReady(profile),
+	})
 }
 
 func (n *Node) sendLANBeacon(conn *ipv4.PacketConn, groupAddr *net.UDPAddr) {
 	if conn == nil || groupAddr == nil {
 		return
 	}
-	profile := n.natProfile.Load().(nat.Profile)
-	payload, err := json.Marshal(lanBeacon{
-		MeshID:          n.meshID,
-		PeerID:          n.localPeerID(),
-		ListenPort:      n.listenPort,
-		NATType:         string(profile.Type),
-		PublicReachable: profile.PublicReachable,
-		RelayCapable:    n.supernodeReady(profile),
-	})
+	payload, err := n.lanDiscoveryPayload()
 	if err != nil {
 		return
 	}
@@ -187,6 +204,17 @@ func (n *Node) sendLANBeacon(conn *ipv4.PacketConn, groupAddr *net.UDPAddr) {
 	}
 }
 
+func (n *Node) sendLANBeaconReply(conn net.PacketConn, dst *net.UDPAddr) {
+	if conn == nil || dst == nil || dst.IP == nil || dst.IP.IsUnspecified() {
+		return
+	}
+	payload, err := n.lanDiscoveryPayload()
+	if err != nil {
+		return
+	}
+	_, _ = conn.WriteTo(payload, dst)
+}
+
 func (n *Node) handleLANBeacon(src *net.UDPAddr, beacon lanBeacon) {
 	if src == nil || src.IP == nil || src.IP.IsUnspecified() {
 		return
@@ -194,31 +222,33 @@ func (n *Node) handleLANBeacon(src *net.UDPAddr, beacon lanBeacon) {
 	if beacon.MeshID != n.meshID || beacon.PeerID == "" || beacon.PeerID == n.localPeerID() || beacon.ListenPort <= 0 {
 		return
 	}
-	addr := net.JoinHostPort(src.IP.String(), strconv.Itoa(beacon.ListenPort))
+	observedAddr := net.JoinHostPort(src.IP.String(), strconv.Itoa(beacon.ListenPort))
+	candidateAddr := observedAddr
+	if beacon.AdvertisedAddr != "" {
+		candidateAddr = preferredKnownPeerAddr(knownPeer{addr: observedAddr}, beacon.AdvertisedAddr)
+	}
 	shouldDial := false
 	n.mu.Lock()
 	current := n.knownPeers[beacon.PeerID]
-	chosenAddr := preferredKnownPeerAddr(current, addr)
-	acceptedLANAddr := chosenAddr == addr
-	direct := current.direct
-	lan := current.lan
-	if acceptedLANAddr {
-		direct = true
-		lan = true
+	chosenAddr := preferredKnownPeerAddr(current, candidateAddr)
+	lan := chosenAddr == observedAddr && knownPeerAddrRank(observedAddr) <= 1
+	observations := appendObservation(current.observations, observedAddr)
+	if beacon.AdvertisedAddr != "" {
+		observations = appendObservation(observations, beacon.AdvertisedAddr)
 	}
 	n.knownPeers[beacon.PeerID] = knownPeer{
 		id:              beacon.PeerID,
 		addr:            chosenAddr,
-		direct:          direct,
+		direct:          current.direct,
 		lan:             lan,
 		natType:         nat.Type(beacon.NATType),
 		publicReachable: beacon.PublicReachable,
 		relayCapable:    beacon.RelayCapable,
 		lastSeen:        time.Now(),
-		observations:    appendObservation(current.observations, addr),
+		observations:    observations,
 		noiseStatic:     append([]byte(nil), current.noiseStatic...),
 	}
-	if acceptedLANAddr && n.started && len(n.peers) < n.config.MaxPeers {
+	if n.started && len(n.peers) < n.config.MaxPeers {
 		if _, connected := n.peers[beacon.PeerID]; !connected {
 			cooldown := n.config.HandshakeTimeout()
 			if cooldown < n.config.Heartbeat() {
