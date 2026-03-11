@@ -2,7 +2,6 @@ package mesh
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -12,6 +11,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/crypto/blake2s"
 
 	"moss/internal/bootstrap"
 	mcrypto "moss/internal/crypto"
@@ -171,7 +172,7 @@ func (n *Node) Subscribe(channel string) int32 {
 		return MOSS_ERR_INVALID_CHANNEL
 	}
 	n.pubsub.Subscribe(channel)
-	n.broadcastToAll(gossip.Envelope{Type: gossip.TypeSubscribe, Channel: channel}, "")
+	n.broadcastToAll(gossip.Envelope{Type: gossip.TypeGraft, Channel: channel}, "")
 	return MOSS_OK
 }
 
@@ -180,7 +181,7 @@ func (n *Node) Unsubscribe(channel string) int32 {
 		return MOSS_ERR_INVALID_CHANNEL
 	}
 	n.pubsub.Unsubscribe(channel)
-	n.broadcastToAll(gossip.Envelope{Type: gossip.TypeUnsubscribe, Channel: channel}, "")
+	n.broadcastToAll(gossip.Envelope{Type: gossip.TypePrune, Channel: channel}, "")
 	return MOSS_OK
 }
 
@@ -381,7 +382,7 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 	n.scoring.Ensure(peerID)
 	n.mu.Unlock()
 	for _, channel := range n.pubsub.SnapshotLocal() {
-		n.sendEnvelope(peer, gossip.Envelope{Type: gossip.TypeSubscribe, Channel: channel})
+		n.sendEnvelope(peer, gossip.Envelope{Type: gossip.TypeGraft, Channel: channel})
 	}
 	n.enqueueEvent(EventPeerJoined, map[string]string{"peer": peerID, "addr": addr})
 	n.wg.Add(1)
@@ -407,9 +408,9 @@ func (n *Node) readPeer(peer *peerConn) {
 
 func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 	switch env.Type {
-	case gossip.TypeSubscribe:
+	case gossip.TypeGraft:
 		n.pubsub.SetPeerSubscription(peer.id, env.Channel, true)
-	case gossip.TypeUnsubscribe:
+	case gossip.TypePrune:
 		n.pubsub.SetPeerSubscription(peer.id, env.Channel, false)
 	case gossip.TypePublish:
 		if env.Channel == "" || env.MessageID == "" {
@@ -578,7 +579,7 @@ func (n *Node) dispatchLoop(ctx context.Context) {
 func (n *Node) makePublishEnvelope(channel string, data []byte) gossip.Envelope {
 	seq := atomic.AddUint64(&n.seq, 1)
 	sender := n.identity.PublicKeyBytes()
-	hash := sha256.New()
+	hash, _ := blake2s.New256(nil)
 	hash.Write(sender)
 	hash.Write([]byte(channel))
 	hash.Write(data)

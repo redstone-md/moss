@@ -1,53 +1,45 @@
 package transport
 
 import (
-	"crypto/aes"
-	"crypto/cipher"
 	"encoding/binary"
 	"io"
 	"net"
 	"sync"
+
+	"github.com/flynn/noise"
 )
 
 type Session struct {
-	conn         net.Conn
-	aead         cipher.AEAD
-	writeMu      sync.Mutex
-	readMu       sync.Mutex
-	writeCounter uint64
-	readCounter  uint64
-	remoteID     [32]byte
+	conn       net.Conn
+	sendCipher *noise.CipherState
+	recvCipher *noise.CipherState
+	writeMu    sync.Mutex
+	readMu     sync.Mutex
+	remoteID   [32]byte
 }
 
-func NewSession(conn net.Conn, key []byte, remoteID [32]byte) (*Session, error) {
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-	aead, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
+func NewSession(conn net.Conn, sendCipher, recvCipher *noise.CipherState, remoteID [32]byte) (*Session, error) {
 	return &Session{
-		conn:     conn,
-		aead:     aead,
-		remoteID: remoteID,
+		conn:       conn,
+		sendCipher: sendCipher,
+		recvCipher: recvCipher,
+		remoteID:   remoteID,
 	}, nil
 }
 
 func (s *Session) WritePacket(packet []byte) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	s.writeCounter++
-	nonce := make([]byte, s.aead.NonceSize())
-	binary.BigEndian.PutUint64(nonce[len(nonce)-8:], s.writeCounter)
-	ciphertext := s.aead.Seal(nil, nonce, packet, nil)
+	ciphertext, err := s.sendCipher.Encrypt(nil, nil, packet)
+	if err != nil {
+		return err
+	}
 	header := make([]byte, 4)
 	binary.BigEndian.PutUint32(header, uint32(len(ciphertext)))
 	if _, err := s.conn.Write(header); err != nil {
 		return err
 	}
-	_, err := s.conn.Write(ciphertext)
+	_, err = s.conn.Write(ciphertext)
 	return err
 }
 
@@ -63,10 +55,7 @@ func (s *Session) ReadPacket() ([]byte, error) {
 	if _, err := io.ReadFull(s.conn, buf); err != nil {
 		return nil, err
 	}
-	s.readCounter++
-	nonce := make([]byte, s.aead.NonceSize())
-	binary.BigEndian.PutUint64(nonce[len(nonce)-8:], s.readCounter)
-	return s.aead.Open(nil, nonce, buf, nil)
+	return s.recvCipher.Decrypt(nil, nil, buf)
 }
 
 func (s *Session) RemoteID() [32]byte {
