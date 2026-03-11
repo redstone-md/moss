@@ -45,22 +45,23 @@ type Node struct {
 	natProfile atomic.Value
 	seq        uint64
 
-	mu           sync.RWMutex
-	started      bool
-	cancel       context.CancelFunc
-	wg           sync.WaitGroup
-	peers        map[string]*peerConn
-	suppress     map[string]map[string]time.Time
-	relayRoutes  map[string]relayRoute
-	relayLocals  map[string]relayLocalSession
-	relayBuckets map[string]*nat.TokenBucket
-	directProbes map[string]time.Time
-	knownPeers   map[string]knownPeer
-	bindingWait  map[string]chan string
-	messageCB    MessageCallback
-	eventCB      EventCallback
-	relayCB      RelayCallback
-	dispatchCh   chan any
+	mu             sync.RWMutex
+	started        bool
+	cancel         context.CancelFunc
+	wg             sync.WaitGroup
+	peers          map[string]*peerConn
+	suppress       map[string]map[string]time.Time
+	relayRoutes    map[string]relayRoute
+	relayLocals    map[string]relayLocalSession
+	relayBuckets   map[string]*nat.TokenBucket
+	directProbes   map[string]time.Time
+	bindingHistory []string
+	knownPeers     map[string]knownPeer
+	bindingWait    map[string]chan string
+	messageCB      MessageCallback
+	eventCB        EventCallback
+	relayCB        RelayCallback
+	dispatchCh     chan any
 }
 
 type peerConn struct {
@@ -100,10 +101,11 @@ type relayLocalSession struct {
 }
 
 type knownPeer struct {
-	id       string
-	addr     string
-	direct   bool
-	lastSeen time.Time
+	id           string
+	addr         string
+	direct       bool
+	lastSeen     time.Time
+	observations []string
 }
 
 type meshInfo struct {
@@ -134,28 +136,29 @@ func NewNode(meshID string, psk []byte, cfg Config) (*Node, error) {
 		return nil, err
 	}
 	node := &Node{
-		meshID:        meshID,
-		psk:           append([]byte(nil), psk...),
-		config:        cfg,
-		infoHash:      infoHash,
-		peerID:        peerID,
-		identity:      identity,
-		tracker:       bootstrap.NewManager(time.Duration(cfg.BootstrapTimeoutSec) * time.Second),
-		pubsub:        gossip.NewManager(),
-		cache:         gossip.NewCache(2 * time.Minute),
-		scoring:       gossip.NewEngine(),
-		profiler:      nat.NewProfiler(),
-		relaySessions: nat.NewSessionManager(cfg.NAT.RelayMaxSessions, time.Duration(cfg.NAT.RelaySessionTTLSec)*time.Second),
-		peers:         make(map[string]*peerConn),
-		suppress:      make(map[string]map[string]time.Time),
-		relayRoutes:   make(map[string]relayRoute),
-		relayLocals:   make(map[string]relayLocalSession),
-		relayBuckets:  make(map[string]*nat.TokenBucket),
-		directProbes:  make(map[string]time.Time),
-		knownPeers:    make(map[string]knownPeer),
-		bindingWait:   make(map[string]chan string),
-		dispatchSem:   make(chan struct{}, 500),
-		dispatchCh:    make(chan any, 1024),
+		meshID:         meshID,
+		psk:            append([]byte(nil), psk...),
+		config:         cfg,
+		infoHash:       infoHash,
+		peerID:         peerID,
+		identity:       identity,
+		tracker:        bootstrap.NewManager(time.Duration(cfg.BootstrapTimeoutSec) * time.Second),
+		pubsub:         gossip.NewManager(),
+		cache:          gossip.NewCache(2 * time.Minute),
+		scoring:        gossip.NewEngine(),
+		profiler:       nat.NewProfiler(),
+		relaySessions:  nat.NewSessionManager(cfg.NAT.RelayMaxSessions, time.Duration(cfg.NAT.RelaySessionTTLSec)*time.Second),
+		peers:          make(map[string]*peerConn),
+		suppress:       make(map[string]map[string]time.Time),
+		relayRoutes:    make(map[string]relayRoute),
+		relayLocals:    make(map[string]relayLocalSession),
+		relayBuckets:   make(map[string]*nat.TokenBucket),
+		directProbes:   make(map[string]time.Time),
+		bindingHistory: make([]string, 0, 4),
+		knownPeers:     make(map[string]knownPeer),
+		bindingWait:    make(map[string]chan string),
+		dispatchSem:    make(chan struct{}, 500),
+		dispatchCh:     make(chan any, 1024),
 	}
 	node.natProfile.Store(nat.Profile{Type: nat.TypeUnknown})
 	return node, nil
@@ -538,7 +541,13 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 	}
 	peer := &peerConn{id: peerID, addr: addr, session: session, outbound: outbound}
 	n.peers[peerID] = peer
-	n.knownPeers[peerID] = knownPeer{id: peerID, addr: addr, direct: true, lastSeen: time.Now()}
+	n.knownPeers[peerID] = knownPeer{
+		id:           peerID,
+		addr:         addr,
+		direct:       true,
+		lastSeen:     time.Now(),
+		observations: appendObservation(nil, addr),
+	}
 	n.scoring.Ensure(peerID)
 	n.mu.Unlock()
 	n.sendKnownPeerSnapshot(peer)
@@ -723,10 +732,11 @@ func (n *Node) handlePeerAnnounce(peer *peerConn, env gossip.Envelope) {
 			direct = true
 		}
 		n.knownPeers[env.AdvertisedPeerID] = knownPeer{
-			id:       env.AdvertisedPeerID,
-			addr:     env.AdvertisedAddr,
-			direct:   direct,
-			lastSeen: time.Now(),
+			id:           env.AdvertisedPeerID,
+			addr:         env.AdvertisedAddr,
+			direct:       direct,
+			lastSeen:     time.Now(),
+			observations: appendObservation(current.observations, env.AdvertisedAddr),
 		}
 		changed = true
 	}
@@ -1482,6 +1492,11 @@ func (n *Node) refreshExternalAddress(deadline time.Time) bool {
 		}
 		observed = n.normalizeObservedAddress(observed)
 		profile := n.profiler.WithExternalAddress(n.natProfile.Load().(nat.Profile), observed)
+		n.mu.Lock()
+		n.bindingHistory = appendObservation(n.bindingHistory, observed)
+		bindingHistory := append([]string(nil), n.bindingHistory...)
+		n.mu.Unlock()
+		profile = n.profiler.WithBindingObservations(profile, bindingHistory)
 		n.natProfile.Store(profile)
 		updated = true
 	}
@@ -1577,7 +1592,18 @@ func (n *Node) tryHolePunchDial(targetPeerID, addr string) {
 	if addr == "" || n.directPeerConnected(targetPeerID) {
 		return
 	}
-	plan := nat.Coordinator{Attempts: max(1, n.config.NAT.HolePunchAttempts)}.Plan(n.advertisedListenAddr(), addr)
+	n.mu.RLock()
+	localHistory := append([]string(nil), n.bindingHistory...)
+	targetInfo := n.knownPeers[targetPeerID]
+	remoteHistory := append([]string(nil), targetInfo.observations...)
+	enablePrediction := n.config.NAT.PortPredictionEnabled
+	n.mu.RUnlock()
+	plan := nat.Coordinator{
+		Attempts:           max(1, n.config.NAT.HolePunchAttempts),
+		EnablePrediction:   enablePrediction,
+		LocalObservations:  localHistory,
+		RemoteObservations: remoteHistory,
+	}.Plan(n.advertisedListenAddr(), addr)
 	for _, pair := range plan {
 		if n.directPeerConnected(targetPeerID) {
 			return
@@ -1626,10 +1652,11 @@ func (n *Node) updateKnownPeer(peerID, addr string, direct bool) {
 		direct = true
 	}
 	n.knownPeers[peerID] = knownPeer{
-		id:       peerID,
-		addr:     addr,
-		direct:   direct,
-		lastSeen: time.Now(),
+		id:           peerID,
+		addr:         addr,
+		direct:       direct,
+		lastSeen:     time.Now(),
+		observations: appendObservation(current.observations, addr),
 	}
 }
 
@@ -1710,6 +1737,20 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func appendObservation(history []string, addr string) []string {
+	if addr == "" {
+		return history
+	}
+	if len(history) > 0 && history[len(history)-1] == addr {
+		return history
+	}
+	history = append(history, addr)
+	if len(history) > 4 {
+		history = append([]string(nil), history[len(history)-4:]...)
+	}
+	return history
 }
 
 func withTimeout(ctx context.Context, timeout time.Duration) context.Context {

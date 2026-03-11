@@ -3,6 +3,7 @@ package nat
 import (
 	"net"
 	"net/netip"
+	"strconv"
 )
 
 type Type string
@@ -75,9 +76,44 @@ func (p *Profiler) WithExternalAddress(profile Profile, externalAddr string) Pro
 	return profile
 }
 
+func (p *Profiler) WithBindingObservations(profile Profile, observations []string) Profile {
+	ports := bindingPorts(observations)
+	if len(ports) < 2 {
+		return profile
+	}
+	first := ports[0]
+	for _, port := range ports[1:] {
+		if port != first {
+			profile.Type = TypeSymmetric
+			profile.PublicReachable = false
+			return profile
+		}
+	}
+	if profile.Type == TypeFullCone || profile.Type == TypeUnknown {
+		profile.Type = TypePortRestricted
+	}
+	return profile
+}
+
 func isCarrierGrade(addr netip.Addr) bool {
 	if !addr.Is4() {
 		return false
 	}
 	return netip.MustParsePrefix("100.64.0.0/10").Contains(addr)
+}
+
+func bindingPorts(observations []string) []int {
+	out := make([]int, 0, len(observations))
+	for _, observed := range observations {
+		_, port, err := net.SplitHostPort(observed)
+		if err != nil {
+			continue
+		}
+		value, err := strconv.Atoi(port)
+		if err != nil {
+			continue
+		}
+		out = append(out, value)
+	}
+	return out
 }

@@ -36,3 +36,32 @@ func TestProfilerWithExternalAddressMarksProfileReachable(t *testing.T) {
 		t.Fatalf("unexpected mapped type %q", mapped.Type)
 	}
 }
+
+func TestProfilerWithBindingObservationsDetectsSymmetricNAT(t *testing.T) {
+	profiler := NewProfiler()
+	base := profiler.Detect("10.0.0.5:4040")
+	profile := profiler.WithBindingObservations(base, []string{
+		"198.51.100.10:50000",
+		"198.51.100.10:50004",
+		"198.51.100.10:50008",
+	})
+	if profile.Type != TypeSymmetric {
+		t.Fatalf("unexpected profile type %q", profile.Type)
+	}
+	if profile.PublicReachable {
+		t.Fatal("symmetric NAT should not be marked public reachable")
+	}
+}
+
+func TestProfilerWithBindingObservationsDetectsStableRestrictedProfile(t *testing.T) {
+	profiler := NewProfiler()
+	base := profiler.Detect("10.0.0.5:4040")
+	profile := profiler.WithBindingObservations(base, []string{
+		"198.51.100.10:50000",
+		"198.51.100.10:50000",
+		"198.51.100.10:50000",
+	})
+	if profile.Type != TypePortRestricted {
+		t.Fatalf("unexpected profile type %q", profile.Type)
+	}
+}
