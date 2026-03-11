@@ -544,6 +544,102 @@ func TestRelaySessionAutoPromotesToDirectConnection(t *testing.T) {
 	waitForRelayRouteClosed(t, relayNode, sessionID)
 }
 
+func TestOpportunisticGraftingPrefersHighScoringNonMeshPeer(t *testing.T) {
+	cfgA := DefaultConfig()
+	cfgA.Trackers = nil
+	cfgA.GossipSub.HeartbeatMS = 50
+	cfgA.GossipSub.D = 2
+	cfgA.GossipSub.DLo = 2
+	cfgA.GossipSub.DHigh = 2
+	cfgA.GossipSub.DLazy = 1
+	nodeA, err := NewNode("mesh-graft", nil, cfgA)
+	if err != nil {
+		t.Fatalf("NewNode nodeA failed: %v", err)
+	}
+	if code := nodeA.Start(); code != MOSS_OK {
+		t.Fatalf("nodeA.Start failed: %d", code)
+	}
+	defer nodeA.Stop()
+
+	makePeer := func() *Node {
+		cfg := DefaultConfig()
+		cfg.Trackers = nil
+		cfg.GossipSub.HeartbeatMS = 50
+		cfg.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(nodeA.ListenPort()))}
+		node, err := NewNode("mesh-graft", nil, cfg)
+		if err != nil {
+			t.Fatalf("NewNode peer failed: %v", err)
+		}
+		if code := node.Start(); code != MOSS_OK {
+			t.Fatalf("peer.Start failed: %d", code)
+		}
+		return node
+	}
+
+	nodeB := makePeer()
+	defer nodeB.Stop()
+	nodeC := makePeer()
+	defer nodeC.Stop()
+	nodeD := makePeer()
+	defer nodeD.Stop()
+
+	waitForPeerCount(t, nodeA, 3)
+	if code := nodeA.Subscribe("alpha"); code != MOSS_OK {
+		t.Fatalf("nodeA.Subscribe failed: %d", code)
+	}
+	for _, node := range []*Node{nodeB, nodeC, nodeD} {
+		if code := node.Subscribe("alpha"); code != MOSS_OK {
+			t.Fatalf("peer.Subscribe failed: %d", code)
+		}
+	}
+	waitForMeshCount(t, nodeA, "alpha", 2)
+
+	meshPeers := nodeA.pubsub.MeshPeers("alpha")
+	meshSet := make(map[string]struct{}, len(meshPeers))
+	for _, peerID := range meshPeers {
+		meshSet[peerID] = struct{}{}
+	}
+	pubB := nodeB.PublicKey()
+	pubC := nodeC.PublicKey()
+	pubD := nodeD.PublicKey()
+	peerIDs := []string{
+		hex.EncodeToString(pubB[:]),
+		hex.EncodeToString(pubC[:]),
+		hex.EncodeToString(pubD[:]),
+	}
+	nonMeshPeer := ""
+	for _, peerID := range peerIDs {
+		if _, ok := meshSet[peerID]; !ok {
+			nonMeshPeer = peerID
+			break
+		}
+	}
+	if nonMeshPeer == "" {
+		t.Fatal("expected one non-mesh peer")
+	}
+	for _, peerID := range meshPeers {
+		nodeA.scoring.SetApplicationScore(peerID, -2)
+	}
+	nodeA.scoring.SetApplicationScore(nonMeshPeer, 3)
+
+	nodeA.maintainTopicMesh("alpha")
+
+	updatedMesh := nodeA.pubsub.MeshPeers("alpha")
+	if len(updatedMesh) != 2 {
+		t.Fatalf("expected mesh size 2 after opportunistic graft, got %d", len(updatedMesh))
+	}
+	found := false
+	for _, peerID := range updatedMesh {
+		if peerID == nonMeshPeer {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected high-scoring non-mesh peer %s to join mesh, got %v", nonMeshPeer, updatedMesh)
+	}
+}
+
 func waitForPeerCount(t *testing.T, node *Node, want int) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
@@ -557,6 +653,18 @@ func waitForPeerCount(t *testing.T, node *Node, want int) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("peer count did not reach %d; info=%s", want, node.MeshInfoJSON())
+}
+
+func waitForMeshCount(t *testing.T, node *Node, channel string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(node.pubsub.MeshPeers(channel)) == want {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("mesh size did not reach %d for channel %s", want, channel)
 }
 
 func waitForKnownPeer(t *testing.T, node *Node, wantPeerID string) {
