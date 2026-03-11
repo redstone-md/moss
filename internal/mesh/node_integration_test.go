@@ -531,6 +531,53 @@ func TestPeerAnnouncementsPopulateKnownPeerDirectory(t *testing.T) {
 	waitForKnownPeer(t, nodeA, hex.EncodeToString(targetPub[:]))
 }
 
+func TestDiscoveredPeersAutoConnectIntoOverlay(t *testing.T) {
+	cfgB := DefaultConfig()
+	cfgB.Trackers = nil
+	cfgB.GossipSub.HeartbeatMS = 50
+	nodeB, err := NewNode("mesh-overlay", nil, cfgB)
+	if err != nil {
+		t.Fatalf("NewNode nodeB failed: %v", err)
+	}
+	if code := nodeB.Start(); code != MOSS_OK {
+		t.Fatalf("nodeB.Start failed: %d", code)
+	}
+	defer nodeB.Stop()
+
+	makeLeaf := func(port int) *Node {
+		cfg := DefaultConfig()
+		cfg.Trackers = nil
+		cfg.GossipSub.HeartbeatMS = 50
+		cfg.Security.HandshakeTimeoutSec = 1
+		cfg.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(nodeB.ListenPort()))}
+		node, err := NewNode("mesh-overlay", nil, cfg)
+		if err != nil {
+			t.Fatalf("NewNode leaf failed: %v", err)
+		}
+		if code := node.Start(); code != MOSS_OK {
+			t.Fatalf("leaf.Start failed: %d", code)
+		}
+		return node
+	}
+
+	nodeA := makeLeaf(0)
+	defer nodeA.Stop()
+	nodeC := makeLeaf(0)
+	defer nodeC.Stop()
+
+	waitForPeerCount(t, nodeB, 2)
+	waitForPeerCount(t, nodeA, 1)
+	waitForPeerCount(t, nodeC, 1)
+
+	targetPub := nodeC.PublicKey()
+	targetID := hex.EncodeToString(targetPub[:])
+	waitForKnownPeer(t, nodeA, targetID)
+	waitForDirectPeer(t, nodeA, targetID)
+
+	sourcePub := nodeA.PublicKey()
+	waitForDirectPeer(t, nodeC, hex.EncodeToString(sourcePub[:]))
+}
+
 func TestRelaySendToFallsBackAfterDirectDialFailure(t *testing.T) {
 	cfgRelay := DefaultConfig()
 	cfgRelay.Trackers = nil

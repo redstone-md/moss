@@ -59,6 +59,7 @@ type Node struct {
 	relayLocals      map[string]relayLocalSession
 	relayBuckets     map[string]*nat.TokenBucket
 	directProbes     map[string]time.Time
+	peerDials        map[string]time.Time
 	bindingHistory   []string
 	knownPeers       map[string]knownPeer
 	bindingWait      map[string]chan string
@@ -171,6 +172,7 @@ func NewNodeWithIdentity(meshID string, psk []byte, cfg Config, identity *mcrypt
 		relayLocals:      make(map[string]relayLocalSession),
 		relayBuckets:     make(map[string]*nat.TokenBucket),
 		directProbes:     make(map[string]time.Time),
+		peerDials:        make(map[string]time.Time),
 		bindingHistory:   make([]string, 0, 4),
 		knownPeers:       make(map[string]knownPeer),
 		bindingWait:      make(map[string]chan string),
@@ -615,6 +617,7 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 	go n.refreshExternalAddress(time.Now().Add(n.config.HandshakeTimeout()))
 	n.mu.Lock()
 	delete(n.directProbes, peerID)
+	delete(n.peerDials, peerID)
 	n.mu.Unlock()
 	n.migrateRelaySessions(peerID)
 	for _, channel := range n.pubsub.SnapshotLocal() {
@@ -1094,6 +1097,7 @@ func (n *Node) removePeer(peerID string) {
 	delete(n.suppress, peerID)
 	delete(n.relayBuckets, peerID)
 	delete(n.directProbes, peerID)
+	delete(n.peerDials, peerID)
 	if info, ok := n.knownPeers[peerID]; ok {
 		info.direct = false
 		info.lastSeen = time.Now()
@@ -1118,6 +1122,7 @@ func (n *Node) maintenanceLoop(ctx context.Context) {
 			atomic.AddUint64(&n.heartbeat, 1)
 			n.scoring.Tick()
 			n.pruneLowScoringPeers()
+			n.connectKnownPeers()
 			n.promoteRelayPeers()
 			for _, channel := range n.pubsub.SnapshotLocal() {
 				n.maintainTopicMesh(channel)
@@ -1244,6 +1249,98 @@ func (n *Node) refreshSupernodeStatus() {
 func (n *Node) enqueueEvent(eventType int32, detail any) {
 	raw, _ := json.Marshal(detail)
 	n.dispatchCh <- dispatchEvent{eventType: eventType, detail: string(raw)}
+}
+
+func (n *Node) connectKnownPeers() {
+	candidates := n.discoveredPeerTargets()
+	for _, candidate := range candidates {
+		go n.dialKnownPeer(candidate.peerID, candidate.addr)
+	}
+}
+
+type discoveredPeerTarget struct {
+	peerID string
+	addr   string
+	info   knownPeer
+}
+
+func (n *Node) discoveredPeerTargets() []discoveredPeerTarget {
+	now := time.Now()
+	cooldown := n.config.HandshakeTimeout()
+	if cooldown < n.config.Heartbeat() {
+		cooldown = n.config.Heartbeat()
+	}
+	if cooldown <= 0 {
+		cooldown = time.Second
+	}
+
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if len(n.peers) >= n.config.MaxPeers {
+		return nil
+	}
+
+	targets := make([]discoveredPeerTarget, 0, len(n.knownPeers))
+	for peerID, info := range n.knownPeers {
+		if peerID == n.localPeerID() || info.addr == "" {
+			continue
+		}
+		if _, connected := n.peers[peerID]; connected {
+			continue
+		}
+		lastDial := n.peerDials[peerID]
+		if !lastDial.IsZero() && now.Sub(lastDial) < cooldown {
+			continue
+		}
+		targets = append(targets, discoveredPeerTarget{
+			peerID: peerID,
+			addr:   info.addr,
+			info:   info,
+		})
+	}
+
+	sort.Slice(targets, func(i, j int) bool {
+		rankI := relayCandidateRank(targets[i].info)
+		rankJ := relayCandidateRank(targets[j].info)
+		if rankI != rankJ {
+			return rankI > rankJ
+		}
+		scoreI := n.peerScore(targets[i].peerID)
+		scoreJ := n.peerScore(targets[j].peerID)
+		if scoreI != scoreJ {
+			return scoreI > scoreJ
+		}
+		if !targets[i].info.lastSeen.Equal(targets[j].info.lastSeen) {
+			return targets[i].info.lastSeen.After(targets[j].info.lastSeen)
+		}
+		return targets[i].peerID < targets[j].peerID
+	})
+
+	limit := n.config.GossipSub.DOut
+	if limit <= 0 {
+		limit = 2
+	}
+	available := n.config.MaxPeers - len(n.peers)
+	if available < limit {
+		limit = available
+	}
+	if len(targets) < limit {
+		limit = len(targets)
+	}
+	selected := append([]discoveredPeerTarget(nil), targets[:limit]...)
+	for _, target := range selected {
+		n.peerDials[target.peerID] = now
+	}
+	return selected
+}
+
+func (n *Node) dialKnownPeer(peerID, addr string) {
+	ctx, cancel := context.WithTimeout(context.Background(), n.config.HandshakeTimeout())
+	defer cancel()
+	n.connectPeer(ctx, addr)
+	n.mu.Lock()
+	delete(n.peerDials, peerID)
+	n.mu.Unlock()
 }
 
 func (n *Node) rememberSuppression(peerID string, ids []string, fallback string) {
