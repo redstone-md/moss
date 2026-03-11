@@ -14,6 +14,17 @@ var defaultTrackers = []string{
 	"http://tracker.opentrackr.org:1337/announce",
 }
 
+var defaultSTUNServers = []string{
+	"stun.l.google.com:19302",
+	"stun1.l.google.com:19302",
+	"stun2.l.google.com:19302",
+	"stun3.l.google.com:19302",
+	"stun4.l.google.com:19302",
+	"stun.cloudflare.com:3478",
+	"stun.f.haeder.net:3478",
+	"freestun.net:3478",
+}
+
 type Config struct {
 	Trackers            []string        `json:"trackers"`
 	AnnounceIntervalSec int             `json:"announce_interval_sec"`

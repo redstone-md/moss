@@ -9,8 +9,10 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"net/url"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -2326,11 +2328,19 @@ func (n *Node) shouldAdvertiseLoopback() bool {
 }
 
 func bestLocalAdvertiseHost() (string, bool) {
-	addrs, err := net.InterfaceAddrs()
+	ifaces, err := net.Interfaces()
 	if err != nil {
-		return "", false
+		addrs, err := net.InterfaceAddrs()
+		if err != nil {
+			return "", false
+		}
+		best, ok := selectAdvertiseHost(addrs)
+		if !ok {
+			return "", false
+		}
+		return best.String(), true
 	}
-	best, ok := selectAdvertiseHost(addrs)
+	best, ok := selectAdvertiseHostForInterfaces(ifaces)
 	if !ok {
 		return "", false
 	}
@@ -2383,6 +2393,27 @@ func selectAdvertiseHost(addrs []net.Addr) (netip.Addr, bool) {
 	}
 }
 
+func selectAdvertiseHostForInterfaces(ifaces []net.Interface) (netip.Addr, bool) {
+	return selectAdvertiseHostForInterfacesFunc(ifaces, func(iface net.Interface) ([]net.Addr, error) {
+		return iface.Addrs()
+	})
+}
+
+func selectAdvertiseHostForInterfacesFunc(ifaces []net.Interface, addrFn func(net.Interface) ([]net.Addr, error)) (netip.Addr, bool) {
+	addrs := make([]net.Addr, 0, len(ifaces)*2)
+	for _, iface := range ifaces {
+		if !eligibleLocalInterface(iface) {
+			continue
+		}
+		ifaceAddrs, err := addrFn(iface)
+		if err != nil {
+			continue
+		}
+		addrs = append(addrs, ifaceAddrs...)
+	}
+	return selectAdvertiseHost(addrs)
+}
+
 func addrToNetip(addr net.Addr) (netip.Addr, bool) {
 	switch value := addr.(type) {
 	case *net.IPNet:
@@ -2401,6 +2432,41 @@ func addrToNetip(addr net.Addr) (netip.Addr, bool) {
 			return ip.Unmap(), true
 		}
 		return prefix.Addr().Unmap(), true
+	}
+}
+
+func eligibleLocalInterface(iface net.Interface) bool {
+	if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagPointToPoint != 0 {
+		return false
+	}
+	return !isVirtualOverlayInterfaceName(iface.Name)
+}
+
+func isVirtualOverlayInterfaceName(name string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	switch {
+	case normalized == "":
+		return false
+	case strings.Contains(normalized, "zerotier"):
+		return true
+	case strings.Contains(normalized, "tailscale"):
+		return true
+	case strings.Contains(normalized, "wireguard"):
+		return true
+	case strings.Contains(normalized, "wintun"):
+		return true
+	case strings.Contains(normalized, "hamachi"):
+		return true
+	case strings.HasPrefix(normalized, "utun"):
+		return true
+	case strings.HasPrefix(normalized, "wg"):
+		return true
+	case strings.HasPrefix(normalized, "tun"):
+		return true
+	case strings.HasPrefix(normalized, "tap"):
+		return true
+	default:
+		return false
 	}
 }
 
@@ -2600,10 +2666,15 @@ func (n *Node) refreshExternalAddress(deadline time.Time) bool {
 		peerIDs = append(peerIDs, peerID)
 	}
 	n.mu.RUnlock()
-	if len(peerIDs) == 0 {
-		return false
-	}
 	updated := false
+	if len(peerIDs) == 0 {
+		if remaining := time.Until(deadline); remaining > 0 {
+			if observed, ok := n.requestSTUNBindingObservation(minDuration(remaining, n.config.HandshakeTimeout())); ok {
+				updated = n.applyExternalObservation(observed, deadline) || updated
+			}
+		}
+		return updated
+	}
 	for _, peerID := range peerIDs {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
@@ -2616,23 +2687,89 @@ func (n *Node) refreshExternalAddress(deadline time.Time) bool {
 		if !ok {
 			continue
 		}
-		previous := n.natProfile.Load().(nat.Profile)
-		profile := n.profiler.WithExternalAddress(previous, observed)
-		n.mu.Lock()
-		n.bindingHistory = appendObservation(n.bindingHistory, observed)
-		bindingHistory := append([]string(nil), n.bindingHistory...)
-		n.mu.Unlock()
-		profile = n.profiler.WithBindingObservations(profile, bindingHistory)
-		if requiresReachabilityConfirmation(observed) {
-			profile = n.profiler.WithReachability(profile, n.confirmReachability(observed, deadline))
+		updated = n.applyExternalObservation(observed, deadline) || updated
+	}
+	if !updated {
+		if remaining := time.Until(deadline); remaining > 0 {
+			if observed, ok := n.requestSTUNBindingObservation(minDuration(remaining, n.config.HandshakeTimeout()/2)); ok {
+				updated = n.applyExternalObservation(observed, deadline) || updated
+			}
 		}
-		n.natProfile.Store(profile)
-		if profile.ExternalAddress != previous.ExternalAddress || profile.Type != previous.Type || profile.PublicReachable != previous.PublicReachable {
-			n.broadcastPeerAnnouncement(n.localKnownPeer(), "")
-		}
-		updated = true
 	}
 	return updated
+}
+
+func (n *Node) requestSTUNBindingObservation(timeout time.Duration) (string, bool) {
+	if n.udpListener == nil || timeout <= 0 || !n.shouldUseSTUNBootstrap() {
+		return "", false
+	}
+	deadline := time.Now().Add(timeout)
+	for _, server := range defaultSTUNServers {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), minDuration(remaining, 1500*time.Millisecond))
+		observed, err := n.udpListener.ObserveSTUNContext(ctx, server)
+		cancel()
+		if err == nil && observed != "" {
+			return observed, true
+		}
+	}
+	return "", false
+}
+
+func (n *Node) shouldUseSTUNBootstrap() bool {
+	for _, tracker := range n.config.Trackers {
+		if trackerUsesPublicBootstrap(tracker) {
+			return true
+		}
+	}
+	for _, peer := range n.config.StaticPeers {
+		host, _, err := net.SplitHostPort(peer)
+		if err == nil && !isLoopbackHost(host) {
+			return true
+		}
+	}
+	return false
+}
+
+func trackerUsesPublicBootstrap(tracker string) bool {
+	u, err := url.Parse(tracker)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+	if host == "" || strings.EqualFold(host, "localhost") {
+		return false
+	}
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
+		return true
+	}
+	ip = ip.Unmap()
+	return ip.IsGlobalUnicast() && !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() && !isCarrierGradeAddr(ip)
+}
+
+func (n *Node) applyExternalObservation(observed string, deadline time.Time) bool {
+	if observed == "" {
+		return false
+	}
+	previous := n.natProfile.Load().(nat.Profile)
+	profile := n.profiler.WithExternalAddress(previous, observed)
+	n.mu.Lock()
+	n.bindingHistory = appendObservation(n.bindingHistory, observed)
+	bindingHistory := append([]string(nil), n.bindingHistory...)
+	n.mu.Unlock()
+	profile = n.profiler.WithBindingObservations(profile, bindingHistory)
+	if requiresReachabilityConfirmation(observed) {
+		profile = n.profiler.WithReachability(profile, n.confirmReachability(observed, deadline))
+	}
+	n.natProfile.Store(profile)
+	if profile.ExternalAddress != previous.ExternalAddress || profile.Type != previous.Type || profile.PublicReachable != previous.PublicReachable {
+		n.broadcastPeerAnnouncement(n.localKnownPeer(), "")
+	}
+	return true
 }
 
 func (n *Node) requestUDPBindingObservation(peerID string, timeout time.Duration) (string, bool) {
@@ -3179,6 +3316,9 @@ func decodePeerID(peerID string) [32]byte {
 }
 
 func (n *Node) probePortMapping(ctx context.Context, listenAddr string, port int) {
+	if observed, ok := n.requestSTUNBindingObservation(3 * time.Second); ok {
+		_ = n.applyExternalObservation(observed, time.Now().Add(n.config.HandshakeTimeout()))
+	}
 	mapper := nat.NewPortMapper(nat.MappingOptions{
 		EnableUPnP:   n.config.NAT.UPnPEnabled,
 		EnableNATPMP: n.config.NAT.NATPMPEnabled,
@@ -3187,6 +3327,14 @@ func (n *Node) probePortMapping(ctx context.Context, listenAddr string, port int
 		Lifetime:     30 * time.Minute,
 	})
 	mappedAddr, ok := mapper.Map(port)
+	if ok {
+		_ = n.applyExternalObservation(mappedAddr, time.Now().Add(n.config.HandshakeTimeout()))
+	} else {
+		if observed, observedOK := n.requestSTUNBindingObservation(3 * time.Second); observedOK {
+			mappedAddr = observed
+			ok = true
+		}
+	}
 	select {
 	case <-ctx.Done():
 		mapper.Close()

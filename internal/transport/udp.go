@@ -1,16 +1,18 @@
 package transport
 
 import (
-	"crypto/rand"
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/flynn/noise"
+	"github.com/pion/stun/v2"
 )
 
 const (
@@ -36,6 +38,7 @@ type UDPListener struct {
 	clients  map[string]*udpClientHandshake
 	servers  map[string]*udpServerHandshake
 	observes map[string]chan string
+	stunTx   map[string]chan string
 	closeErr error
 }
 
@@ -77,6 +80,7 @@ func ListenUDP(port int, cfg HandshakeConfig) (*UDPListener, int, error) {
 		clients:  make(map[string]*udpClientHandshake),
 		servers:  make(map[string]*udpServerHandshake),
 		observes: make(map[string]chan string),
+		stunTx:   make(map[string]chan string),
 	}
 	go listener.readLoop()
 	return listener, conn.LocalAddr().(*net.UDPAddr).Port, nil
@@ -215,6 +219,47 @@ func (l *UDPListener) ObserveContext(ctx context.Context, addr string) (string, 
 	}
 }
 
+func (l *UDPListener) ObserveSTUNContext(ctx context.Context, addr string) (string, error) {
+	remote, err := net.ResolveUDPAddr("udp", addr)
+	if err != nil {
+		return "", err
+	}
+	request := stun.MustBuild(stun.TransactionID, stun.BindingRequest, stun.Fingerprint)
+	txID := string(request.TransactionID[:])
+	wait := make(chan string, 1)
+	l.mu.Lock()
+	l.stunTx[txID] = wait
+	l.mu.Unlock()
+	defer func() {
+		l.mu.Lock()
+		delete(l.stunTx, txID)
+		l.mu.Unlock()
+	}()
+
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	if err := l.writeRawDatagram(remote, request.Raw); err != nil {
+		return "", err
+	}
+	for {
+		select {
+		case observed := <-wait:
+			if observed == "" {
+				return "", errors.New("stun observe failed")
+			}
+			return observed, nil
+		case <-ticker.C:
+			if err := l.writeRawDatagram(remote, request.Raw); err != nil {
+				return "", err
+			}
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-l.closed:
+			return "", io.EOF
+		}
+	}
+}
+
 func (l *UDPListener) Close() error {
 	l.once.Do(func() {
 		l.mu.Lock()
@@ -235,6 +280,13 @@ func (l *UDPListener) Close() error {
 			}
 		}
 		l.observes = make(map[string]chan string)
+		for _, wait := range l.stunTx {
+			select {
+			case wait <- "":
+			default:
+			}
+		}
+		l.stunTx = make(map[string]chan string)
 		close(l.closed)
 		close(l.acceptC)
 		l.mu.Unlock()
@@ -255,8 +307,12 @@ func (l *UDPListener) readLoop() {
 		if n < 1 {
 			continue
 		}
-		payload := append([]byte(nil), buf[1:n]...)
-		switch buf[0] {
+		packet := append([]byte(nil), buf[:n]...)
+		if l.handleSTUNResponse(packet) {
+			continue
+		}
+		payload := packet[1:]
+		switch packet[0] {
 		case udpMessageHandshakeInit:
 			l.handleHandshakeInit(remote, payload)
 		case udpMessageHandshakeResp:
@@ -448,6 +504,40 @@ func (l *UDPListener) handleObserveResp(payload []byte) {
 	}
 }
 
+func (l *UDPListener) handleSTUNResponse(packet []byte) bool {
+	if !stun.IsMessage(packet) {
+		return false
+	}
+	msg := &stun.Message{Raw: append([]byte(nil), packet...)}
+	if err := msg.Decode(); err != nil {
+		return false
+	}
+	if msg.Type.Class != stun.ClassSuccessResponse {
+		return false
+	}
+	txID := string(msg.TransactionID[:])
+	l.mu.Lock()
+	wait := l.stunTx[txID]
+	l.mu.Unlock()
+	if wait == nil {
+		return false
+	}
+	var xorAddr stun.XORMappedAddress
+	if err := xorAddr.GetFrom(msg); err != nil {
+		select {
+		case wait <- "":
+		default:
+		}
+		return true
+	}
+	observed := net.JoinHostPort(xorAddr.IP.String(), strconv.Itoa(xorAddr.Port))
+	select {
+	case wait <- observed:
+	default:
+	}
+	return true
+}
+
 func (l *UDPListener) establishSession(remote *net.UDPAddr, sendCipher, recvCipher *noise.CipherState, remoteID, remoteKey [32]byte, mode byte) (*Session, error) {
 	key := remote.String()
 	l.mu.Lock()
@@ -478,6 +568,10 @@ func (l *UDPListener) writeDatagram(remote *net.UDPAddr, kind byte, payload []by
 	packet := make([]byte, 1+len(payload))
 	packet[0] = kind
 	copy(packet[1:], payload)
+	return l.writeRawDatagram(remote, packet)
+}
+
+func (l *UDPListener) writeRawDatagram(remote *net.UDPAddr, packet []byte) error {
 	_, err := l.conn.WriteToUDP(packet, remote)
 	return err
 }

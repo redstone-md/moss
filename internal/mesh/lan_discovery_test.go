@@ -1,6 +1,7 @@
 package mesh
 
 import (
+	"encoding/json"
 	"net"
 	"testing"
 
@@ -33,14 +34,43 @@ func TestHandleLANBeaconUpdatesKnownPeerWithSourceIP(t *testing.T) {
 	if info.addr != "192.168.50.20:41030" {
 		t.Fatalf("unexpected known peer addr %q", info.addr)
 	}
-	if !info.direct {
-		t.Fatal("expected LAN-discovered peer to be marked direct")
+	if info.direct {
+		t.Fatal("expected LAN-discovered peer to remain non-direct until handshake succeeds")
 	}
 	if info.natType != nat.TypePortRestricted {
 		t.Fatalf("unexpected nat type %q", info.natType)
 	}
 	if !info.relayCapable {
 		t.Fatal("expected relay-capable metadata to be preserved")
+	}
+}
+
+func TestHandleLANBeaconPrefersAdvertisedExternalAddress(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Trackers = nil
+	node, err := NewNode("mesh-lan-beacon", nil, cfg)
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+
+	node.handleLANBeacon(&net.UDPAddr{IP: net.ParseIP("172.30.1.2"), Port: 44445}, lanBeacon{
+		MeshID:         "mesh-lan-beacon",
+		PeerID:         "peer-1",
+		ListenPort:     41030,
+		AdvertisedAddr: "100.64.74.9:41030",
+	})
+
+	node.mu.RLock()
+	defer node.mu.RUnlock()
+	info, ok := node.knownPeers["peer-1"]
+	if !ok {
+		t.Fatal("expected known peer to be stored")
+	}
+	if info.addr != "100.64.74.9:41030" {
+		t.Fatalf("expected advertised endpoint to be preferred, got %q", info.addr)
+	}
+	if info.lan {
+		t.Fatal("expected LAN marker to be cleared when advertised endpoint wins")
 	}
 }
 
@@ -119,5 +149,50 @@ func TestLANDiscoveryBroadcastCalculation(t *testing.T) {
 	)
 	if got := broadcast.String(); got != "192.168.10.255" {
 		t.Fatalf("unexpected broadcast %q", got)
+	}
+}
+
+func TestLANDiscoveryPayloadUsesAdvertisedAddr(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Trackers = nil
+	node, err := NewNode("mesh-lan-beacon", nil, cfg)
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+	node.listenPort = 41030
+	node.natProfile.Store(nat.Profile{
+		Type:            nat.TypePortRestricted,
+		ExternalAddress: "100.64.74.9:41030",
+		PublicReachable: false,
+	})
+
+	payload, err := node.lanDiscoveryPayload()
+	if err != nil {
+		t.Fatalf("lanDiscoveryPayload failed: %v", err)
+	}
+	var beacon lanBeacon
+	if err := json.Unmarshal(payload, &beacon); err != nil {
+		t.Fatalf("json.Unmarshal failed: %v", err)
+	}
+	if beacon.AdvertisedAddr != "100.64.74.9:41030" {
+		t.Fatalf("expected advertised addr in beacon, got %q", beacon.AdvertisedAddr)
+	}
+}
+
+func TestLANDiscoveryInterfacesSkipVirtualOverlays(t *testing.T) {
+	ifaces := []net.Interface{
+		{Name: "ZeroTier One", Flags: net.FlagUp | net.FlagMulticast},
+		{Name: "Wintun", Flags: net.FlagUp | net.FlagMulticast},
+		{Name: "Wi-Fi", Flags: net.FlagUp | net.FlagMulticast},
+		{Name: "Ethernet", Flags: net.FlagUp},
+		{Name: "Loopback", Flags: net.FlagUp | net.FlagLoopback | net.FlagMulticast},
+	}
+
+	selected := lanDiscoveryInterfacesFrom(ifaces)
+	if len(selected) != 1 {
+		t.Fatalf("expected exactly one LAN discovery interface, got %d", len(selected))
+	}
+	if selected[0].Name != "Wi-Fi" {
+		t.Fatalf("expected Wi-Fi to remain eligible, got %q", selected[0].Name)
 	}
 }
