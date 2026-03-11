@@ -82,6 +82,7 @@ type peerConn struct {
 	lastRTT     time.Duration
 	pingSentAt  time.Time
 	pingPending string
+	pingMisses  int
 }
 
 type dispatchMessage struct {
@@ -123,6 +124,7 @@ type knownPeer struct {
 	id              string
 	addr            string
 	direct          bool
+	lan             bool
 	natType         nat.Type
 	publicReachable bool
 	relayCapable    bool
@@ -220,12 +222,19 @@ func (n *Node) Start() int32 {
 	n.cancel = cancel
 	n.natProfile.Store(n.profiler.Detect(ln.Addr().String()))
 	n.portMapper = nil
-	n.wg.Add(5)
+	wgCount := 5
+	if n.config.LANDiscoveryEnabled {
+		wgCount++
+	}
+	n.wg.Add(wgCount)
 	go n.acceptLoop(ctx)
 	go n.acceptUDPLoop(ctx)
 	go n.dispatchLoop(ctx)
 	go n.bootstrapLoop(ctx)
 	go n.maintenanceLoop(ctx)
+	if n.config.LANDiscoveryEnabled {
+		go n.lanDiscoveryLoop(ctx)
+	}
 	go n.probePortMapping(ctx, ln.Addr().String(), port)
 	return MOSS_OK
 }
@@ -695,6 +704,7 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 		id:              peerID,
 		addr:            addr,
 		direct:          true,
+		lan:             current.lan,
 		natType:         current.natType,
 		publicReachable: current.publicReachable,
 		relayCapable:    current.relayCapable,
@@ -975,6 +985,7 @@ func (n *Node) localKnownPeer() knownPeer {
 		id:              n.localPeerID(),
 		addr:            n.advertisedListenAddr(),
 		direct:          true,
+		lan:             false,
 		natType:         profile.Type,
 		publicReachable: profile.PublicReachable,
 		relayCapable:    n.supernodeReady(profile),
@@ -1013,6 +1024,7 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 			id:              env.AdvertisedPeerID,
 			addr:            env.AdvertisedAddr,
 			direct:          direct,
+			lan:             current.lan,
 			natType:         nat.Type(env.AdvertisedNATType),
 			publicReachable: env.AdvertisedReachable,
 			relayCapable:    env.AdvertisedRelayCapable,
@@ -1392,6 +1404,7 @@ func (n *Node) handlePong(peer *peerConn, env gossip.Envelope) {
 	current.lastRTT = time.Since(current.pingSentAt)
 	current.pingPending = ""
 	current.pingSentAt = time.Time{}
+	current.pingMisses = 0
 }
 
 func (n *Node) probePeerLatency(now time.Time) {
@@ -1427,19 +1440,24 @@ func (n *Node) probePeerLatency(now time.Time) {
 }
 
 func (n *Node) pruneHighLatencyPeers() {
-	n.mu.RLock()
 	now := time.Now()
 	ids := make([]string, 0, len(n.peers))
+	n.mu.Lock()
 	for id, peer := range n.peers {
 		if peer.lastRTT > 2*time.Second {
 			ids = append(ids, id)
 			continue
 		}
 		if peer.pingPending != "" && now.Sub(peer.pingSentAt) > 2*time.Second {
-			ids = append(ids, id)
+			peer.pingPending = ""
+			peer.pingSentAt = time.Time{}
+			peer.pingMisses++
+			if peer.pingMisses >= 3 {
+				ids = append(ids, id)
+			}
 		}
 	}
-	n.mu.RUnlock()
+	n.mu.Unlock()
 	for _, id := range ids {
 		n.mu.RLock()
 		peer := n.peers[id]
@@ -1636,6 +1654,9 @@ func (n *Node) discoveredPeerTargets() []discoveredPeerTarget {
 	targets := make([]discoveredPeerTarget, 0, len(n.knownPeers))
 	for peerID, info := range n.knownPeers {
 		if peerID == n.localPeerID() || info.addr == "" {
+			continue
+		}
+		if info.lan && n.localPeerID() > peerID {
 			continue
 		}
 		if _, connected := n.peers[peerID]; connected {
@@ -2584,6 +2605,7 @@ func (n *Node) updateKnownPeer(peerID, addr string, direct bool) {
 		id:              peerID,
 		addr:            addr,
 		direct:          direct,
+		lan:             current.lan,
 		natType:         current.natType,
 		publicReachable: current.publicReachable,
 		relayCapable:    current.relayCapable,

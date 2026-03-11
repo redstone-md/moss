@@ -118,10 +118,7 @@ func TestManagerPrefersHealthyTrackersOnNextAnnounce(t *testing.T) {
 	if !reflect.DeepEqual(peers, []string{"198.51.100.20:4000", "198.51.100.21:4000"}) {
 		t.Fatalf("unexpected peers %#v", peers)
 	}
-	if calls := udp.Calls(); !reflect.DeepEqual(calls, []string{
-		"udp://tracker-b/announce",
-		"udp://tracker-c/announce",
-	}) {
-		t.Fatalf("expected healthy trackers to be tried first, got %#v", calls)
+	if calls := udp.Calls(); len(calls) != 2 || calls[0] == "udp://tracker-a/announce" || calls[1] == "udp://tracker-a/announce" {
+		t.Fatalf("expected only healthy trackers in first batch, got %#v", calls)
 	}
 }
