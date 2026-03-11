@@ -47,10 +47,16 @@ type managedMapper struct {
 	mappings    map[int]mappedPort
 }
 
+type mappedLease struct {
+	protocol     string
+	externalPort int
+}
+
 type mappedPort struct {
 	router       routerInterface
 	internalPort int
 	externalPort int
+	leases       []mappedLease
 }
 
 func NewPortMapper(opts MappingOptions) PortMapper {
@@ -100,20 +106,38 @@ func (m *managedMapper) Map(port int) (string, bool) {
 		return mappedAddress(existing.router, existing.externalPort)
 	}
 	for _, route := range m.routes {
-		externalPort, err := route.nat.AddMapping("tcp", port, port, m.description, m.lifetime)
-		if err != nil {
-			continue
-		}
-		address, ok := mappedAddress(route.nat, int(externalPort))
-		if !ok {
-			_ = route.nat.DeleteMapping("tcp", int(externalPort), port)
-			continue
-		}
-		m.mappings[port] = mappedPort{
+		mapped := mappedPort{
 			router:       route.nat,
 			internalPort: port,
-			externalPort: int(externalPort),
 		}
+		for _, protocol := range []string{"udp", "tcp"} {
+			requestedPort := port
+			if mapped.externalPort != 0 {
+				requestedPort = mapped.externalPort
+			}
+			externalPort, err := route.nat.AddMapping(protocol, requestedPort, port, m.description, m.lifetime)
+			if err != nil {
+				continue
+			}
+			if mapped.externalPort == 0 {
+				mapped.externalPort = int(externalPort)
+			}
+			mapped.leases = append(mapped.leases, mappedLease{
+				protocol:     protocol,
+				externalPort: int(externalPort),
+			})
+		}
+		if mapped.externalPort == 0 {
+			continue
+		}
+		address, ok := mappedAddress(route.nat, mapped.externalPort)
+		if !ok {
+			for _, lease := range mapped.leases {
+				_ = route.nat.DeleteMapping(lease.protocol, lease.externalPort, port)
+			}
+			continue
+		}
+		m.mappings[port] = mapped
 		return address, true
 	}
 	return "", false
@@ -123,7 +147,9 @@ func (m *managedMapper) Close() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for port, mapped := range m.mappings {
-		_ = mapped.router.DeleteMapping("tcp", mapped.externalPort, mapped.internalPort)
+		for _, lease := range mapped.leases {
+			_ = mapped.router.DeleteMapping(lease.protocol, lease.externalPort, mapped.internalPort)
+		}
 		delete(m.mappings, port)
 	}
 }

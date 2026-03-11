@@ -13,12 +13,14 @@ type fakeRouter struct {
 	externalPort  uint16
 	addCalls      int
 	deleteCalls   int
+	protocols     []string
 	lastDeleteExt int
 	lastDeleteInt int
 }
 
 func (f *fakeRouter) AddMapping(protocol string, extport, intport int, name string, lifetime time.Duration) (uint16, error) {
 	f.addCalls++
+	f.protocols = append(f.protocols, protocol)
 	if f.addErr != nil {
 		return 0, f.addErr
 	}
@@ -59,15 +61,15 @@ func TestManagedMapperFallsBackToNextBackend(t *testing.T) {
 	if addr != "198.51.100.20:41000" {
 		t.Fatalf("unexpected mapped address %q", addr)
 	}
-	if first.addCalls != 1 {
-		t.Fatalf("expected first backend to be tried once, got %d", first.addCalls)
+	if first.addCalls != 2 {
+		t.Fatalf("expected first backend to be tried for udp and tcp, got %d", first.addCalls)
 	}
-	if second.addCalls != 1 {
-		t.Fatalf("expected second backend to be tried once, got %d", second.addCalls)
+	if second.addCalls != 2 {
+		t.Fatalf("expected second backend to map udp and tcp, got %d calls", second.addCalls)
 	}
 	mapper.Close()
-	if second.deleteCalls != 1 || second.lastDeleteExt != 41000 || second.lastDeleteInt != 40000 {
-		t.Fatalf("expected mapping lease to be released, got deleteCalls=%d ext=%d int=%d", second.deleteCalls, second.lastDeleteExt, second.lastDeleteInt)
+	if second.deleteCalls != 2 || second.lastDeleteExt != 41000 || second.lastDeleteInt != 40000 {
+		t.Fatalf("expected both mapping leases to be released, got deleteCalls=%d ext=%d int=%d", second.deleteCalls, second.lastDeleteExt, second.lastDeleteInt)
 	}
 }
 
@@ -85,8 +87,8 @@ func TestManagedMapperCachesActiveMapping(t *testing.T) {
 	if firstAddr != secondAddr {
 		t.Fatalf("expected cached mapping to keep address, got %q and %q", firstAddr, secondAddr)
 	}
-	if router.addCalls != 1 {
-		t.Fatalf("expected single add mapping call, got %d", router.addCalls)
+	if router.addCalls != 2 {
+		t.Fatalf("expected udp and tcp mapping calls, got %d", router.addCalls)
 	}
 	mapper.Close()
 }
