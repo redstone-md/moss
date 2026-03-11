@@ -37,6 +37,7 @@ type Envelope struct {
 	RelayTarget            string       `json:"relay_target,omitempty"`
 	RequestID              string       `json:"request_id,omitempty"`
 	CoordStage             string       `json:"coord_stage,omitempty"`
+	CoordAt                int64        `json:"coord_at,omitempty"`
 	ObservedAddr           string       `json:"observed_addr,omitempty"`
 	AdvertisedPeerID       string       `json:"advertised_peer_id,omitempty"`
 	AdvertisedAddr         string       `json:"advertised_addr,omitempty"`

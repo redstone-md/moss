@@ -198,11 +198,19 @@ func (n *Node) handleLANBeacon(src *net.UDPAddr, beacon lanBeacon) {
 	shouldDial := false
 	n.mu.Lock()
 	current := n.knownPeers[beacon.PeerID]
+	chosenAddr := preferredKnownPeerAddr(current, addr)
+	acceptedLANAddr := chosenAddr == addr
+	direct := current.direct
+	lan := current.lan
+	if acceptedLANAddr {
+		direct = true
+		lan = true
+	}
 	n.knownPeers[beacon.PeerID] = knownPeer{
 		id:              beacon.PeerID,
-		addr:            addr,
-		direct:          true,
-		lan:             true,
+		addr:            chosenAddr,
+		direct:          direct,
+		lan:             lan,
 		natType:         nat.Type(beacon.NATType),
 		publicReachable: beacon.PublicReachable,
 		relayCapable:    beacon.RelayCapable,
@@ -210,7 +218,7 @@ func (n *Node) handleLANBeacon(src *net.UDPAddr, beacon lanBeacon) {
 		observations:    appendObservation(current.observations, addr),
 		noiseStatic:     append([]byte(nil), current.noiseStatic...),
 	}
-	if n.started && len(n.peers) < n.config.MaxPeers {
+	if acceptedLANAddr && n.started && len(n.peers) < n.config.MaxPeers {
 		if _, connected := n.peers[beacon.PeerID]; !connected {
 			cooldown := n.config.HandshakeTimeout()
 			if cooldown < n.config.Heartbeat() {
@@ -228,6 +236,6 @@ func (n *Node) handleLANBeacon(src *net.UDPAddr, beacon lanBeacon) {
 	}
 	n.mu.Unlock()
 	if shouldDial {
-		go n.dialKnownPeer(beacon.PeerID, addr)
+		go n.dialKnownPeer(beacon.PeerID, chosenAddr)
 	}
 }
