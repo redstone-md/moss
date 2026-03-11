@@ -53,6 +53,7 @@ type Node struct {
 	relayRoutes  map[string]relayRoute
 	relayLocals  map[string]relayLocalSession
 	relayBuckets map[string]*nat.TokenBucket
+	knownPeers   map[string]knownPeer
 	messageCB    MessageCallback
 	eventCB      EventCallback
 	relayCB      RelayCallback
@@ -93,6 +94,13 @@ type relayLocalSession struct {
 	remotePeerID string
 	established  bool
 	wait         chan struct{}
+}
+
+type knownPeer struct {
+	id       string
+	addr     string
+	direct   bool
+	lastSeen time.Time
 }
 
 type meshInfo struct {
@@ -140,6 +148,7 @@ func NewNode(meshID string, psk []byte, cfg Config) (*Node, error) {
 		relayRoutes:   make(map[string]relayRoute),
 		relayLocals:   make(map[string]relayLocalSession),
 		relayBuckets:  make(map[string]*nat.TokenBucket),
+		knownPeers:    make(map[string]knownPeer),
 		dispatchSem:   make(chan struct{}, 500),
 		dispatchCh:    make(chan any, 1024),
 	}
@@ -372,6 +381,7 @@ func (n *Node) RelaySendTo(targetPeerID string, data []byte, timeout time.Durati
 		n.mu.RUnlock()
 		return errors.New("target peer is directly connected")
 	}
+	targetInfo, hasKnownPeer := n.knownPeers[targetPeerID]
 	for _, session := range n.relayLocals {
 		if session.remotePeerID == targetPeerID && session.established {
 			n.mu.RUnlock()
@@ -379,6 +389,18 @@ func (n *Node) RelaySendTo(targetPeerID string, data []byte, timeout time.Durati
 		}
 	}
 	n.mu.RUnlock()
+
+	if hasKnownPeer && targetInfo.addr != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		n.connectPeer(ctx, targetInfo.addr)
+		cancel()
+		n.mu.RLock()
+		_, direct := n.peers[targetPeerID]
+		n.mu.RUnlock()
+		if direct {
+			return errors.New("target peer became directly connected; use direct transport")
+		}
+	}
 
 	viaPeerID, err := n.selectRelayPeer(targetPeerID)
 	if err != nil {
@@ -517,8 +539,11 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 	}
 	peer := &peerConn{id: peerID, addr: addr, session: session, outbound: outbound}
 	n.peers[peerID] = peer
+	n.knownPeers[peerID] = knownPeer{id: peerID, addr: addr, direct: true, lastSeen: time.Now()}
 	n.scoring.Ensure(peerID)
 	n.mu.Unlock()
+	n.sendKnownPeerSnapshot(peer)
+	n.broadcastPeerAnnouncement(peerID, addr, peerID)
 	for _, channel := range n.pubsub.SnapshotLocal() {
 		n.maintainTopicMesh(channel)
 	}
@@ -560,6 +585,8 @@ func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 		n.handleIWant(peer, env)
 	case gossip.TypeIDontWant:
 		n.rememberSuppression(peer.id, env.MessageIDs, env.MessageID)
+	case gossip.TypePeerAnnounce:
+		n.handlePeerAnnounce(env)
 	case gossip.TypeRelayRequest:
 		n.handleRelayRequest(peer, env)
 	case gossip.TypeRelayAccept:
@@ -635,6 +662,59 @@ func (n *Node) sendEnvelope(peer *peerConn, env gossip.Envelope) {
 		return
 	}
 	_ = peer.session.WritePacket(payload)
+}
+
+func (n *Node) sendKnownPeerSnapshot(peer *peerConn) {
+	n.sendEnvelope(peer, gossip.Envelope{
+		Type:             gossip.TypePeerAnnounce,
+		AdvertisedPeerID: n.localPeerID(),
+		AdvertisedAddr:   n.advertisedListenAddr(),
+	})
+
+	n.mu.RLock()
+	known := make([]knownPeer, 0, len(n.knownPeers))
+	for _, info := range n.knownPeers {
+		known = append(known, info)
+	}
+	n.mu.RUnlock()
+	for _, info := range known {
+		if info.id == peer.id || info.addr == "" {
+			continue
+		}
+		n.sendEnvelope(peer, gossip.Envelope{
+			Type:             gossip.TypePeerAnnounce,
+			AdvertisedPeerID: info.id,
+			AdvertisedAddr:   info.addr,
+		})
+	}
+}
+
+func (n *Node) broadcastPeerAnnouncement(peerID, addr, excludePeerID string) {
+	if peerID == "" || addr == "" {
+		return
+	}
+	n.broadcastToAll(gossip.Envelope{
+		Type:             gossip.TypePeerAnnounce,
+		AdvertisedPeerID: peerID,
+		AdvertisedAddr:   addr,
+	}, excludePeerID)
+}
+
+func (n *Node) handlePeerAnnounce(env gossip.Envelope) {
+	if env.AdvertisedPeerID == "" || env.AdvertisedAddr == "" || env.AdvertisedPeerID == n.localPeerID() {
+		return
+	}
+	n.mu.Lock()
+	current, ok := n.knownPeers[env.AdvertisedPeerID]
+	if !ok || (!current.direct && current.addr != env.AdvertisedAddr) {
+		n.knownPeers[env.AdvertisedPeerID] = knownPeer{
+			id:       env.AdvertisedPeerID,
+			addr:     env.AdvertisedAddr,
+			direct:   false,
+			lastSeen: time.Now(),
+		}
+	}
+	n.mu.Unlock()
 }
 
 func (n *Node) sendRecentIHave(peer *peerConn, channel string) {
@@ -755,6 +835,11 @@ func (n *Node) removePeer(peerID string) {
 	}
 	delete(n.suppress, peerID)
 	delete(n.relayBuckets, peerID)
+	if info, ok := n.knownPeers[peerID]; ok {
+		info.direct = false
+		info.lastSeen = time.Now()
+		n.knownPeers[peerID] = info
+	}
 	n.mu.Unlock()
 	n.pubsub.RemovePeer(peerID)
 	if peer != nil {
@@ -1153,6 +1238,17 @@ func newRelaySessionID() (string, error) {
 func (n *Node) localPeerID() string {
 	pub := n.identity.PublicKey()
 	return hex.EncodeToString(pub[:])
+}
+
+func (n *Node) advertisedListenAddr() string {
+	profile := n.natProfile.Load().(nat.Profile)
+	if profile.ExternalAddress != "" {
+		host, port, err := net.SplitHostPort(profile.ExternalAddress)
+		if err == nil && host != "" && host != "::" && host != "[::]" {
+			return net.JoinHostPort(host, port)
+		}
+	}
+	return net.JoinHostPort("127.0.0.1", strconv.Itoa(n.listenPort))
 }
 
 func (n *Node) relayBucketFor(peerID string) *nat.TokenBucket {
