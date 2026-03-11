@@ -61,6 +61,7 @@ type Node struct {
 	directProbes     map[string]time.Time
 	peerDials        map[string]time.Time
 	meshDeliveries   map[string]*meshDeliveryObservation
+	overloadedUntil  time.Time
 	bindingHistory   []string
 	knownPeers       map[string]knownPeer
 	bindingWait      map[string]chan string
@@ -1446,6 +1447,12 @@ func (n *Node) makePublishEnvelope(channel string, data []byte) gossip.Envelope 
 }
 
 func (n *Node) supernodeReady(profile nat.Profile) bool {
+	n.mu.RLock()
+	overloaded := time.Now().Before(n.overloadedUntil)
+	n.mu.RUnlock()
+	if overloaded {
+		return false
+	}
 	if n.config.NAT.RelayMaxSessions > 0 && n.relaySessions.Count() >= n.config.NAT.RelayMaxSessions {
 		return false
 	}
@@ -1887,9 +1894,32 @@ func (n *Node) handleRelayData(peer *peerConn, env gossip.Envelope) {
 	}
 	bucket := n.relayBucketFor(peer.id)
 	if !bucket.Allow(len(env.Payload)) {
+		n.markRelayOverloaded(time.Now())
 		return
 	}
 	n.sendEnvelope(targetPeer, env)
+}
+
+func (n *Node) markRelayOverloaded(now time.Time) {
+	cooldown := n.relayOverloadCooldown()
+	if cooldown <= 0 {
+		cooldown = 500 * time.Millisecond
+	}
+	n.mu.Lock()
+	until := now.Add(cooldown)
+	if until.After(n.overloadedUntil) {
+		n.overloadedUntil = until
+	}
+	n.mu.Unlock()
+	n.refreshSupernodeStatus()
+}
+
+func (n *Node) relayOverloadCooldown() time.Duration {
+	cooldown := 2 * n.config.Heartbeat()
+	if cooldown < 500*time.Millisecond {
+		cooldown = 500 * time.Millisecond
+	}
+	return cooldown
 }
 
 func (n *Node) gossipRecentMessages(channel string) {
