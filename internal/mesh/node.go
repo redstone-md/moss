@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"net/netip"
 	"sort"
 	"strconv"
 	"sync"
@@ -47,23 +48,24 @@ type Node struct {
 	seq        uint64
 	heartbeat  uint64
 
-	mu             sync.RWMutex
-	started        bool
-	cancel         context.CancelFunc
-	wg             sync.WaitGroup
-	peers          map[string]*peerConn
-	suppress       map[string]map[string]time.Time
-	relayRoutes    map[string]relayRoute
-	relayLocals    map[string]relayLocalSession
-	relayBuckets   map[string]*nat.TokenBucket
-	directProbes   map[string]time.Time
-	bindingHistory []string
-	knownPeers     map[string]knownPeer
-	bindingWait    map[string]chan string
-	messageCB      MessageCallback
-	eventCB        EventCallback
-	relayCB        RelayCallback
-	dispatchCh     chan any
+	mu               sync.RWMutex
+	started          bool
+	cancel           context.CancelFunc
+	wg               sync.WaitGroup
+	peers            map[string]*peerConn
+	suppress         map[string]map[string]time.Time
+	relayRoutes      map[string]relayRoute
+	relayLocals      map[string]relayLocalSession
+	relayBuckets     map[string]*nat.TokenBucket
+	directProbes     map[string]time.Time
+	bindingHistory   []string
+	knownPeers       map[string]knownPeer
+	bindingWait      map[string]chan string
+	reachabilityWait map[string]chan bool
+	messageCB        MessageCallback
+	eventCB          EventCallback
+	relayCB          RelayCallback
+	dispatchCh       chan any
 }
 
 type peerConn struct {
@@ -141,29 +143,30 @@ func NewNode(meshID string, psk []byte, cfg Config) (*Node, error) {
 		return nil, err
 	}
 	node := &Node{
-		meshID:         meshID,
-		psk:            append([]byte(nil), psk...),
-		config:         cfg,
-		infoHash:       infoHash,
-		peerID:         peerID,
-		identity:       identity,
-		tracker:        bootstrap.NewManager(time.Duration(cfg.BootstrapTimeoutSec) * time.Second),
-		pubsub:         gossip.NewManager(),
-		cache:          gossip.NewCache(2 * time.Minute),
-		scoring:        gossip.NewEngine(),
-		profiler:       nat.NewProfiler(),
-		relaySessions:  nat.NewSessionManager(cfg.NAT.RelayMaxSessions, time.Duration(cfg.NAT.RelaySessionTTLSec)*time.Second),
-		peers:          make(map[string]*peerConn),
-		suppress:       make(map[string]map[string]time.Time),
-		relayRoutes:    make(map[string]relayRoute),
-		relayLocals:    make(map[string]relayLocalSession),
-		relayBuckets:   make(map[string]*nat.TokenBucket),
-		directProbes:   make(map[string]time.Time),
-		bindingHistory: make([]string, 0, 4),
-		knownPeers:     make(map[string]knownPeer),
-		bindingWait:    make(map[string]chan string),
-		dispatchSem:    make(chan struct{}, 500),
-		dispatchCh:     make(chan any, 1024),
+		meshID:           meshID,
+		psk:              append([]byte(nil), psk...),
+		config:           cfg,
+		infoHash:         infoHash,
+		peerID:           peerID,
+		identity:         identity,
+		tracker:          bootstrap.NewManager(time.Duration(cfg.BootstrapTimeoutSec) * time.Second),
+		pubsub:           gossip.NewManager(),
+		cache:            gossip.NewCache(2 * time.Minute),
+		scoring:          gossip.NewEngine(),
+		profiler:         nat.NewProfiler(),
+		relaySessions:    nat.NewSessionManager(cfg.NAT.RelayMaxSessions, time.Duration(cfg.NAT.RelaySessionTTLSec)*time.Second),
+		peers:            make(map[string]*peerConn),
+		suppress:         make(map[string]map[string]time.Time),
+		relayRoutes:      make(map[string]relayRoute),
+		relayLocals:      make(map[string]relayLocalSession),
+		relayBuckets:     make(map[string]*nat.TokenBucket),
+		directProbes:     make(map[string]time.Time),
+		bindingHistory:   make([]string, 0, 4),
+		knownPeers:       make(map[string]knownPeer),
+		bindingWait:      make(map[string]chan string),
+		reachabilityWait: make(map[string]chan bool),
+		dispatchSem:      make(chan struct{}, 500),
+		dispatchCh:       make(chan any, 1024),
 	}
 	node.natProfile.Store(nat.Profile{Type: nat.TypeUnknown})
 	return node, nil
@@ -175,17 +178,12 @@ func (n *Node) Start() int32 {
 	if n.started {
 		return MOSS_ERR_ALREADY_STARTED
 	}
-	ln, port, err := transport.Listen(n.config.ListenPort)
-	if err != nil {
-		return MOSS_ERR_CONFIG_INVALID
-	}
-	udpListener, _, err := transport.ListenUDP(port, transport.HandshakeConfig{
+	ln, udpListener, port, err := transport.ListenPair(n.config.ListenPort, transport.HandshakeConfig{
 		MeshID:   n.meshID,
 		PSK:      n.psk,
 		Identity: n.identity,
 	})
 	if err != nil {
-		_ = ln.Close()
 		return MOSS_ERR_CONFIG_INVALID
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -647,6 +645,10 @@ func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 		n.handleBindingRequest(peer, env)
 	case gossip.TypeBindingResponse:
 		n.handleBindingResponse(env)
+	case gossip.TypeReachabilityRequest:
+		n.handleReachabilityRequest(peer, env)
+	case gossip.TypeReachabilityResponse:
+		n.handleReachabilityResponse(env)
 	case gossip.TypeHolePunchCoord:
 		n.handleHolePunchCoord(peer, env)
 	case gossip.TypeRelayRequest:
@@ -843,6 +845,34 @@ func (n *Node) handleBindingResponse(env gossip.Envelope) {
 	}
 	select {
 	case wait <- env.ObservedAddr:
+	default:
+	}
+}
+
+func (n *Node) handleReachabilityRequest(peer *peerConn, env gossip.Envelope) {
+	if env.RequestID == "" || env.AdvertisedAddr == "" {
+		return
+	}
+	reachable := probeTCPAddress(env.AdvertisedAddr, minDuration(500*time.Millisecond, n.config.HandshakeTimeout()))
+	n.sendEnvelope(peer, gossip.Envelope{
+		Type:      gossip.TypeReachabilityResponse,
+		RequestID: env.RequestID,
+		Reachable: reachable,
+	})
+}
+
+func (n *Node) handleReachabilityResponse(env gossip.Envelope) {
+	if env.RequestID == "" {
+		return
+	}
+	n.mu.RLock()
+	wait := n.reachabilityWait[env.RequestID]
+	n.mu.RUnlock()
+	if wait == nil {
+		return
+	}
+	select {
+	case wait <- env.Reachable:
 	default:
 	}
 }
@@ -1643,6 +1673,9 @@ func (n *Node) refreshExternalAddress(deadline time.Time) bool {
 		bindingHistory := append([]string(nil), n.bindingHistory...)
 		n.mu.Unlock()
 		profile = n.profiler.WithBindingObservations(profile, bindingHistory)
+		if requiresReachabilityConfirmation(observed) {
+			profile = n.profiler.WithReachability(profile, n.confirmReachability(observed, deadline))
+		}
 		n.natProfile.Store(profile)
 		updated = true
 	}
@@ -1680,6 +1713,59 @@ func (n *Node) requestBindingObservation(peerID string, timeout time.Duration) (
 		return observed, true
 	case <-timer.C:
 		return "", false
+	}
+}
+
+func (n *Node) confirmReachability(addr string, deadline time.Time) bool {
+	n.mu.RLock()
+	peerIDs := make([]string, 0, len(n.peers))
+	for peerID := range n.peers {
+		peerIDs = append(peerIDs, peerID)
+	}
+	n.mu.RUnlock()
+	for _, peerID := range peerIDs {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return false
+		}
+		if n.requestReachabilityProbe(peerID, addr, remaining) {
+			return true
+		}
+	}
+	return false
+}
+
+func (n *Node) requestReachabilityProbe(peerID, addr string, timeout time.Duration) bool {
+	requestID, err := newRelaySessionID()
+	if err != nil {
+		return false
+	}
+	wait := make(chan bool, 1)
+	n.mu.Lock()
+	peer := n.peers[peerID]
+	if peer == nil {
+		n.mu.Unlock()
+		return false
+	}
+	n.reachabilityWait[requestID] = wait
+	n.mu.Unlock()
+	defer func() {
+		n.mu.Lock()
+		delete(n.reachabilityWait, requestID)
+		n.mu.Unlock()
+	}()
+	n.sendEnvelope(peer, gossip.Envelope{
+		Type:           gossip.TypeReachabilityRequest,
+		RequestID:      requestID,
+		AdvertisedAddr: addr,
+	})
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case reachable := <-wait:
+		return reachable
+	case <-timer.C:
+		return false
 	}
 }
 
@@ -1906,6 +1992,44 @@ func (n *Node) probePortMapping(ctx context.Context, listenAddr string, port int
 		n.portMapper.Close()
 	}
 	n.portMapper = mapper
+}
+
+func requiresReachabilityConfirmation(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	parsed, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	return parsed.IsGlobalUnicast() && !parsed.IsPrivate() && !isCarrierGradeAddr(parsed)
+}
+
+func probeTCPAddress(addr string, timeout time.Duration) bool {
+	if timeout <= 0 {
+		timeout = 250 * time.Millisecond
+	}
+	conn, err := net.DialTimeout("tcp", addr, timeout)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
+func minDuration(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func isCarrierGradeAddr(addr netip.Addr) bool {
+	if !addr.Is4() {
+		return false
+	}
+	return netip.MustParsePrefix("100.64.0.0/10").Contains(addr)
 }
 
 func validChannel(channel string) bool {

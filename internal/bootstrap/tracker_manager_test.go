@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"sort"
 	"sync"
 	"testing"
 )
@@ -64,13 +65,21 @@ func TestManagerAnnounceAllFallsBackToNextTrackerBatch(t *testing.T) {
 	if !reflect.DeepEqual(peers, []string{"198.51.100.10:4000"}) {
 		t.Fatalf("unexpected peers %#v", peers)
 	}
-	if calls := udp.Calls(); !reflect.DeepEqual(calls, []string{
+	calls := udp.Calls()
+	if len(calls) != 4 {
+		t.Fatalf("unexpected tracker call count %#v", calls)
+	}
+	firstBatch := append([]string(nil), calls[:3]...)
+	sort.Strings(firstBatch)
+	if !reflect.DeepEqual(firstBatch, []string{
 		"udp://tracker-a/announce",
 		"udp://tracker-b/announce",
 		"udp://tracker-c/announce",
-		"udp://tracker-d/announce",
 	}) {
-		t.Fatalf("unexpected tracker call order %#v", calls)
+		t.Fatalf("unexpected first batch %#v", calls)
+	}
+	if calls[3] != "udp://tracker-d/announce" {
+		t.Fatalf("expected fallback tracker to be queried after first batch, got %#v", calls)
 	}
 }
 

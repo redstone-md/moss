@@ -76,6 +76,11 @@ func (p *Profiler) WithExternalAddress(profile Profile, externalAddr string) Pro
 	return profile
 }
 
+func (p *Profiler) WithReachability(profile Profile, reachable bool) Profile {
+	profile.PublicReachable = reachable
+	return profile
+}
+
 func (p *Profiler) WithBindingObservations(profile Profile, observations []string) Profile {
 	ports := bindingPorts(observations)
 	if len(ports) < 2 {

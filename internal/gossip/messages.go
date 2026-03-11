@@ -3,22 +3,24 @@ package gossip
 type EnvelopeType string
 
 const (
-	TypeGraft           EnvelopeType = "graft"
-	TypePrune           EnvelopeType = "prune"
-	TypeIHave           EnvelopeType = "ihave"
-	TypeIWant           EnvelopeType = "iwant"
-	TypeIDontWant       EnvelopeType = "idontwant"
-	TypePeerAnnounce    EnvelopeType = "peer_announce"
-	TypeBindingRequest  EnvelopeType = "binding_request"
-	TypeBindingResponse EnvelopeType = "binding_response"
-	TypeHolePunchCoord  EnvelopeType = "hole_punch_coord"
-	TypeRelayRequest    EnvelopeType = "relay_request"
-	TypeRelayAccept     EnvelopeType = "relay_accept"
-	TypeRelayData       EnvelopeType = "relay_data"
-	TypeRelayClose      EnvelopeType = "relay_close"
-	TypePublish         EnvelopeType = "publish"
-	TypePing            EnvelopeType = "ping"
-	TypePong            EnvelopeType = "pong"
+	TypeGraft                EnvelopeType = "graft"
+	TypePrune                EnvelopeType = "prune"
+	TypeIHave                EnvelopeType = "ihave"
+	TypeIWant                EnvelopeType = "iwant"
+	TypeIDontWant            EnvelopeType = "idontwant"
+	TypePeerAnnounce         EnvelopeType = "peer_announce"
+	TypeBindingRequest       EnvelopeType = "binding_request"
+	TypeBindingResponse      EnvelopeType = "binding_response"
+	TypeReachabilityRequest  EnvelopeType = "reachability_request"
+	TypeReachabilityResponse EnvelopeType = "reachability_response"
+	TypeHolePunchCoord       EnvelopeType = "hole_punch_coord"
+	TypeRelayRequest         EnvelopeType = "relay_request"
+	TypeRelayAccept          EnvelopeType = "relay_accept"
+	TypeRelayData            EnvelopeType = "relay_data"
+	TypeRelayClose           EnvelopeType = "relay_close"
+	TypePublish              EnvelopeType = "publish"
+	TypePing                 EnvelopeType = "ping"
+	TypePong                 EnvelopeType = "pong"
 )
 
 type Envelope struct {
@@ -39,5 +41,6 @@ type Envelope struct {
 	AdvertisedNATType      string       `json:"advertised_nat_type,omitempty"`
 	AdvertisedReachable    bool         `json:"advertised_reachable,omitempty"`
 	AdvertisedRelayCapable bool         `json:"advertised_relay_capable,omitempty"`
+	Reachable              bool         `json:"reachable,omitempty"`
 	Payload                []byte       `json:"payload,omitempty"`
 }
