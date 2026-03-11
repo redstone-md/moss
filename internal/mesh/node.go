@@ -1926,10 +1926,32 @@ func (n *Node) relayBucketFor(peerID string) *nat.TokenBucket {
 	defer n.mu.Unlock()
 	bucket := n.relayBuckets[peerID]
 	if bucket == nil {
-		bucket = nat.NewTokenBucket(n.config.Security.RateLimitBurst, n.config.Security.RateLimitSustained)
+		burst, sustained := n.relayRateLimits()
+		bucket = nat.NewTokenBucket(burst, sustained)
 		n.relayBuckets[peerID] = bucket
 	}
 	return bucket
+}
+
+func (n *Node) relayRateLimits() (int, int) {
+	burst := n.config.NAT.RelayMaxBandwidthKBPS * 1024
+	if burst <= 0 {
+		burst = n.config.Security.RateLimitBurst
+	}
+	if n.config.Security.RateLimitBurst > 0 && n.config.Security.RateLimitBurst < burst {
+		burst = n.config.Security.RateLimitBurst
+	}
+	if burst <= 0 {
+		burst = 1024
+	}
+	sustained := burst / 4
+	if n.config.Security.RateLimitSustained > 0 && n.config.Security.RateLimitSustained < sustained {
+		sustained = n.config.Security.RateLimitSustained
+	}
+	if sustained <= 0 {
+		sustained = max(1, burst/4)
+	}
+	return burst, sustained
 }
 
 func (n *Node) selectRelayPeer(targetPeerID string) (string, error) {
