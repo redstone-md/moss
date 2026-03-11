@@ -46,6 +46,7 @@ type Node struct {
 	cancel     context.CancelFunc
 	wg         sync.WaitGroup
 	peers      map[string]*peerConn
+	suppress   map[string]map[string]time.Time
 	messageCB  MessageCallback
 	eventCB    EventCallback
 	dispatchCh chan any
@@ -109,6 +110,7 @@ func NewNode(meshID string, psk []byte, cfg Config) (*Node, error) {
 		scoring:     gossip.NewEngine(),
 		profiler:    nat.NewProfiler(),
 		peers:       make(map[string]*peerConn),
+		suppress:    make(map[string]map[string]time.Time),
 		dispatchSem: make(chan struct{}, 500),
 		dispatchCh:  make(chan any, 1024),
 	}
@@ -199,9 +201,14 @@ func (n *Node) Publish(channel string, data []byte) int32 {
 		return MOSS_ERR_NOT_STARTED
 	}
 	env := n.makePublishEnvelope(channel, data)
-	n.cache.Add(env.MessageID)
+	n.cache.Store(env)
 	n.deliverLocal(env)
-	if n.broadcastEnvelope(env, "") {
+	sent := n.broadcastEnvelope(env, "")
+	n.broadcastIHave(channel, []string{env.MessageID}, "")
+	if len(data) > 1024 {
+		n.broadcastIDontWant(channel, []string{env.MessageID}, "")
+	}
+	if sent {
 		return MOSS_OK
 	}
 	return MOSS_ERR_NO_PEERS
@@ -410,8 +417,15 @@ func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 	switch env.Type {
 	case gossip.TypeGraft:
 		n.pubsub.SetPeerSubscription(peer.id, env.Channel, true)
+		n.sendRecentIHave(peer, env.Channel)
 	case gossip.TypePrune:
 		n.pubsub.SetPeerSubscription(peer.id, env.Channel, false)
+	case gossip.TypeIHave:
+		n.handleIHave(peer, env)
+	case gossip.TypeIWant:
+		n.handleIWant(peer, env)
+	case gossip.TypeIDontWant:
+		n.rememberSuppression(peer.id, env.MessageIDs, env.MessageID)
 	case gossip.TypePublish:
 		if env.Channel == "" || env.MessageID == "" {
 			n.scoring.PenalizeInvalid(peer.id)
@@ -420,10 +434,14 @@ func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 		if n.cache.Seen(env.MessageID) {
 			return
 		}
-		n.cache.Add(env.MessageID)
+		n.cache.Store(env)
 		n.scoring.RewardFirstDelivery(peer.id)
 		n.deliverLocal(env)
 		n.broadcastEnvelope(env, peer.id)
+		n.broadcastIHave(env.Channel, []string{env.MessageID}, peer.id)
+		if len(env.Payload) > 1024 {
+			n.broadcastIDontWant(env.Channel, []string{env.MessageID}, peer.id)
+		}
 	case gossip.TypePing:
 		n.sendEnvelope(peer, gossip.Envelope{Type: gossip.TypePong})
 	}
@@ -477,6 +495,73 @@ func (n *Node) sendEnvelope(peer *peerConn, env gossip.Envelope) {
 	_ = peer.session.WritePacket(payload)
 }
 
+func (n *Node) sendRecentIHave(peer *peerConn, channel string) {
+	ids := n.cache.RecentIDs(channel, n.config.GossipSub.DLazy)
+	if len(ids) == 0 {
+		return
+	}
+	n.sendEnvelope(peer, gossip.Envelope{
+		Type:       gossip.TypeIHave,
+		Channel:    channel,
+		MessageIDs: ids,
+	})
+}
+
+func (n *Node) handleIHave(peer *peerConn, env gossip.Envelope) {
+	if env.Channel == "" || len(env.MessageIDs) == 0 || !n.pubsub.IsLocalSubscriber(env.Channel) {
+		return
+	}
+	missing := make([]string, 0, len(env.MessageIDs))
+	for _, id := range env.MessageIDs {
+		if !n.cache.Seen(id) {
+			missing = append(missing, id)
+		}
+	}
+	if len(missing) == 0 {
+		return
+	}
+	n.sendEnvelope(peer, gossip.Envelope{
+		Type:       gossip.TypeIWant,
+		Channel:    env.Channel,
+		MessageIDs: missing,
+	})
+}
+
+func (n *Node) handleIWant(peer *peerConn, env gossip.Envelope) {
+	for _, id := range env.MessageIDs {
+		if n.isSuppressed(peer.id, id) {
+			continue
+		}
+		cached, ok := n.cache.Get(id)
+		if !ok {
+			continue
+		}
+		n.sendEnvelope(peer, cached)
+	}
+}
+
+func (n *Node) broadcastIHave(channel string, ids []string, excludePeerID string) {
+	if channel == "" || len(ids) == 0 {
+		return
+	}
+	n.broadcastEnvelope(gossip.Envelope{
+		Type:       gossip.TypeIHave,
+		Channel:    channel,
+		MessageIDs: ids,
+	}, excludePeerID)
+}
+
+func (n *Node) broadcastIDontWant(channel string, ids []string, excludePeerID string) {
+	if channel == "" || len(ids) == 0 {
+		return
+	}
+	n.broadcastEnvelope(gossip.Envelope{
+		Type:       gossip.TypeIDontWant,
+		Channel:    channel,
+		MessageIDs: ids,
+	}, excludePeerID)
+}
+
 func (n *Node) broadcastToAll(env gossip.Envelope, excludePeerID string) bool {
 	payload, err := json.Marshal(env)
 	if err != nil {
@@ -502,6 +587,7 @@ func (n *Node) removePeer(peerID string) {
 	if peer != nil {
 		delete(n.peers, peerID)
 	}
+	delete(n.suppress, peerID)
 	n.mu.Unlock()
 	n.pubsub.RemovePeer(peerID)
 	if peer != nil {
@@ -605,6 +691,44 @@ func (n *Node) supernodeReady(profile nat.Profile) bool {
 func (n *Node) enqueueEvent(eventType int32, detail any) {
 	raw, _ := json.Marshal(detail)
 	n.dispatchCh <- dispatchEvent{eventType: eventType, detail: string(raw)}
+}
+
+func (n *Node) rememberSuppression(peerID string, ids []string, fallback string) {
+	if len(ids) == 0 && fallback != "" {
+		ids = []string{fallback}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	entry := n.suppress[peerID]
+	if entry == nil {
+		entry = make(map[string]time.Time)
+		n.suppress[peerID] = entry
+	}
+	now := time.Now()
+	for _, id := range ids {
+		entry[id] = now
+	}
+}
+
+func (n *Node) isSuppressed(peerID, messageID string) bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	entry := n.suppress[peerID]
+	if entry == nil {
+		return false
+	}
+	ts, ok := entry[messageID]
+	if !ok {
+		return false
+	}
+	if time.Since(ts) > 2*time.Minute {
+		delete(entry, messageID)
+		return false
+	}
+	return true
 }
 
 func validChannel(channel string) bool {
