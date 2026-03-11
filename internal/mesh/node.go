@@ -645,6 +645,7 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 	remoteID := session.RemoteID()
 	peerID := hex.EncodeToString(remoteID[:])
 	addr := session.RemoteAddr().String()
+	var overflowPeer *peerConn
 	n.mu.Lock()
 	if !n.started {
 		n.mu.Unlock()
@@ -653,6 +654,15 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 	}
 	if _, exists := n.peers[peerID]; exists {
 		n.mu.Unlock()
+		_ = session.Close()
+		return
+	}
+	if len(n.peers) >= n.config.MaxPeers {
+		overflowPeer = n.selectOverflowPrunePeerLocked()
+		n.mu.Unlock()
+		if overflowPeer != nil {
+			_ = overflowPeer.session.Close()
+		}
 		_ = session.Close()
 		return
 	}
@@ -686,6 +696,60 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 	n.enqueueEvent(EventPeerJoined, map[string]string{"peer": peerID, "addr": addr})
 	n.wg.Add(1)
 	go n.readPeer(peer)
+}
+
+func (n *Node) selectOverflowPrunePeerLocked() *peerConn {
+	var selected *peerConn
+	for _, peer := range n.peers {
+		if peer.lastRTT <= 2*time.Second && n.peerScore(peer.id) >= 0 {
+			continue
+		}
+		if selected == nil || comparePrunePriority(peer, selected, n) > 0 {
+			selected = peer
+		}
+	}
+	return selected
+}
+
+func comparePrunePriority(a, b *peerConn, node *Node) int {
+	if a == nil || b == nil {
+		switch {
+		case a != nil:
+			return 1
+		case b != nil:
+			return -1
+		default:
+			return 0
+		}
+	}
+	scoreA := node.peerScore(a.id)
+	scoreB := node.peerScore(b.id)
+	if scoreA != scoreB {
+		if scoreA < scoreB {
+			return 1
+		}
+		return -1
+	}
+	if a.lastRTT != b.lastRTT {
+		if a.lastRTT > b.lastRTT {
+			return 1
+		}
+		return -1
+	}
+	if a.outbound != b.outbound {
+		if !a.outbound {
+			return 1
+		}
+		return -1
+	}
+	switch {
+	case a.id < b.id:
+		return 1
+	case a.id > b.id:
+		return -1
+	default:
+		return 0
+	}
 }
 
 func (n *Node) readPeer(peer *peerConn) {

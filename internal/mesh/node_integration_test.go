@@ -1766,6 +1766,56 @@ func TestPeerLatencyProbeUpdatesRTT(t *testing.T) {
 	waitForPeerRTT(t, nodeA, targetID, 2*time.Second)
 }
 
+func TestInboundConnectionsRespectMaxPeers(t *testing.T) {
+	cfgHub := DefaultConfig()
+	cfgHub.Trackers = nil
+	cfgHub.GossipSub.HeartbeatMS = 50
+	cfgHub.MaxPeers = 1
+	hub, err := NewNode("mesh-max-peers", nil, cfgHub)
+	if err != nil {
+		t.Fatalf("NewNode hub failed: %v", err)
+	}
+	if code := hub.Start(); code != MOSS_OK {
+		t.Fatalf("hub.Start failed: %d", code)
+	}
+	defer hub.Stop()
+
+	cfgA := DefaultConfig()
+	cfgA.Trackers = nil
+	cfgA.GossipSub.HeartbeatMS = 50
+	cfgA.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(hub.ListenPort()))}
+	nodeA, err := NewNode("mesh-max-peers", nil, cfgA)
+	if err != nil {
+		t.Fatalf("NewNode nodeA failed: %v", err)
+	}
+	if code := nodeA.Start(); code != MOSS_OK {
+		t.Fatalf("nodeA.Start failed: %d", code)
+	}
+	defer nodeA.Stop()
+
+	waitForPeerCount(t, hub, 1)
+	waitForPeerCount(t, nodeA, 1)
+
+	cfgB := DefaultConfig()
+	cfgB.Trackers = nil
+	cfgB.GossipSub.HeartbeatMS = 50
+	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(hub.ListenPort()))}
+	nodeB, err := NewNode("mesh-max-peers", nil, cfgB)
+	if err != nil {
+		t.Fatalf("NewNode nodeB failed: %v", err)
+	}
+	if code := nodeB.Start(); code != MOSS_OK {
+		t.Fatalf("nodeB.Start failed: %d", code)
+	}
+	defer nodeB.Stop()
+
+	waitForPeerCountAtMost(t, hub, 1, 1500*time.Millisecond)
+	waitForPeerCountEventually(t, nodeB, 0)
+	if got := hub.currentPeerCount(); got != 1 {
+		t.Fatalf("expected hub to keep exactly 1 peer, got %d", got)
+	}
+}
+
 func TestHighLatencyPeerIsPruned(t *testing.T) {
 	cfgA := DefaultConfig()
 	cfgA.Trackers = nil
@@ -1820,6 +1870,29 @@ func waitForPeerCount(t *testing.T, node *Node, want int) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("peer count did not reach %d; info=%s", want, node.MeshInfoJSON())
+}
+
+func waitForPeerCountEventually(t *testing.T, node *Node, want int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if node.currentPeerCount() == want {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for peer count %d; info=%s", want, node.MeshInfoJSON())
+}
+
+func waitForPeerCountAtMost(t *testing.T, node *Node, max int, dur time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(dur)
+	for time.Now().Before(deadline) {
+		if got := node.currentPeerCount(); got > max {
+			t.Fatalf("peer count exceeded limit: got %d want <= %d; info=%s", got, max, node.MeshInfoJSON())
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
 }
 
 func waitForSubscriberCount(t *testing.T, node *Node, channel string, want int) {
