@@ -9,6 +9,8 @@ const (
 	TypeIWant                EnvelopeType = "iwant"
 	TypeIDontWant            EnvelopeType = "idontwant"
 	TypePeerAnnounce         EnvelopeType = "peer_announce"
+	TypeSupernodeAnnounce    EnvelopeType = "supernode_announce"
+	TypeSupernodeRevoke      EnvelopeType = "supernode_revoke"
 	TypeBindingRequest       EnvelopeType = "binding_request"
 	TypeBindingResponse      EnvelopeType = "binding_response"
 	TypeReachabilityRequest  EnvelopeType = "reachability_request"
