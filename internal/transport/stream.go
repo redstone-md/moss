@@ -17,11 +17,10 @@ func newStreamCarrier(conn net.Conn) carrier {
 func (c *streamCarrier) WritePacket(packet []byte) error {
 	header := make([]byte, 4)
 	binary.BigEndian.PutUint32(header, uint32(len(packet)))
-	if _, err := c.conn.Write(header); err != nil {
+	if err := writeAll(c.conn, header); err != nil {
 		return err
 	}
-	_, err := c.conn.Write(packet)
-	return err
+	return writeAll(c.conn, packet)
 }
 
 func (c *streamCarrier) ReadPacket() ([]byte, error) {
@@ -43,4 +42,15 @@ func (c *streamCarrier) RemoteAddr() net.Addr {
 
 func (c *streamCarrier) Close() error {
 	return c.conn.Close()
+}
+
+func writeAll(conn net.Conn, payload []byte) error {
+	for len(payload) > 0 {
+		n, err := conn.Write(payload)
+		if err != nil {
+			return err
+		}
+		payload = payload[n:]
+	}
+	return nil
 }
