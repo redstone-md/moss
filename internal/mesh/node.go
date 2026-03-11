@@ -466,15 +466,46 @@ func (n *Node) RelaySendTo(targetPeerID string, data []byte, timeout time.Durati
 	}
 	n.mu.RUnlock()
 
-	viaPeerID, err := n.selectRelayPeer(targetPeerID)
-	if err != nil {
-		return err
-	}
-	sessionID, err := n.OpenRelaySession(viaPeerID, targetPeerID, timeout)
+	sessionID, err := n.OpenRelaySessionAny(targetPeerID, timeout)
 	if err != nil {
 		return err
 	}
 	return n.RelaySend(sessionID, data)
+}
+
+func (n *Node) OpenRelaySessionAny(targetPeerID string, timeout time.Duration) (string, error) {
+	candidates, err := n.selectRelayPeers(targetPeerID)
+	if err != nil {
+		return "", err
+	}
+	if timeout <= 0 {
+		timeout = n.config.HandshakeTimeout()
+	}
+	perCandidate := timeout / time.Duration(len(candidates))
+	if perCandidate < 300*time.Millisecond {
+		perCandidate = 300 * time.Millisecond
+	}
+	var lastErr error
+	deadline := time.Now().Add(timeout)
+	for _, viaPeerID := range candidates {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		attemptTimeout := perCandidate
+		if remaining < attemptTimeout {
+			attemptTimeout = remaining
+		}
+		sessionID, err := n.OpenRelaySession(viaPeerID, targetPeerID, attemptTimeout)
+		if err == nil {
+			return sessionID, nil
+		}
+		lastErr = err
+	}
+	if lastErr == nil {
+		lastErr = errors.New("relay session open timed out")
+	}
+	return "", lastErr
 }
 
 func (n *Node) acceptLoop(ctx context.Context) {
@@ -2459,6 +2490,14 @@ func (n *Node) relayRateLimits() (int, int) {
 }
 
 func (n *Node) selectRelayPeer(targetPeerID string) (string, error) {
+	candidates, err := n.selectRelayPeers(targetPeerID)
+	if err != nil {
+		return "", err
+	}
+	return candidates[0], nil
+}
+
+func (n *Node) selectRelayPeers(targetPeerID string) ([]string, error) {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 	candidates := make([]string, 0, len(n.peers))
@@ -2469,7 +2508,7 @@ func (n *Node) selectRelayPeer(targetPeerID string) (string, error) {
 		candidates = append(candidates, peerID)
 	}
 	if len(candidates) == 0 {
-		return "", errors.New("no relay-capable peer is connected")
+		return nil, errors.New("no relay-capable peer is connected")
 	}
 	sort.Slice(candidates, func(i, j int) bool {
 		infoI := n.knownPeers[candidates[i]]
@@ -2484,7 +2523,7 @@ func (n *Node) selectRelayPeer(targetPeerID string) (string, error) {
 		}
 		return scoreI > scoreJ
 	})
-	return candidates[0], nil
+	return candidates, nil
 }
 
 func relayCandidateRank(info knownPeer) int {
