@@ -2070,6 +2070,9 @@ func (n *Node) tryDirectConnect(targetPeerID string, timeout time.Duration) bool
 	if !n.refreshExternalAddress(deadline) {
 		n.waitForDirectPeer(targetPeerID, 50*time.Millisecond)
 	}
+	if n.shouldPreferRelayForTarget(targetPeerID) {
+		return n.waitForDirectPeer(targetPeerID, time.Until(deadline))
+	}
 	if n.attemptHolePunch(targetPeerID, time.Until(deadline)) {
 		return true
 	}
@@ -2201,6 +2204,9 @@ func (n *Node) requestReachabilityProbe(peerID, addr string, timeout time.Durati
 
 func (n *Node) attemptHolePunch(targetPeerID string, timeout time.Duration) bool {
 	if timeout <= 0 {
+		return false
+	}
+	if n.shouldPreferRelayForTarget(targetPeerID) {
 		return false
 	}
 	n.mu.RLock()
@@ -2422,6 +2428,23 @@ func (n *Node) peerScore(peerID string) float64 {
 		return base
 	}
 	return cb(decodePeerID(peerID), base)
+}
+
+func (n *Node) shouldPreferRelayForTarget(targetPeerID string) bool {
+	localProfile := n.natProfile.Load().(nat.Profile)
+	n.mu.RLock()
+	targetInfo, ok := n.knownPeers[targetPeerID]
+	n.mu.RUnlock()
+	if !ok {
+		return false
+	}
+	return shouldPreferRelayBetween(localProfile.Type, targetInfo.natType)
+}
+
+func shouldPreferRelayBetween(local, remote nat.Type) bool {
+	localRestricted := local == nat.TypeSymmetric || local == nat.TypeCGNAT
+	remoteRestricted := remote == nat.TypeSymmetric || remote == nat.TypeCGNAT
+	return localRestricted && remoteRestricted
 }
 
 func (n *Node) isPeerBelowBaseline(peerID string) bool {
