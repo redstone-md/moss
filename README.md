@@ -3,8 +3,8 @@
 Moss is an embeddable P2P mesh core written in Go and exported through CGO as a C-shared library. The project in this repository follows the `PRD.md` scope with a pragmatic v1 implementation:
 
 - tracker-based bootstrapping via BEP 15 UDP and BEP 3 HTTP announces
-- encrypted peer transport with authenticated X25519 + Ed25519 handshake
-- topic-based pub/sub routing with message deduplication and peer scoring
+- encrypted peer transport with Noise XX (`25519_ChaChaPoly_BLAKE2s`) plus identity binding
+- topic-based pub/sub routing with GRAFT/PRUNE control messages, BLAKE2s message IDs, and peer scoring
 - NAT profiling, relay rate limiting primitives, and supernode eligibility checks
 - C FFI surface with examples for C, C++, Python (`ctypes`), and Rust
 - unit, integration, and shared-library smoke tests
