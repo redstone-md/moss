@@ -594,6 +594,7 @@ func TestRelaySendToFallsBackAfterDirectDialFailure(t *testing.T) {
 	cfgA := DefaultConfig()
 	cfgA.Trackers = nil
 	cfgA.GossipSub.HeartbeatMS = 50
+	cfgA.MaxPeers = 1
 	cfgA.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(relayNode.ListenPort()))}
 	nodeA, err := NewNode("mesh-relay-known", nil, cfgA)
 	if err != nil {
@@ -607,6 +608,7 @@ func TestRelaySendToFallsBackAfterDirectDialFailure(t *testing.T) {
 	cfgB := DefaultConfig()
 	cfgB.Trackers = nil
 	cfgB.GossipSub.HeartbeatMS = 50
+	cfgB.MaxPeers = 1
 	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(relayNode.ListenPort()))}
 	nodeB, err := NewNode("mesh-relay-known", nil, cfgB)
 	if err != nil {
@@ -866,6 +868,7 @@ func TestDirectPeerConnectionMigratesRelaySession(t *testing.T) {
 	cfgA := DefaultConfig()
 	cfgA.Trackers = nil
 	cfgA.GossipSub.HeartbeatMS = 50
+	cfgA.MaxPeers = 1
 	cfgA.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(relayNode.ListenPort()))}
 	nodeA, err := NewNode("mesh-migrate", nil, cfgA)
 	if err != nil {
@@ -879,6 +882,7 @@ func TestDirectPeerConnectionMigratesRelaySession(t *testing.T) {
 	cfgB := DefaultConfig()
 	cfgB.Trackers = nil
 	cfgB.GossipSub.HeartbeatMS = 50
+	cfgB.MaxPeers = 1
 	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(relayNode.ListenPort()))}
 	nodeB, err := NewNode("mesh-migrate", nil, cfgB)
 	if err != nil {
@@ -904,6 +908,8 @@ func TestDirectPeerConnectionMigratesRelaySession(t *testing.T) {
 	waitForRelaySession(t, nodeA, sessionID)
 	waitForRelaySession(t, nodeB, sessionID)
 	waitForRelayRoute(t, relayNode, sessionID)
+	nodeA.config.MaxPeers = 2
+	nodeB.config.MaxPeers = 2
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	nodeA.connectPeer(ctx, net.JoinHostPort("127.0.0.1", strconv.Itoa(nodeB.ListenPort())))
@@ -934,6 +940,7 @@ func TestRelaySessionAutoPromotesToDirectConnection(t *testing.T) {
 	cfgA := DefaultConfig()
 	cfgA.Trackers = nil
 	cfgA.GossipSub.HeartbeatMS = 50
+	cfgA.MaxPeers = 1
 	cfgA.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(relayNode.ListenPort()))}
 	nodeA, err := NewNode("mesh-auto-migrate", nil, cfgA)
 	if err != nil {
@@ -947,6 +954,7 @@ func TestRelaySessionAutoPromotesToDirectConnection(t *testing.T) {
 	cfgB := DefaultConfig()
 	cfgB.Trackers = nil
 	cfgB.GossipSub.HeartbeatMS = 50
+	cfgB.MaxPeers = 1
 	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(relayNode.ListenPort()))}
 	nodeB, err := NewNode("mesh-auto-migrate", nil, cfgB)
 	if err != nil {
@@ -970,6 +978,8 @@ func TestRelaySessionAutoPromotesToDirectConnection(t *testing.T) {
 	waitForRelaySession(t, nodeA, sessionID)
 	waitForRelaySession(t, nodeB, sessionID)
 	waitForRelayRoute(t, relayNode, sessionID)
+	nodeA.config.MaxPeers = 2
+	nodeB.config.MaxPeers = 2
 
 	sourcePub := nodeA.PublicKey()
 	waitForDirectPeer(t, nodeA, hex.EncodeToString(targetPub[:]))
