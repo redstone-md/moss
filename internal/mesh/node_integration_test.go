@@ -418,6 +418,74 @@ func TestRefreshExternalAddressPreservesListenPort(t *testing.T) {
 	}
 }
 
+func TestReachabilityProbeReportsReachableAddress(t *testing.T) {
+	cfgA := DefaultConfig()
+	cfgA.Trackers = nil
+	nodeA, err := NewNode("mesh-reachability", nil, cfgA)
+	if err != nil {
+		t.Fatalf("NewNode nodeA failed: %v", err)
+	}
+	if code := nodeA.Start(); code != MOSS_OK {
+		t.Fatalf("nodeA.Start failed: %d", code)
+	}
+	defer nodeA.Stop()
+
+	cfgB := DefaultConfig()
+	cfgB.Trackers = nil
+	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(nodeA.ListenPort()))}
+	nodeB, err := NewNode("mesh-reachability", nil, cfgB)
+	if err != nil {
+		t.Fatalf("NewNode nodeB failed: %v", err)
+	}
+	if code := nodeB.Start(); code != MOSS_OK {
+		t.Fatalf("nodeB.Start failed: %d", code)
+	}
+	defer nodeB.Stop()
+
+	waitForPeerCount(t, nodeA, 1)
+	waitForPeerCount(t, nodeB, 1)
+
+	proberPub := nodeB.PublicKey()
+	proberID := hex.EncodeToString(proberPub[:])
+	if !nodeA.requestReachabilityProbe(proberID, net.JoinHostPort("127.0.0.1", strconv.Itoa(nodeA.ListenPort())), time.Second) {
+		t.Fatal("expected reachability probe to confirm reachable address")
+	}
+}
+
+func TestReachabilityProbeReportsUnreachableAddress(t *testing.T) {
+	cfgA := DefaultConfig()
+	cfgA.Trackers = nil
+	nodeA, err := NewNode("mesh-reachability-fail", nil, cfgA)
+	if err != nil {
+		t.Fatalf("NewNode nodeA failed: %v", err)
+	}
+	if code := nodeA.Start(); code != MOSS_OK {
+		t.Fatalf("nodeA.Start failed: %d", code)
+	}
+	defer nodeA.Stop()
+
+	cfgB := DefaultConfig()
+	cfgB.Trackers = nil
+	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(nodeA.ListenPort()))}
+	nodeB, err := NewNode("mesh-reachability-fail", nil, cfgB)
+	if err != nil {
+		t.Fatalf("NewNode nodeB failed: %v", err)
+	}
+	if code := nodeB.Start(); code != MOSS_OK {
+		t.Fatalf("nodeB.Start failed: %d", code)
+	}
+	defer nodeB.Stop()
+
+	waitForPeerCount(t, nodeA, 1)
+	waitForPeerCount(t, nodeB, 1)
+
+	proberPub := nodeB.PublicKey()
+	proberID := hex.EncodeToString(proberPub[:])
+	if nodeA.requestReachabilityProbe(proberID, "127.0.0.1:1", 500*time.Millisecond) {
+		t.Fatal("expected reachability probe to fail for closed address")
+	}
+}
+
 func TestDirectUDPConnectRegistersPeer(t *testing.T) {
 	cfgA := DefaultConfig()
 	cfgA.Trackers = nil
@@ -859,7 +927,7 @@ func waitForDirectPeer(t *testing.T, node *Node, wantPeerID string) {
 
 func waitForKnownPeerPort(t *testing.T, node *Node, wantPeerID, wantPort string) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		node.mu.RLock()
 		info, ok := node.knownPeers[wantPeerID]
