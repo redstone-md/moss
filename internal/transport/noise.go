@@ -286,8 +286,7 @@ func writeRaw(ctx context.Context, conn net.Conn, payload []byte) error {
 		_ = conn.SetDeadline(deadline)
 		defer conn.SetDeadline(time.Time{})
 	}
-	_, err := conn.Write(payload)
-	return err
+	return writeAll(conn, payload)
 }
 
 func readRaw(ctx context.Context, conn net.Conn, payload []byte) error {
