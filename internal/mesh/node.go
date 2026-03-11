@@ -2516,6 +2516,11 @@ func (n *Node) selectRelayPeers(targetPeerID string) ([]string, error) {
 		if rankI, rankJ := relayCandidateRank(infoI), relayCandidateRank(infoJ); rankI != rankJ {
 			return rankI > rankJ
 		}
+		loadI := n.relaySessionCountViaLocked(candidates[i])
+		loadJ := n.relaySessionCountViaLocked(candidates[j])
+		if loadI != loadJ {
+			return loadI < loadJ
+		}
 		scoreI := n.peerScore(candidates[i])
 		scoreJ := n.peerScore(candidates[j])
 		if scoreI == scoreJ {
@@ -2524,6 +2529,16 @@ func (n *Node) selectRelayPeers(targetPeerID string) ([]string, error) {
 		return scoreI > scoreJ
 	})
 	return candidates, nil
+}
+
+func (n *Node) relaySessionCountViaLocked(peerID string) int {
+	count := 0
+	for _, session := range n.relayLocals {
+		if session.viaPeerID == peerID {
+			count++
+		}
+	}
+	return count
 }
 
 func relayCandidateRank(info knownPeer) int {

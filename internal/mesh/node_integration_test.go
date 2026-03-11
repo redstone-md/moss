@@ -763,6 +763,108 @@ func TestRelaySendToFallsBackToSecondaryRelayPeer(t *testing.T) {
 	}
 }
 
+func TestRelaySessionAnyPrefersLessLoadedRelayPeer(t *testing.T) {
+	cfgRelay1 := DefaultConfig()
+	cfgRelay1.Trackers = nil
+	cfgRelay1.GossipSub.HeartbeatMS = 50
+	relay1, err := NewNode("mesh-relay-balance", nil, cfgRelay1)
+	if err != nil {
+		t.Fatalf("NewNode relay1 failed: %v", err)
+	}
+	if code := relay1.Start(); code != MOSS_OK {
+		t.Fatalf("relay1.Start failed: %d", code)
+	}
+	defer relay1.Stop()
+
+	cfgRelay2 := DefaultConfig()
+	cfgRelay2.Trackers = nil
+	cfgRelay2.GossipSub.HeartbeatMS = 50
+	relay2, err := NewNode("mesh-relay-balance", nil, cfgRelay2)
+	if err != nil {
+		t.Fatalf("NewNode relay2 failed: %v", err)
+	}
+	if code := relay2.Start(); code != MOSS_OK {
+		t.Fatalf("relay2.Start failed: %d", code)
+	}
+	defer relay2.Stop()
+
+	cfgA := DefaultConfig()
+	cfgA.Trackers = nil
+	cfgA.GossipSub.HeartbeatMS = 50
+	cfgA.MaxPeers = 2
+	cfgA.StaticPeers = []string{
+		net.JoinHostPort("127.0.0.1", strconv.Itoa(relay1.ListenPort())),
+		net.JoinHostPort("127.0.0.1", strconv.Itoa(relay2.ListenPort())),
+	}
+	nodeA, err := NewNode("mesh-relay-balance", nil, cfgA)
+	if err != nil {
+		t.Fatalf("NewNode nodeA failed: %v", err)
+	}
+	if code := nodeA.Start(); code != MOSS_OK {
+		t.Fatalf("nodeA.Start failed: %d", code)
+	}
+	defer nodeA.Stop()
+
+	cfgB := DefaultConfig()
+	cfgB.Trackers = nil
+	cfgB.GossipSub.HeartbeatMS = 50
+	cfgB.MaxPeers = 2
+	cfgB.StaticPeers = []string{
+		net.JoinHostPort("127.0.0.1", strconv.Itoa(relay1.ListenPort())),
+		net.JoinHostPort("127.0.0.1", strconv.Itoa(relay2.ListenPort())),
+	}
+	nodeB, err := NewNode("mesh-relay-balance", nil, cfgB)
+	if err != nil {
+		t.Fatalf("NewNode nodeB failed: %v", err)
+	}
+	if code := nodeB.Start(); code != MOSS_OK {
+		t.Fatalf("nodeB.Start failed: %d", code)
+	}
+	defer nodeB.Stop()
+
+	waitForPeerCount(t, relay1, 2)
+	waitForPeerCount(t, relay2, 2)
+	waitForPeerCount(t, nodeA, 2)
+	waitForPeerCount(t, nodeB, 2)
+
+	targetPub := nodeB.PublicKey()
+	targetID := hex.EncodeToString(targetPub[:])
+	relay1Pub := relay1.PublicKey()
+	relay1ID := hex.EncodeToString(relay1Pub[:])
+	relay2Pub := relay2.PublicKey()
+	relay2ID := hex.EncodeToString(relay2Pub[:])
+
+	waitForKnownPeer(t, nodeA, targetID)
+	nodeA.mu.Lock()
+	info1 := nodeA.knownPeers[relay1ID]
+	info1.relayCapable = true
+	info1.publicReachable = true
+	info1.natType = nat.TypePublic
+	nodeA.knownPeers[relay1ID] = info1
+	info2 := nodeA.knownPeers[relay2ID]
+	info2.relayCapable = true
+	info2.publicReachable = true
+	info2.natType = nat.TypePublic
+	nodeA.knownPeers[relay2ID] = info2
+	nodeA.relayLocals["existing-1"] = relayLocalSession{sessionID: "existing-1", viaPeerID: relay1ID, remotePeerID: "other-1", established: true}
+	nodeA.relayLocals["existing-2"] = relayLocalSession{sessionID: "existing-2", viaPeerID: relay1ID, remotePeerID: "other-2", established: true}
+	nodeA.mu.Unlock()
+	nodeA.scoring.SetApplicationScore(relay1ID, 10)
+	nodeA.scoring.SetApplicationScore(relay2ID, 1)
+
+	sessionID, err := nodeA.OpenRelaySessionAny(targetID, 2*time.Second)
+	if err != nil {
+		t.Fatalf("OpenRelaySessionAny failed: %v", err)
+	}
+
+	nodeA.mu.RLock()
+	session := nodeA.relayLocals[sessionID]
+	nodeA.mu.RUnlock()
+	if session.viaPeerID != relay2ID {
+		t.Fatalf("expected less-loaded relay %s, got %s", relay2ID, session.viaPeerID)
+	}
+}
+
 func TestSupernodeDemotesWhenRelayCapacityIsSaturated(t *testing.T) {
 	cfgA := DefaultConfig()
 	cfgA.Trackers = nil
