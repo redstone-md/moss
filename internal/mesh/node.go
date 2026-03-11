@@ -44,6 +44,7 @@ type Node struct {
 
 	natProfile atomic.Value
 	seq        uint64
+	heartbeat  uint64
 
 	mu             sync.RWMutex
 	started        bool
@@ -873,11 +874,12 @@ func (n *Node) broadcastIHave(channel string, ids []string, excludePeerID string
 	if channel == "" || len(ids) == 0 {
 		return
 	}
-	n.broadcastToNonMesh(channel, gossip.Envelope{
+	targets := n.selectLazyPeers(channel, excludePeerID, n.config.GossipSub.DLazy)
+	n.sendToPeers(targets, gossip.Envelope{
 		Type:       gossip.TypeIHave,
 		Channel:    channel,
 		MessageIDs: ids,
-	}, excludePeerID)
+	})
 }
 
 func (n *Node) broadcastIDontWant(channel string, ids []string, excludePeerID string) {
@@ -934,6 +936,29 @@ func (n *Node) broadcastToNonMesh(channel string, env gossip.Envelope, excludePe
 	return sent
 }
 
+func (n *Node) sendToPeers(peerIDs []string, env gossip.Envelope) bool {
+	if len(peerIDs) == 0 {
+		return false
+	}
+	payload, err := json.Marshal(env)
+	if err != nil {
+		return false
+	}
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	sent := false
+	for _, peerID := range peerIDs {
+		peer := n.peers[peerID]
+		if peer == nil {
+			continue
+		}
+		if err := peer.session.WritePacket(payload); err == nil {
+			sent = true
+		}
+	}
+	return sent
+}
+
 func (n *Node) removePeer(peerID string) {
 	n.mu.Lock()
 	peer := n.peers[peerID]
@@ -964,6 +989,7 @@ func (n *Node) maintenanceLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			atomic.AddUint64(&n.heartbeat, 1)
 			n.scoring.Tick()
 			n.pruneLowScoringPeers()
 			n.promoteRelayPeers()
@@ -1107,7 +1133,9 @@ func (n *Node) maintainTopicMesh(channel string) {
 		return
 	}
 	n.ensureTopicMeshMinimum(channel)
+	n.opportunisticGraft(channel)
 	n.pruneTopicMeshExcess(channel)
+	n.gossipRecentMessages(channel)
 }
 
 func (n *Node) ensureTopicMeshMinimum(channel string) {
@@ -1208,6 +1236,46 @@ func (n *Node) selectMeshCandidates(channel string, limit int) []string {
 		candidates = candidates[:limit]
 	}
 	return candidates
+}
+
+func (n *Node) opportunisticGraft(channel string) {
+	meshPeers := n.pubsub.MeshPeers(channel)
+	if len(meshPeers) < 2 {
+		return
+	}
+	if medianMeshScore(n.scoring, meshPeers) >= 1.0 {
+		return
+	}
+	candidates := n.selectHighScoringCandidates(channel, 2, 1.0)
+	for _, peerID := range candidates {
+		n.mu.RLock()
+		peer := n.peers[peerID]
+		n.mu.RUnlock()
+		if peer == nil {
+			continue
+		}
+		n.pubsub.SetMeshPeer(channel, peerID, true)
+		n.sendEnvelope(peer, gossip.Envelope{Type: gossip.TypeGraft, Channel: channel})
+		n.sendRecentIHave(peer, channel)
+	}
+}
+
+func (n *Node) selectHighScoringCandidates(channel string, limit int, threshold float64) []string {
+	if limit <= 0 {
+		return nil
+	}
+	candidates := n.selectMeshCandidates(channel, n.config.MaxPeers)
+	filtered := make([]string, 0, len(candidates))
+	for _, peerID := range candidates {
+		if n.scoring.Score(peerID) <= threshold {
+			continue
+		}
+		filtered = append(filtered, peerID)
+		if len(filtered) == limit {
+			break
+		}
+	}
+	return filtered
 }
 
 func (n *Node) countOutboundMesh(channel string) int {
@@ -1314,6 +1382,19 @@ func (n *Node) handleRelayData(peer *peerConn, env gossip.Envelope) {
 		return
 	}
 	n.sendEnvelope(targetPeer, env)
+}
+
+func (n *Node) gossipRecentMessages(channel string) {
+	ids := n.cache.RecentIDs(channel, n.config.GossipSub.DLazy)
+	if len(ids) == 0 {
+		return
+	}
+	targets := n.selectLazyPeers(channel, "", n.config.GossipSub.DLazy)
+	n.sendToPeers(targets, gossip.Envelope{
+		Type:       gossip.TypeIHave,
+		Channel:    channel,
+		MessageIDs: ids,
+	})
 }
 
 func (n *Node) handleRelayClose(peer *peerConn, env gossip.Envelope) {
@@ -1730,6 +1811,60 @@ func (n *Node) probePortMapping(ctx context.Context, listenAddr string, port int
 
 func validChannel(channel string) bool {
 	return channel != "" && len(channel) <= 256
+}
+
+func (n *Node) selectLazyPeers(channel, excludePeerID string, limit int) []string {
+	if limit <= 0 {
+		return nil
+	}
+	peers := n.pubsub.NonMeshSubscribers(channel)
+	if len(peers) == 0 {
+		return nil
+	}
+	heartbeat := atomic.LoadUint64(&n.heartbeat)
+	sort.Slice(peers, func(i, j int) bool {
+		keyI := lazyPeerKey(channel, peers[i], heartbeat)
+		keyJ := lazyPeerKey(channel, peers[j], heartbeat)
+		if keyI == keyJ {
+			return peers[i] < peers[j]
+		}
+		return keyI < keyJ
+	})
+	selected := make([]string, 0, limit)
+	for _, peerID := range peers {
+		if peerID == excludePeerID {
+			continue
+		}
+		selected = append(selected, peerID)
+		if len(selected) == limit {
+			break
+		}
+	}
+	return selected
+}
+
+func lazyPeerKey(channel, peerID string, heartbeat uint64) string {
+	hash, _ := blake2s.New256(nil)
+	hash.Write([]byte(channel))
+	hash.Write([]byte(peerID))
+	hash.Write([]byte(strconv.FormatUint(heartbeat, 10)))
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
+func medianMeshScore(engine *gossip.Engine, peers []string) float64 {
+	if len(peers) == 0 {
+		return 0
+	}
+	scores := make([]float64, 0, len(peers))
+	for _, peerID := range peers {
+		scores = append(scores, engine.Score(peerID))
+	}
+	sort.Float64s(scores)
+	middle := len(scores) / 2
+	if len(scores)%2 == 1 {
+		return scores[middle]
+	}
+	return (scores[middle-1] + scores[middle]) / 2
 }
 
 func max(a, b int) int {
