@@ -4,3 +4,6 @@
 *.so
 *.dylib
 *.h
+*.exe
+bin/
+obj/

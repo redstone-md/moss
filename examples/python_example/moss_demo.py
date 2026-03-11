@@ -1,8 +1,9 @@
 import ctypes
+from pathlib import Path
 from ctypes import c_char_p, c_int32, c_int64, c_uint8, c_uint32, c_void_p
 
 
-LIB = ctypes.CDLL("../../moss.dll")
+LIB = ctypes.CDLL(str((Path(__file__).resolve().parents[2] / "moss.dll")))
 
 MossMessageCallback = ctypes.CFUNCTYPE(None, c_char_p, ctypes.POINTER(c_uint8), ctypes.POINTER(c_uint8), c_uint32)
 

@@ -8,8 +8,10 @@ static void on_message(const char* channel, const uint8_t* sender_id, const uint
 }
 
 int main(void) {
-    const char* config = "{\"trackers\":[],\"listen_port\":41010}";
-    MossHandle handle = Moss_Init("demo-mesh", NULL, config);
+    char mesh_id[] = "demo-mesh";
+    char config[] = "{\"trackers\":[],\"listen_port\":41010}";
+    char channel[] = "alpha";
+    MossHandle handle = Moss_Init(mesh_id, NULL, config);
     if (handle <= 0) {
         fprintf(stderr, "Moss_Init failed: %lld\n", (long long)handle);
         return 1;
@@ -21,8 +23,9 @@ int main(void) {
         return 1;
     }
 
-    Moss_Subscribe(handle, "alpha");
-    Moss_Publish(handle, "alpha", (const uint8_t*)"hello from C", 12);
+    uint8_t payload[] = "hello from C";
+    Moss_Subscribe(handle, channel);
+    Moss_Publish(handle, channel, payload, 12);
 
     const char* info = Moss_GetMeshInfo(handle);
     if (info != NULL) {
