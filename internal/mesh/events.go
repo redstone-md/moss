@@ -7,6 +7,7 @@ const (
 	EventSupernodeRevoked  = 4
 	EventTrackerAnnounce   = 5
 	EventTrackerFailure    = 6
+	EventRelayMigrated     = 7
 )
 
 type MessageCallback func(channel string, senderID [32]byte, data []byte)
