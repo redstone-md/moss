@@ -35,6 +35,12 @@ Terminal 2:
 python examples\python_chat\moss_chat.py --nickname Bob --listen-port 41031 --peer 127.0.0.1:41030 --room lobby
 ```
 
+For a second machine on the same LAN, use the first machine's hostname or LAN IP instead of `127.0.0.1`:
+
+```powershell
+python examples\python_chat\moss_chat.py --nickname Pi --listen-port 41030 --peer rpi1.local:41030 --room lobby
+```
+
 Or launch both demo windows automatically:
 
 ```powershell
@@ -61,5 +67,6 @@ Supported commands:
 ## Notes
 
 - For the local demo, the second client needs `--peer 127.0.0.1:PORT_OF_FIRST_CLIENT`.
+- For Raspberry Pi / LAN testing, use `--peer HOSTNAME_OR_LAN_IP:PORT` and make sure the port is allowed by the local firewall.
 - Each nickname gets its own persisted Moss identity in `examples/python_chat/.state/`.
 - The app loads the shared library from the repository root: `moss.dll`, `libmoss.so`, or `libmoss.dylib`.

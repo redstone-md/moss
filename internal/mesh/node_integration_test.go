@@ -446,11 +446,13 @@ func TestSupernodeStatusAnnounceAndRevokePropagatesOnce(t *testing.T) {
 
 	nodeAPub := nodeA.PublicKey()
 	nodeAID := hex.EncodeToString(nodeAPub[:])
+	waitForKnownPeer(t, nodeB, nodeAID)
 	nodeA.natProfile.Store(nat.Profile{
 		Type:            nat.TypePublic,
 		PublicReachable: true,
 		ExternalAddress: net.JoinHostPort("203.0.113.10", strconv.Itoa(nodeA.ListenPort())),
 	})
+	nodeA.refreshSupernodeStatus()
 
 	waitForKnownPeerRelayCapable(t, nodeB, nodeAID, true)
 	select {
@@ -470,6 +472,7 @@ func TestSupernodeStatusAnnounceAndRevokePropagatesOnce(t *testing.T) {
 		PublicReachable: false,
 		ExternalAddress: net.JoinHostPort("203.0.113.10", strconv.Itoa(nodeA.ListenPort())),
 	})
+	nodeA.refreshSupernodeStatus()
 
 	waitForKnownPeerRelayCapable(t, nodeB, nodeAID, false)
 	select {

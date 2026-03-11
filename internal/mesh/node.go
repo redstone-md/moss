@@ -531,10 +531,13 @@ func (n *Node) announceAndConnect(ctx context.Context, event bootstrap.Event) {
 		n.enqueueEvent(EventTrackerFailure, map[string]string{"error": err.Error()})
 		return
 	}
-	n.enqueueEvent(EventTrackerAnnounce, map[string]int{"peers": len(peers)})
 	for _, peer := range peers {
 		n.connectPeer(ctx, peer)
 	}
+	n.enqueueEvent(EventTrackerAnnounce, map[string]int{
+		"candidate_peers": len(peers),
+		"connected_peers": n.currentPeerCount(),
+	})
 }
 
 func (n *Node) connectPeer(ctx context.Context, addr string) {
@@ -1661,7 +1664,131 @@ func (n *Node) advertisedListenAddr() string {
 			return net.JoinHostPort(host, port)
 		}
 	}
+	if n.shouldAdvertiseLoopback() {
+		return net.JoinHostPort("127.0.0.1", strconv.Itoa(n.listenPort))
+	}
+	if host, ok := bestLocalAdvertiseHost(); ok {
+		return net.JoinHostPort(host, strconv.Itoa(n.listenPort))
+	}
 	return net.JoinHostPort("127.0.0.1", strconv.Itoa(n.listenPort))
+}
+
+func (n *Node) shouldAdvertiseLoopback() bool {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	if len(n.peers) > 0 {
+		allLoopback := true
+		for _, peer := range n.peers {
+			host, _, err := net.SplitHostPort(peer.addr)
+			if err != nil || !isLoopbackHost(host) {
+				allLoopback = false
+				break
+			}
+		}
+		if allLoopback {
+			return true
+		}
+	}
+	if len(n.config.StaticPeers) == 0 {
+		return false
+	}
+	for _, peer := range n.config.StaticPeers {
+		host, _, err := net.SplitHostPort(peer)
+		if err != nil || !isLoopbackHost(host) {
+			return false
+		}
+	}
+	return true
+}
+
+func bestLocalAdvertiseHost() (string, bool) {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return "", false
+	}
+	best, ok := selectAdvertiseHost(addrs)
+	if !ok {
+		return "", false
+	}
+	return best.String(), true
+}
+
+func selectAdvertiseHost(addrs []net.Addr) (netip.Addr, bool) {
+	var private4 netip.Addr
+	var global4 netip.Addr
+	var private6 netip.Addr
+	var global6 netip.Addr
+	for _, addr := range addrs {
+		parsed, ok := addrToNetip(addr)
+		if !ok {
+			continue
+		}
+		if parsed.IsLoopback() || parsed.IsLinkLocalUnicast() || parsed.IsLinkLocalMulticast() || parsed.IsMulticast() || parsed.IsUnspecified() {
+			continue
+		}
+		switch {
+		case parsed.Is4() && parsed.IsPrivate():
+			if !private4.IsValid() {
+				private4 = parsed
+			}
+		case parsed.Is4() && parsed.IsGlobalUnicast():
+			if !global4.IsValid() {
+				global4 = parsed
+			}
+		case parsed.Is6() && parsed.IsPrivate():
+			if !private6.IsValid() {
+				private6 = parsed
+			}
+		case parsed.Is6() && parsed.IsGlobalUnicast():
+			if !global6.IsValid() {
+				global6 = parsed
+			}
+		}
+	}
+	switch {
+	case private4.IsValid():
+		return private4, true
+	case global4.IsValid():
+		return global4, true
+	case private6.IsValid():
+		return private6, true
+	case global6.IsValid():
+		return global6, true
+	default:
+		return netip.Addr{}, false
+	}
+}
+
+func addrToNetip(addr net.Addr) (netip.Addr, bool) {
+	switch value := addr.(type) {
+	case *net.IPNet:
+		ip, ok := netip.AddrFromSlice(value.IP)
+		return ip.Unmap(), ok
+	case *net.IPAddr:
+		ip, ok := netip.AddrFromSlice(value.IP)
+		return ip.Unmap(), ok
+	default:
+		prefix, err := netip.ParsePrefix(addr.String())
+		if err != nil {
+			ip, err := netip.ParseAddr(addr.String())
+			if err != nil {
+				return netip.Addr{}, false
+			}
+			return ip.Unmap(), true
+		}
+		return prefix.Addr().Unmap(), true
+	}
+}
+
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	return addr.IsLoopback()
 }
 
 func (n *Node) directPeerConnected(peerID string) bool {
@@ -1669,6 +1796,12 @@ func (n *Node) directPeerConnected(peerID string) bool {
 	defer n.mu.RUnlock()
 	_, ok := n.peers[peerID]
 	return ok
+}
+
+func (n *Node) currentPeerCount() int {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return len(n.peers)
 }
 
 func (n *Node) establishedRelaySession(targetPeerID string) string {
