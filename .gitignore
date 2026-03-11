@@ -8,3 +8,5 @@
 bin/
 obj/
 examples/python_chat/.state/
+__pycache__/
+*.pyc
