@@ -5,11 +5,16 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/binary"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
+	"moss/internal/gossip"
 	"moss/internal/nat"
 )
 
@@ -73,11 +78,12 @@ func TestTwoNodesExchangePubSubMessages(t *testing.T) {
 	}
 }
 
-func TestInvalidPayloadClosesPeerOnBothSides(t *testing.T) {
+func TestFreshPeerIsNotPrunedByNegativeScore(t *testing.T) {
 	cfgA := DefaultConfig()
 	cfgA.Trackers = nil
+	cfgA.LANDiscoveryEnabled = false
 	cfgA.GossipSub.HeartbeatMS = 50
-	nodeA, err := NewNode("mesh-invalid-payload", nil, cfgA)
+	nodeA, err := NewNode("mesh-retain-fresh", nil, cfgA)
 	if err != nil {
 		t.Fatalf("NewNode nodeA failed: %v", err)
 	}
@@ -88,9 +94,10 @@ func TestInvalidPayloadClosesPeerOnBothSides(t *testing.T) {
 
 	cfgB := DefaultConfig()
 	cfgB.Trackers = nil
+	cfgB.LANDiscoveryEnabled = false
 	cfgB.GossipSub.HeartbeatMS = 50
 	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(nodeA.ListenPort()))}
-	nodeB, err := NewNode("mesh-invalid-payload", nil, cfgB)
+	nodeB, err := NewNode("mesh-retain-fresh", nil, cfgB)
 	if err != nil {
 		t.Fatalf("NewNode nodeB failed: %v", err)
 	}
@@ -102,22 +109,19 @@ func TestInvalidPayloadClosesPeerOnBothSides(t *testing.T) {
 	waitForPeerCount(t, nodeA, 1)
 	waitForPeerCount(t, nodeB, 1)
 
-	nodeB.mu.RLock()
-	var peer *peerConn
-	for _, current := range nodeB.peers {
-		peer = current
+	nodeA.mu.RLock()
+	var peerID string
+	for id := range nodeA.peers {
+		peerID = id
 		break
 	}
-	nodeB.mu.RUnlock()
-	if peer == nil {
-		t.Fatal("expected connected peer on nodeB")
+	nodeA.mu.RUnlock()
+	if peerID == "" {
+		t.Fatal("expected connected peer")
 	}
-	if err := peer.session.WritePacket([]byte("{")); err != nil {
-		t.Fatalf("WritePacket invalid payload failed: %v", err)
-	}
-
-	waitForPeerCountEventually(t, nodeA, 0)
-	waitForPeerCountEventually(t, nodeB, 0)
+	nodeA.scoring.SetApplicationScore(peerID, -5)
+	nodeA.pruneLowScoringPeers()
+	waitForPeerCountAtLeast(t, nodeA, 1, 500*time.Millisecond)
 }
 
 func TestLateSubscriberRequestsCachedMessageViaIHaveIWant(t *testing.T) {
@@ -174,6 +178,196 @@ func TestLateSubscriberRequestsCachedMessageViaIHaveIWant(t *testing.T) {
 	}
 }
 
+func TestTrackerBootstrapPeersRelayPubSubThroughTransitServer(t *testing.T) {
+	tracker := newCompactTracker()
+	defer tracker.Close()
+
+	cfgServer := DefaultConfig()
+	cfgServer.Trackers = nil
+	cfgServer.LANDiscoveryEnabled = false
+	cfgServer.GossipSub.HeartbeatMS = 50
+	server, err := NewNode("mesh-tracker-transit", nil, cfgServer)
+	if err != nil {
+		t.Fatalf("NewNode server failed: %v", err)
+	}
+	if code := server.Start(); code != MOSS_OK {
+		t.Fatalf("server.Start failed: %d", code)
+	}
+	defer server.Stop()
+
+	serverAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(server.ListenPort()))
+	tracker.SetPeers([]string{serverAddr})
+
+	cfgA := DefaultConfig()
+	cfgA.Trackers = []string{tracker.URL()}
+	cfgA.LANDiscoveryEnabled = false
+	cfgA.GossipSub.HeartbeatMS = 50
+	cfgA.AnnounceIntervalSec = 1
+	cfgA.MaxPeers = 1
+	nodeA, err := NewNode("mesh-tracker-transit", nil, cfgA)
+	if err != nil {
+		t.Fatalf("NewNode nodeA failed: %v", err)
+	}
+	if code := nodeA.Start(); code != MOSS_OK {
+		t.Fatalf("nodeA.Start failed: %d", code)
+	}
+	defer nodeA.Stop()
+
+	cfgB := DefaultConfig()
+	cfgB.Trackers = []string{tracker.URL()}
+	cfgB.LANDiscoveryEnabled = false
+	cfgB.GossipSub.HeartbeatMS = 50
+	cfgB.AnnounceIntervalSec = 1
+	cfgB.MaxPeers = 1
+	nodeB, err := NewNode("mesh-tracker-transit", nil, cfgB)
+	if err != nil {
+		t.Fatalf("NewNode nodeB failed: %v", err)
+	}
+	if code := nodeB.Start(); code != MOSS_OK {
+		t.Fatalf("nodeB.Start failed: %d", code)
+	}
+	defer nodeB.Stop()
+
+	waitForPeerCount(t, server, 2)
+	waitForPeerCount(t, nodeA, 1)
+	waitForPeerCount(t, nodeB, 1)
+
+	received := make(chan []byte, 1)
+	nodeB.SetMessageCallback(func(channel string, senderID [32]byte, data []byte) {
+		if channel == "lobby" {
+			received <- append([]byte(nil), data...)
+		}
+	})
+
+	if code := nodeA.Subscribe("lobby"); code != MOSS_OK {
+		t.Fatalf("nodeA.Subscribe failed: %d", code)
+	}
+	if code := nodeB.Subscribe("lobby"); code != MOSS_OK {
+		t.Fatalf("nodeB.Subscribe failed: %d", code)
+	}
+
+	waitForSubscriberCount(t, server, "lobby", 2)
+
+	if code := nodeA.Publish("lobby", []byte("tracker-transit")); code != MOSS_OK {
+		t.Fatalf("nodeA.Publish failed: %d", code)
+	}
+
+	select {
+	case payload := <-received:
+		if string(payload) != "tracker-transit" {
+			t.Fatalf("unexpected payload: %q", string(payload))
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("timed out waiting for transit delivery; server=%s nodeA=%s nodeB=%s", server.MeshInfoJSON(), nodeA.MeshInfoJSON(), nodeB.MeshInfoJSON())
+	}
+}
+
+func TestTrackerBootstrapPeerIsRetainedAfterNegativeScore(t *testing.T) {
+	tracker := newCompactTracker()
+	defer tracker.Close()
+
+	cfgServer := DefaultConfig()
+	cfgServer.Trackers = nil
+	cfgServer.LANDiscoveryEnabled = false
+	server, err := NewNode("mesh-bootstrap-retain", nil, cfgServer)
+	if err != nil {
+		t.Fatalf("NewNode server failed: %v", err)
+	}
+	if code := server.Start(); code != MOSS_OK {
+		t.Fatalf("server.Start failed: %d", code)
+	}
+	defer server.Stop()
+
+	serverAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(server.ListenPort()))
+	tracker.SetPeers([]string{serverAddr})
+
+	cfgClient := DefaultConfig()
+	cfgClient.Trackers = []string{tracker.URL()}
+	cfgClient.LANDiscoveryEnabled = false
+	cfgClient.AnnounceIntervalSec = 1
+	cfgClient.MaxPeers = 1
+	client, err := NewNode("mesh-bootstrap-retain", nil, cfgClient)
+	if err != nil {
+		t.Fatalf("NewNode client failed: %v", err)
+	}
+	if code := client.Start(); code != MOSS_OK {
+		t.Fatalf("client.Start failed: %d", code)
+	}
+	defer client.Stop()
+
+	waitForPeerCount(t, server, 1)
+	waitForPeerCount(t, client, 1)
+
+	serverPub := server.PublicKey()
+	serverID := hex.EncodeToString(serverPub[:])
+	client.scoring.SetApplicationScore(serverID, -5)
+	client.mu.Lock()
+	if peer := client.peers[serverID]; peer != nil {
+		peer.connectedAt = time.Now().Add(-time.Minute)
+	}
+	client.mu.Unlock()
+	client.pruneLowScoringPeers()
+	waitForPeerCountAtLeast(t, client, 1, 500*time.Millisecond)
+}
+
+func TestDirectPeerAnnouncementDoesNotOverwriteSessionAddress(t *testing.T) {
+	cfgA := DefaultConfig()
+	cfgA.Trackers = nil
+	cfgA.LANDiscoveryEnabled = false
+	nodeA, err := NewNode("mesh-direct-announce", nil, cfgA)
+	if err != nil {
+		t.Fatalf("NewNode nodeA failed: %v", err)
+	}
+	if code := nodeA.Start(); code != MOSS_OK {
+		t.Fatalf("nodeA.Start failed: %d", code)
+	}
+	defer nodeA.Stop()
+
+	cfgB := DefaultConfig()
+	cfgB.Trackers = nil
+	cfgB.LANDiscoveryEnabled = false
+	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(nodeA.ListenPort()))}
+	nodeB, err := NewNode("mesh-direct-announce", nil, cfgB)
+	if err != nil {
+		t.Fatalf("NewNode nodeB failed: %v", err)
+	}
+	if code := nodeB.Start(); code != MOSS_OK {
+		t.Fatalf("nodeB.Start failed: %d", code)
+	}
+	defer nodeB.Stop()
+
+	waitForPeerCount(t, nodeA, 1)
+	waitForPeerCount(t, nodeB, 1)
+
+	peerPub := nodeA.PublicKey()
+	peerID := hex.EncodeToString(peerPub[:])
+
+	nodeB.mu.RLock()
+	peer := nodeB.peers[peerID]
+	actualAddr := ""
+	if peer != nil {
+		actualAddr = peer.addr
+	}
+	nodeB.mu.RUnlock()
+	if peer == nil || actualAddr == "" {
+		t.Fatal("expected direct peer session")
+	}
+
+	nodeB.handleKnownPeerEnvelope(peer, gossip.Envelope{
+		Type:              gossip.TypePeerAnnounce,
+		AdvertisedPeerID:  peerID,
+		AdvertisedAddr:    "10.123.45.67:41030",
+		AdvertisedNATType: string(nat.TypePublic),
+	}, gossip.TypePeerAnnounce)
+
+	nodeB.mu.RLock()
+	got := nodeB.knownPeers[peerID].addr
+	nodeB.mu.RUnlock()
+	if got != actualAddr {
+		t.Fatalf("expected direct peer to keep session addr %s, got %s", actualAddr, got)
+	}
+}
+
 func TestRelaySessionDeliversThroughIntermediatePeer(t *testing.T) {
 	cfgRelay := DefaultConfig()
 	cfgRelay.Trackers = nil
@@ -189,6 +383,7 @@ func TestRelaySessionDeliversThroughIntermediatePeer(t *testing.T) {
 
 	cfgA := DefaultConfig()
 	cfgA.Trackers = nil
+	cfgA.LANDiscoveryEnabled = false
 	cfgA.GossipSub.HeartbeatMS = 50
 	cfgA.MaxPeers = 1
 	cfgA.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(relayNode.ListenPort()))}
@@ -1437,6 +1632,7 @@ func TestOpportunisticGraftingPrefersHighScoringNonMeshPeer(t *testing.T) {
 	makePeer := func() *Node {
 		cfg := DefaultConfig()
 		cfg.Trackers = nil
+		cfg.LANDiscoveryEnabled = false
 		cfg.GossipSub.HeartbeatMS = 50
 		cfg.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(nodeA.ListenPort()))}
 		node, err := NewNode("mesh-graft", nil, cfg)
@@ -1903,6 +2099,7 @@ func TestHighLatencyPeerIsPruned(t *testing.T) {
 	targetID := hex.EncodeToString(targetPub[:])
 	nodeA.mu.Lock()
 	if peer := nodeA.peers[targetID]; peer != nil {
+		peer.connectedAt = time.Now().Add(-time.Minute)
 		peer.lastRTT = 3 * time.Second
 	}
 	nodeA.mu.Unlock()
@@ -1998,6 +2195,18 @@ func waitForPeerCountAtMost(t *testing.T, node *Node, max int, dur time.Duration
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
+}
+
+func waitForPeerCountAtLeast(t *testing.T, node *Node, min int, dur time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(dur)
+	for time.Now().Before(deadline) {
+		if got := node.currentPeerCount(); got >= min {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("peer count stayed below %d; info=%s", min, node.MeshInfoJSON())
 }
 
 func waitForSubscriberCount(t *testing.T, node *Node, channel string, want int) {
@@ -2134,6 +2343,56 @@ func waitForKnownPeerRelayCapable(t *testing.T, node *Node, wantPeerID string, w
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("known peer %s did not converge to relayCapable=%t", wantPeerID, want)
+}
+
+type compactTracker struct {
+	server *httptest.Server
+	mu     sync.RWMutex
+	peers  []string
+}
+
+func newCompactTracker() *compactTracker {
+	ct := &compactTracker{}
+	ct.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ct.mu.RLock()
+		peers := append([]string(nil), ct.peers...)
+		ct.mu.RUnlock()
+		compact := make([]byte, 0, len(peers)*6)
+		for _, peer := range peers {
+			host, port, err := net.SplitHostPort(peer)
+			if err != nil {
+				continue
+			}
+			ip := net.ParseIP(host).To4()
+			if ip == nil {
+				continue
+			}
+			portNum, err := strconv.Atoi(port)
+			if err != nil {
+				continue
+			}
+			entry := make([]byte, 6)
+			copy(entry[:4], ip)
+			binary.BigEndian.PutUint16(entry[4:6], uint16(portNum))
+			compact = append(compact, entry...)
+		}
+		_, _ = w.Write([]byte("d8:intervali1e5:peers" + strconv.Itoa(len(compact)) + ":" + string(compact) + "e"))
+	}))
+	return ct
+}
+
+func (ct *compactTracker) SetPeers(peers []string) {
+	ct.mu.Lock()
+	defer ct.mu.Unlock()
+	ct.peers = append([]string(nil), peers...)
+}
+
+func (ct *compactTracker) URL() string {
+	return ct.server.URL
+}
+
+func (ct *compactTracker) Close() {
+	ct.server.Close()
 }
 
 func waitForRelaySession(t *testing.T, node *Node, sessionID string) {

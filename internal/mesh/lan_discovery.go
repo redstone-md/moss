@@ -92,6 +92,42 @@ func lanDiscoveryInterfaces() []net.Interface {
 	return selected
 }
 
+func lanDiscoveryBroadcastAddrs() []*net.UDPAddr {
+	ifaces := lanDiscoveryInterfaces()
+	addrs := make([]*net.UDPAddr, 0, len(ifaces))
+	seen := make(map[string]struct{})
+	for _, iface := range ifaces {
+		ifaceAddrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range ifaceAddrs {
+			ipNet, ok := addr.(*net.IPNet)
+			if !ok || ipNet.IP == nil {
+				continue
+			}
+			ip4 := ipNet.IP.To4()
+			mask := ipNet.Mask
+			if ip4 == nil || len(mask) != 4 {
+				continue
+			}
+			broadcast := net.IPv4(
+				ip4[0]|^mask[0],
+				ip4[1]|^mask[1],
+				ip4[2]|^mask[2],
+				ip4[3]|^mask[3],
+			)
+			key := broadcast.String()
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			addrs = append(addrs, &net.UDPAddr{IP: broadcast})
+		}
+	}
+	return addrs
+}
+
 func (n *Node) lanDiscoveryReadLoop(ctx context.Context, conn net.PacketConn) {
 	buffer := make([]byte, 2048)
 	for {
@@ -145,6 +181,10 @@ func (n *Node) sendLANBeacon(conn *ipv4.PacketConn, groupAddr *net.UDPAddr) {
 		}
 		_, _ = conn.WriteTo(payload, nil, groupAddr)
 	}
+	for _, broadcast := range lanDiscoveryBroadcastAddrs() {
+		broadcast.Port = groupAddr.Port
+		_, _ = conn.WriteTo(payload, nil, broadcast)
+	}
 }
 
 func (n *Node) handleLANBeacon(src *net.UDPAddr, beacon lanBeacon) {
@@ -155,8 +195,8 @@ func (n *Node) handleLANBeacon(src *net.UDPAddr, beacon lanBeacon) {
 		return
 	}
 	addr := net.JoinHostPort(src.IP.String(), strconv.Itoa(beacon.ListenPort))
+	shouldDial := false
 	n.mu.Lock()
-	defer n.mu.Unlock()
 	current := n.knownPeers[beacon.PeerID]
 	n.knownPeers[beacon.PeerID] = knownPeer{
 		id:              beacon.PeerID,
@@ -169,5 +209,25 @@ func (n *Node) handleLANBeacon(src *net.UDPAddr, beacon lanBeacon) {
 		lastSeen:        time.Now(),
 		observations:    appendObservation(current.observations, addr),
 		noiseStatic:     append([]byte(nil), current.noiseStatic...),
+	}
+	if n.started && len(n.peers) < n.config.MaxPeers {
+		if _, connected := n.peers[beacon.PeerID]; !connected {
+			cooldown := n.config.HandshakeTimeout()
+			if cooldown < n.config.Heartbeat() {
+				cooldown = n.config.Heartbeat()
+			}
+			if cooldown <= 0 {
+				cooldown = time.Second
+			}
+			lastDial := n.peerDials[beacon.PeerID]
+			if lastDial.IsZero() || time.Since(lastDial) >= cooldown {
+				n.peerDials[beacon.PeerID] = time.Now()
+				shouldDial = true
+			}
+		}
+	}
+	n.mu.Unlock()
+	if shouldDial {
+		go n.dialKnownPeer(beacon.PeerID, addr)
 	}
 }
