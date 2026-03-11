@@ -1153,6 +1153,206 @@ func TestFiveNodeMeshPropagatesPublishedMessage(t *testing.T) {
 	}
 }
 
+func TestLocalPublishFloodsToNonMeshSubscribers(t *testing.T) {
+	cfgRoot := DefaultConfig()
+	cfgRoot.Trackers = nil
+	cfgRoot.GossipSub.HeartbeatMS = 50
+	cfgRoot.GossipSub.D = 1
+	cfgRoot.GossipSub.DLo = 1
+	cfgRoot.GossipSub.DHigh = 1
+	root, err := NewNode("mesh-flood-publish", nil, cfgRoot)
+	if err != nil {
+		t.Fatalf("NewNode root failed: %v", err)
+	}
+	if code := root.Start(); code != MOSS_OK {
+		t.Fatalf("root.Start failed: %d", code)
+	}
+	defer root.Stop()
+
+	nodes := []*Node{root}
+	for i := 0; i < 3; i++ {
+		cfg := DefaultConfig()
+		cfg.Trackers = nil
+		cfg.GossipSub.HeartbeatMS = 50
+		cfg.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(root.ListenPort()))}
+		node, err := NewNode("mesh-flood-publish", nil, cfg)
+		if err != nil {
+			t.Fatalf("NewNode peer %d failed: %v", i, err)
+		}
+		if code := node.Start(); code != MOSS_OK {
+			t.Fatalf("peer %d Start failed: %d", i, code)
+		}
+		defer node.Stop()
+		nodes = append(nodes, node)
+	}
+
+	waitForPeerCount(t, root, 3)
+	if code := root.Subscribe("alpha"); code != MOSS_OK {
+		t.Fatalf("root Subscribe failed: %d", code)
+	}
+	received := make(chan string, 3)
+	for i, node := range nodes[1:] {
+		if code := node.Subscribe("alpha"); code != MOSS_OK {
+			t.Fatalf("node %d Subscribe failed: %d", i+1, code)
+		}
+		index := i + 1
+		node.SetMessageCallback(func(channel string, senderID [32]byte, data []byte) {
+			if channel == "alpha" && string(data) == "flood-local" {
+				received <- strconv.Itoa(index)
+			}
+		})
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	if code := root.Publish("alpha", []byte("flood-local")); code != MOSS_OK {
+		t.Fatalf("root Publish failed: %d", code)
+	}
+
+	seen := make(map[string]struct{}, 3)
+	deadline := time.After(2 * time.Second)
+	for len(seen) < 3 {
+		select {
+		case idx := <-received:
+			seen[idx] = struct{}{}
+		case <-deadline:
+			t.Fatalf("timed out waiting for 3 subscribers, got %d", len(seen))
+		}
+	}
+}
+
+func TestTenNodeLanPublishPropagatesWithinFiveHundredMilliseconds(t *testing.T) {
+	cfgRoot := DefaultConfig()
+	cfgRoot.Trackers = nil
+	cfgRoot.GossipSub.HeartbeatMS = 50
+	root, err := NewNode("mesh-ten-latency", nil, cfgRoot)
+	if err != nil {
+		t.Fatalf("NewNode root failed: %v", err)
+	}
+	if code := root.Start(); code != MOSS_OK {
+		t.Fatalf("root.Start failed: %d", code)
+	}
+	defer root.Stop()
+
+	nodes := []*Node{root}
+	for i := 0; i < 9; i++ {
+		cfg := DefaultConfig()
+		cfg.Trackers = nil
+		cfg.GossipSub.HeartbeatMS = 50
+		cfg.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(root.ListenPort()))}
+		node, err := NewNode("mesh-ten-latency", nil, cfg)
+		if err != nil {
+			t.Fatalf("NewNode peer %d failed: %v", i, err)
+		}
+		if code := node.Start(); code != MOSS_OK {
+			t.Fatalf("peer %d Start failed: %d", i, code)
+		}
+		defer node.Stop()
+		nodes = append(nodes, node)
+	}
+
+	waitForPeerCount(t, root, 9)
+	for _, node := range nodes[1:] {
+		waitForPeerCount(t, node, 1)
+	}
+
+	if code := root.Subscribe("alpha"); code != MOSS_OK {
+		t.Fatalf("root Subscribe failed: %d", code)
+	}
+
+	received := make(chan string, 9)
+	for i, node := range nodes[1:] {
+		if code := node.Subscribe("alpha"); code != MOSS_OK {
+			t.Fatalf("node %d Subscribe failed: %d", i+1, code)
+		}
+		index := i + 1
+		node.SetMessageCallback(func(channel string, senderID [32]byte, data []byte) {
+			if channel == "alpha" && string(data) == "ten-node-fanout" {
+				received <- strconv.Itoa(index)
+			}
+		})
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	start := time.Now()
+	if code := root.Publish("alpha", []byte("ten-node-fanout")); code != MOSS_OK {
+		t.Fatalf("root Publish failed: %d", code)
+	}
+
+	seen := make(map[string]struct{}, 9)
+	deadline := time.After(2 * time.Second)
+	for len(seen) < 9 {
+		select {
+		case idx := <-received:
+			seen[idx] = struct{}{}
+		case <-deadline:
+			t.Fatalf("timed out waiting for 9 subscribers, got %d", len(seen))
+		}
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("expected 10-node LAN publish within 500ms, got %s", elapsed)
+	}
+}
+
+func TestRelaySessionEstablishesWithinFiveSeconds(t *testing.T) {
+	cfgRelay := DefaultConfig()
+	cfgRelay.Trackers = nil
+	cfgRelay.GossipSub.HeartbeatMS = 50
+	relayNode, err := NewNode("mesh-relay-latency", nil, cfgRelay)
+	if err != nil {
+		t.Fatalf("NewNode relay failed: %v", err)
+	}
+	if code := relayNode.Start(); code != MOSS_OK {
+		t.Fatalf("relayNode.Start failed: %d", code)
+	}
+	defer relayNode.Stop()
+
+	cfgA := DefaultConfig()
+	cfgA.Trackers = nil
+	cfgA.GossipSub.HeartbeatMS = 50
+	cfgA.MaxPeers = 1
+	cfgA.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(relayNode.ListenPort()))}
+	nodeA, err := NewNode("mesh-relay-latency", nil, cfgA)
+	if err != nil {
+		t.Fatalf("NewNode nodeA failed: %v", err)
+	}
+	if code := nodeA.Start(); code != MOSS_OK {
+		t.Fatalf("nodeA.Start failed: %d", code)
+	}
+	defer nodeA.Stop()
+
+	cfgB := DefaultConfig()
+	cfgB.Trackers = nil
+	cfgB.GossipSub.HeartbeatMS = 50
+	cfgB.MaxPeers = 1
+	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(relayNode.ListenPort()))}
+	nodeB, err := NewNode("mesh-relay-latency", nil, cfgB)
+	if err != nil {
+		t.Fatalf("NewNode nodeB failed: %v", err)
+	}
+	if code := nodeB.Start(); code != MOSS_OK {
+		t.Fatalf("nodeB.Start failed: %d", code)
+	}
+	defer nodeB.Stop()
+
+	waitForPeerCount(t, relayNode, 2)
+	waitForPeerCount(t, nodeA, 1)
+	waitForPeerCount(t, nodeB, 1)
+
+	relayPub := relayNode.PublicKey()
+	targetPub := nodeB.PublicKey()
+	start := time.Now()
+	sessionID, err := nodeA.OpenRelaySession(hex.EncodeToString(relayPub[:]), hex.EncodeToString(targetPub[:]), 5*time.Second)
+	if err != nil {
+		t.Fatalf("OpenRelaySession failed: %v", err)
+	}
+	waitForRelaySession(t, nodeA, sessionID)
+	waitForRelaySession(t, nodeB, sessionID)
+	waitForRelayRoute(t, relayNode, sessionID)
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("expected relay session establishment within 5s, got %s", elapsed)
+	}
+}
+
 func waitForPeerCount(t *testing.T, node *Node, want int) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
@@ -1166,6 +1366,18 @@ func waitForPeerCount(t *testing.T, node *Node, want int) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("peer count did not reach %d; info=%s", want, node.MeshInfoJSON())
+}
+
+func waitForSubscriberCount(t *testing.T, node *Node, channel string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := len(node.pubsub.Subscribers(channel)); got >= want {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("subscriber count for %s did not reach %d", channel, want)
 }
 
 func waitForMeshCount(t *testing.T, node *Node, channel string, want int) {

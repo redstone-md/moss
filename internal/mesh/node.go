@@ -302,7 +302,7 @@ func (n *Node) Publish(channel string, data []byte) int32 {
 	env := n.makePublishEnvelope(channel, data)
 	n.cache.Store(env)
 	n.deliverLocal(env)
-	sent := n.broadcastEnvelope(env, "")
+	sent := n.broadcastFloodPublish(env, "")
 	n.broadcastIHave(channel, []string{env.MessageID}, "")
 	if len(data) > 1024 {
 		n.broadcastIDontWant(channel, []string{env.MessageID}, "")
@@ -759,26 +759,35 @@ func (n *Node) broadcastEnvelope(env gossip.Envelope, excludePeerID string) bool
 	if len(targets) == 0 {
 		return false
 	}
-	payload, err := json.Marshal(env)
-	if err != nil {
+	return n.sendToPeers(filterPeerIDs(targets, func(peerID string) bool {
+		return peerID != excludePeerID && !n.isPeerBelowPublishThreshold(peerID)
+	}), env)
+}
+
+func (n *Node) broadcastFloodPublish(env gossip.Envelope, excludePeerID string) bool {
+	n.mu.RLock()
+	targets := make([]string, 0, len(n.peers))
+	for peerID := range n.peers {
+		if peerID == excludePeerID || n.isPeerBelowPublishThreshold(peerID) {
+			continue
+		}
+		targets = append(targets, peerID)
+	}
+	n.mu.RUnlock()
+	if len(targets) == 0 {
 		return false
 	}
-	n.mu.RLock()
-	defer n.mu.RUnlock()
-	sent := false
-	for _, peerID := range targets {
-		if peerID == excludePeerID {
-			continue
-		}
-		peer := n.peers[peerID]
-		if peer == nil {
-			continue
-		}
-		if err := peer.session.WritePacket(payload); err == nil {
-			sent = true
+	return n.sendToPeers(targets, env)
+}
+
+func filterPeerIDs(peerIDs []string, keep func(string) bool) []string {
+	filtered := make([]string, 0, len(peerIDs))
+	for _, peerID := range peerIDs {
+		if keep(peerID) {
+			filtered = append(filtered, peerID)
 		}
 	}
-	return sent
+	return filtered
 }
 
 func (n *Node) sendEnvelope(peer *peerConn, env gossip.Envelope) {
@@ -1124,18 +1133,31 @@ func (n *Node) sendToPeers(peerIDs []string, env gossip.Envelope) bool {
 		return false
 	}
 	n.mu.RLock()
-	defer n.mu.RUnlock()
-	sent := false
+	peers := make([]*peerConn, 0, len(peerIDs))
 	for _, peerID := range peerIDs {
 		peer := n.peers[peerID]
 		if peer == nil {
 			continue
 		}
-		if err := peer.session.WritePacket(payload); err == nil {
-			sent = true
-		}
+		peers = append(peers, peer)
 	}
-	return sent
+	n.mu.RUnlock()
+	if len(peers) == 0 {
+		return false
+	}
+	var sent atomic.Bool
+	var wg sync.WaitGroup
+	wg.Add(len(peers))
+	for _, peer := range peers {
+		go func(peer *peerConn) {
+			defer wg.Done()
+			if err := peer.session.WritePacket(payload); err == nil {
+				sent.Store(true)
+			}
+		}(peer)
+	}
+	wg.Wait()
+	return sent.Load()
 }
 
 func (n *Node) removePeer(peerID string) {
