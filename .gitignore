@@ -7,3 +7,4 @@
 *.exe
 bin/
 obj/
+examples/python_chat/.state/
