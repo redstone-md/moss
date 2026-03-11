@@ -37,6 +37,7 @@ type Node struct {
 	profiler      *nat.Profiler
 	portMapper    nat.PortMapper
 	listener      *transport.Listener
+	udpListener   *transport.UDPListener
 	relaySessions *nat.SessionManager
 	listenPort    int
 	startedAt     time.Time
@@ -175,16 +176,27 @@ func (n *Node) Start() int32 {
 	if err != nil {
 		return MOSS_ERR_CONFIG_INVALID
 	}
+	udpListener, _, err := transport.ListenUDP(port, transport.HandshakeConfig{
+		MeshID:   n.meshID,
+		PSK:      n.psk,
+		Identity: n.identity,
+	})
+	if err != nil {
+		_ = ln.Close()
+		return MOSS_ERR_CONFIG_INVALID
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	n.listener = ln
+	n.udpListener = udpListener
 	n.listenPort = port
 	n.started = true
 	n.startedAt = time.Now()
 	n.cancel = cancel
 	n.natProfile.Store(n.profiler.Detect(ln.Addr().String()))
 	n.portMapper = nil
-	n.wg.Add(4)
+	n.wg.Add(5)
 	go n.acceptLoop(ctx)
+	go n.acceptUDPLoop(ctx)
 	go n.dispatchLoop(ctx)
 	go n.bootstrapLoop(ctx)
 	go n.maintenanceLoop(ctx)
@@ -201,6 +213,7 @@ func (n *Node) Stop() int32 {
 	n.started = false
 	cancel := n.cancel
 	listener := n.listener
+	udpListener := n.udpListener
 	portMapper := n.portMapper
 	n.portMapper = nil
 	peers := make([]*peerConn, 0, len(n.peers))
@@ -212,6 +225,9 @@ func (n *Node) Stop() int32 {
 	cancel()
 	if listener != nil {
 		_ = listener.Close()
+	}
+	if udpListener != nil {
+		_ = udpListener.Close()
 	}
 	if portMapper != nil {
 		portMapper.Close()
@@ -428,6 +444,20 @@ func (n *Node) acceptLoop(ctx context.Context) {
 		}
 		n.wg.Add(1)
 		go n.handleInbound(ctx, conn)
+	}
+}
+
+func (n *Node) acceptUDPLoop(ctx context.Context) {
+	defer n.wg.Done()
+	for {
+		session, err := n.udpListener.Accept()
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			return
+		}
+		n.registerPeer(session, false)
 	}
 }
 
@@ -1690,13 +1720,24 @@ func (n *Node) tryHolePunchDial(targetPeerID, addr string) {
 			return
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), n.config.HandshakeTimeout())
-		n.connectPeer(ctx, pair.Remote)
+		n.connectPeerUDP(ctx, pair.Remote)
 		cancel()
 		if n.directPeerConnected(targetPeerID) {
 			return
 		}
 		time.Sleep(75 * time.Millisecond)
 	}
+}
+
+func (n *Node) connectPeerUDP(ctx context.Context, addr string) {
+	if n.udpListener == nil || addr == "" {
+		return
+	}
+	session, err := n.udpListener.DialContext(ctx, addr)
+	if err != nil {
+		return
+	}
+	n.registerPeer(session, true)
 }
 
 func (n *Node) waitForDirectPeer(targetPeerID string, timeout time.Duration) bool {

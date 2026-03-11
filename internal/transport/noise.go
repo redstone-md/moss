@@ -62,7 +62,7 @@ func ClientHandshake(ctx context.Context, conn net.Conn, cfg HandshakeConfig) (*
 	if err := writeFrame(ctx, conn, msg3); err != nil {
 		return nil, err
 	}
-	return NewSession(conn, sendCipher, recvCipher, remoteID)
+	return NewSession(newStreamCarrier(conn), sendCipher, recvCipher, remoteID)
 }
 
 func ServerHandshake(ctx context.Context, conn net.Conn, cfg HandshakeConfig) (*Session, error) {
@@ -102,7 +102,7 @@ func ServerHandshake(ctx context.Context, conn net.Conn, cfg HandshakeConfig) (*
 	if err := verifyIdentityPayload(payload3, cfg.MeshID, hs.PeerStatic(), &remoteID); err != nil {
 		return nil, err
 	}
-	return NewSession(conn, sendCipher, recvCipher, remoteID)
+	return NewSession(newStreamCarrier(conn), sendCipher, recvCipher, remoteID)
 }
 
 func newHandshakeState(cfg HandshakeConfig, initiator bool) (*noise.HandshakeState, error) {

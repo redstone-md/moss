@@ -10,8 +10,8 @@ type Listener struct {
 }
 
 func Listen(port int) (*Listener, int, error) {
-	addr := ":" + strconv.Itoa(port)
-	ln, err := net.Listen("tcp", addr)
+	addr := "0.0.0.0:" + strconv.Itoa(port)
+	ln, err := net.Listen("tcp4", addr)
 	if err != nil {
 		return nil, 0, err
 	}
