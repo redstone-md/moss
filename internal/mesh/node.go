@@ -565,6 +565,11 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 	peerID := hex.EncodeToString(remoteID[:])
 	addr := session.RemoteAddr().String()
 	n.mu.Lock()
+	if !n.started {
+		n.mu.Unlock()
+		_ = session.Close()
+		return
+	}
 	if _, exists := n.peers[peerID]; exists {
 		n.mu.Unlock()
 		_ = session.Close()
