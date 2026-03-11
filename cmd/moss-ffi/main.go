@@ -13,6 +13,9 @@ typedef void (*MossMessageCallback)(const char* channel,
 typedef void (*MossEventCallback)(int32_t event_type,
                                    const char* detail_json);
 
+typedef double (*MossScoringCallback)(const uint8_t* peer_id,
+                                       double base_score);
+
 static inline void callMessageCallback(MossMessageCallback cb,
                                        const char* channel,
                                        const uint8_t* sender_id,
@@ -25,6 +28,12 @@ static inline void callEventCallback(MossEventCallback cb,
                                      int32_t event_type,
                                      const char* detail_json) {
   cb(event_type, detail_json);
+}
+
+static inline double callScoringCallback(MossScoringCallback cb,
+                                         const uint8_t* peer_id,
+                                         double base_score) {
+  return cb(peer_id, base_score);
 }
 */
 import "C"
@@ -152,6 +161,24 @@ func Moss_SetEventCallback(handle C.MossHandle, cb C.MossEventCallback) C.int32_
 		detailC := C.CString(detailJSON)
 		C.callEventCallback(cb, C.int32_t(eventType), detailC)
 		C.free(unsafe.Pointer(detailC))
+	})
+	return C.int32_t(mesh.MOSS_OK)
+}
+
+//export Moss_SetScoringCallback
+func Moss_SetScoringCallback(handle C.MossHandle, cb C.MossScoringCallback) C.int32_t {
+	node, code := getNode(int64(handle))
+	if code != mesh.MOSS_OK {
+		return C.int32_t(code)
+	}
+	if cb == nil {
+		node.SetScoringCallback(nil)
+		return C.int32_t(mesh.MOSS_OK)
+	}
+	node.SetScoringCallback(func(peerID [32]byte, baseScore float64) float64 {
+		peerC := C.CBytes(peerID[:])
+		defer C.free(peerC)
+		return float64(C.callScoringCallback(cb, (*C.uint8_t)(peerC), C.double(baseScore)))
 	})
 	return C.int32_t(mesh.MOSS_OK)
 }

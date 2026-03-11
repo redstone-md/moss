@@ -62,6 +62,8 @@ type Node struct {
 	knownPeers       map[string]knownPeer
 	bindingWait      map[string]chan string
 	reachabilityWait map[string]chan bool
+	scoringMu        sync.RWMutex
+	scoringCB        func(peerID [32]byte, baseScore float64) float64
 	messageCB        MessageCallback
 	eventCB          EventCallback
 	relayCB          RelayCallback
@@ -309,6 +311,12 @@ func (n *Node) SetRelayCallback(cb RelayCallback) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.relayCB = cb
+}
+
+func (n *Node) SetScoringCallback(cb func(peerID [32]byte, baseScore float64) float64) {
+	n.scoringMu.Lock()
+	defer n.scoringMu.Unlock()
+	n.scoringCB = cb
 }
 
 func (n *Node) MeshInfoJSON() string {
@@ -1103,7 +1111,7 @@ func (n *Node) pruneLowScoringPeers() {
 	n.mu.RLock()
 	ids := make([]string, 0, len(n.peers))
 	for id := range n.peers {
-		if n.scoring.Score(id) < 0 {
+		if n.peerScore(id) < 0 {
 			ids = append(ids, id)
 		}
 	}
@@ -1258,8 +1266,8 @@ func (n *Node) pruneTopicMeshExcess(channel string) {
 		return
 	}
 	sort.Slice(meshPeers, func(i, j int) bool {
-		scoreI := n.scoring.Score(meshPeers[i])
-		scoreJ := n.scoring.Score(meshPeers[j])
+		scoreI := n.peerScore(meshPeers[i])
+		scoreJ := n.peerScore(meshPeers[j])
 		if scoreI == scoreJ {
 			return meshPeers[i] > meshPeers[j]
 		}
@@ -1320,8 +1328,8 @@ func (n *Node) selectMeshCandidates(channel string, limit int) []string {
 		if outI != outJ {
 			return outI
 		}
-		scoreI := n.scoring.Score(candidates[i])
-		scoreJ := n.scoring.Score(candidates[j])
+		scoreI := n.peerScore(candidates[i])
+		scoreJ := n.peerScore(candidates[j])
 		if scoreI == scoreJ {
 			return candidates[i] < candidates[j]
 		}
@@ -1338,7 +1346,7 @@ func (n *Node) opportunisticGraft(channel string) {
 	if len(meshPeers) < 2 {
 		return
 	}
-	if medianMeshScore(n.scoring, meshPeers) >= 1.0 {
+	if n.medianMeshScore(meshPeers) >= 1.0 {
 		return
 	}
 	candidates := n.selectHighScoringCandidates(channel, 2, 1.0)
@@ -1362,7 +1370,7 @@ func (n *Node) selectHighScoringCandidates(channel string, limit int, threshold 
 	candidates := n.selectMeshCandidates(channel, n.config.MaxPeers)
 	filtered := make([]string, 0, len(candidates))
 	for _, peerID := range candidates {
-		if n.scoring.Score(peerID) <= threshold {
+		if n.peerScore(peerID) <= threshold {
 			continue
 		}
 		filtered = append(filtered, peerID)
@@ -1936,8 +1944,8 @@ func (n *Node) selectRelayPeer(targetPeerID string) (string, error) {
 		if rankI, rankJ := relayCandidateRank(infoI), relayCandidateRank(infoJ); rankI != rankJ {
 			return rankI > rankJ
 		}
-		scoreI := n.scoring.Score(candidates[i])
-		scoreJ := n.scoring.Score(candidates[j])
+		scoreI := n.peerScore(candidates[i])
+		scoreJ := n.peerScore(candidates[j])
 		if scoreI == scoreJ {
 			return candidates[i] < candidates[j]
 		}
@@ -1959,6 +1967,39 @@ func relayCandidateRank(info knownPeer) int {
 		rank++
 	}
 	return rank
+}
+
+func (n *Node) peerScore(peerID string) float64 {
+	base := n.scoring.Score(peerID)
+	n.scoringMu.RLock()
+	cb := n.scoringCB
+	n.scoringMu.RUnlock()
+	if cb == nil {
+		return base
+	}
+	return cb(decodePeerID(peerID), base)
+}
+
+func (n *Node) medianMeshScore(peers []string) float64 {
+	if len(peers) == 0 {
+		return 0
+	}
+	scores := make([]float64, 0, len(peers))
+	for _, peerID := range peers {
+		scores = append(scores, n.peerScore(peerID))
+	}
+	sort.Float64s(scores)
+	return scores[len(scores)/2]
+}
+
+func decodePeerID(peerID string) [32]byte {
+	var out [32]byte
+	raw, err := hex.DecodeString(peerID)
+	if err != nil {
+		return out
+	}
+	copy(out[:], raw)
+	return out
 }
 
 func (n *Node) probePortMapping(ctx context.Context, listenAddr string, port int) {

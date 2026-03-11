@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -46,5 +47,12 @@ func TestBuildSharedLibrary(t *testing.T) {
 	header := output[:len(output)-len(filepath.Ext(output))] + ".h"
 	if _, err := os.Stat(header); err != nil {
 		t.Fatalf("generated header missing: %v", err)
+	}
+	headerBytes, err := os.ReadFile(header)
+	if err != nil {
+		t.Fatalf("read generated header failed: %v", err)
+	}
+	if !strings.Contains(string(headerBytes), "Moss_SetScoringCallback") {
+		t.Fatal("generated header is missing Moss_SetScoringCallback")
 	}
 }
