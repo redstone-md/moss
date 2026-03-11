@@ -8,6 +8,7 @@ const (
 	TypeIHave        EnvelopeType = "ihave"
 	TypeIWant        EnvelopeType = "iwant"
 	TypeIDontWant    EnvelopeType = "idontwant"
+	TypePeerAnnounce EnvelopeType = "peer_announce"
 	TypeRelayRequest EnvelopeType = "relay_request"
 	TypeRelayAccept  EnvelopeType = "relay_accept"
 	TypeRelayData    EnvelopeType = "relay_data"
@@ -18,14 +19,16 @@ const (
 )
 
 type Envelope struct {
-	Type         EnvelopeType `json:"type"`
-	Channel      string       `json:"channel,omitempty"`
-	MessageID    string       `json:"message_id,omitempty"`
-	MessageIDs   []string     `json:"message_ids,omitempty"`
-	Sequence     uint64       `json:"sequence,omitempty"`
-	SenderID     []byte       `json:"sender_id,omitempty"`
-	RelaySession string       `json:"relay_session,omitempty"`
-	RelaySource  string       `json:"relay_source,omitempty"`
-	RelayTarget  string       `json:"relay_target,omitempty"`
-	Payload      []byte       `json:"payload,omitempty"`
+	Type             EnvelopeType `json:"type"`
+	Channel          string       `json:"channel,omitempty"`
+	MessageID        string       `json:"message_id,omitempty"`
+	MessageIDs       []string     `json:"message_ids,omitempty"`
+	Sequence         uint64       `json:"sequence,omitempty"`
+	SenderID         []byte       `json:"sender_id,omitempty"`
+	RelaySession     string       `json:"relay_session,omitempty"`
+	RelaySource      string       `json:"relay_source,omitempty"`
+	RelayTarget      string       `json:"relay_target,omitempty"`
+	AdvertisedPeerID string       `json:"advertised_peer_id,omitempty"`
+	AdvertisedAddr   string       `json:"advertised_addr,omitempty"`
+	Payload          []byte       `json:"payload,omitempty"`
 }
