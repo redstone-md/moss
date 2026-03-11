@@ -1,6 +1,7 @@
 package mesh
 
 import (
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"net"
@@ -417,6 +418,71 @@ func TestRefreshExternalAddressPreservesListenPort(t *testing.T) {
 	}
 }
 
+func TestDirectPeerConnectionMigratesRelaySession(t *testing.T) {
+	cfgRelay := DefaultConfig()
+	cfgRelay.Trackers = nil
+	cfgRelay.GossipSub.HeartbeatMS = 50
+	relayNode, err := NewNode("mesh-migrate", nil, cfgRelay)
+	if err != nil {
+		t.Fatalf("NewNode relay failed: %v", err)
+	}
+	if code := relayNode.Start(); code != MOSS_OK {
+		t.Fatalf("relayNode.Start failed: %d", code)
+	}
+	defer relayNode.Stop()
+
+	cfgA := DefaultConfig()
+	cfgA.Trackers = nil
+	cfgA.GossipSub.HeartbeatMS = 50
+	cfgA.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(relayNode.ListenPort()))}
+	nodeA, err := NewNode("mesh-migrate", nil, cfgA)
+	if err != nil {
+		t.Fatalf("NewNode nodeA failed: %v", err)
+	}
+	if code := nodeA.Start(); code != MOSS_OK {
+		t.Fatalf("nodeA.Start failed: %d", code)
+	}
+	defer nodeA.Stop()
+
+	cfgB := DefaultConfig()
+	cfgB.Trackers = nil
+	cfgB.GossipSub.HeartbeatMS = 50
+	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(relayNode.ListenPort()))}
+	nodeB, err := NewNode("mesh-migrate", nil, cfgB)
+	if err != nil {
+		t.Fatalf("NewNode nodeB failed: %v", err)
+	}
+	if code := nodeB.Start(); code != MOSS_OK {
+		t.Fatalf("nodeB.Start failed: %d", code)
+	}
+	defer nodeB.Stop()
+
+	waitForPeerCount(t, relayNode, 2)
+	waitForPeerCount(t, nodeA, 1)
+	waitForPeerCount(t, nodeB, 1)
+
+	relayPub := relayNode.PublicKey()
+	targetPub := nodeB.PublicKey()
+	sessionID, err := nodeA.OpenRelaySession(hex.EncodeToString(relayPub[:]), hex.EncodeToString(targetPub[:]), 2*time.Second)
+	if err != nil {
+		t.Fatalf("OpenRelaySession failed: %v", err)
+	}
+	waitForRelaySession(t, nodeA, sessionID)
+	waitForRelaySession(t, nodeB, sessionID)
+	waitForRelayRoute(t, relayNode, sessionID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	nodeA.connectPeer(ctx, net.JoinHostPort("127.0.0.1", strconv.Itoa(nodeB.ListenPort())))
+	cancel()
+
+	sourcePub := nodeA.PublicKey()
+	waitForDirectPeer(t, nodeA, hex.EncodeToString(targetPub[:]))
+	waitForDirectPeer(t, nodeB, hex.EncodeToString(sourcePub[:]))
+	waitForRelaySessionClosed(t, nodeA, sessionID)
+	waitForRelaySessionClosed(t, nodeB, sessionID)
+	waitForRelayRouteClosed(t, relayNode, sessionID)
+}
+
 func waitForPeerCount(t *testing.T, node *Node, want int) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
@@ -445,4 +511,79 @@ func waitForKnownPeer(t *testing.T, node *Node, wantPeerID string) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("known peer %s was not discovered", wantPeerID)
+}
+
+func waitForDirectPeer(t *testing.T, node *Node, wantPeerID string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		node.mu.RLock()
+		_, ok := node.peers[wantPeerID]
+		node.mu.RUnlock()
+		if ok {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("direct peer %s was not connected", wantPeerID)
+}
+
+func waitForRelaySession(t *testing.T, node *Node, sessionID string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		node.mu.RLock()
+		session, ok := node.relayLocals[sessionID]
+		node.mu.RUnlock()
+		if ok && session.established {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("relay session %s was not established", sessionID)
+}
+
+func waitForRelaySessionClosed(t *testing.T, node *Node, sessionID string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		node.mu.RLock()
+		_, ok := node.relayLocals[sessionID]
+		node.mu.RUnlock()
+		if !ok {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("relay session %s did not close", sessionID)
+}
+
+func waitForRelayRoute(t *testing.T, node *Node, sessionID string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		node.mu.RLock()
+		_, ok := node.relayRoutes[sessionID]
+		node.mu.RUnlock()
+		if ok {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("relay route %s was not created", sessionID)
+}
+
+func waitForRelayRouteClosed(t *testing.T, node *Node, sessionID string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		node.mu.RLock()
+		_, ok := node.relayRoutes[sessionID]
+		node.mu.RUnlock()
+		if !ok {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("relay route %s did not close", sessionID)
 }

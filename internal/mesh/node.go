@@ -542,6 +542,7 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 	n.sendKnownPeerSnapshot(peer)
 	n.broadcastPeerAnnouncement(peerID, addr, peerID)
 	go n.refreshExternalAddress(time.Now().Add(n.config.HandshakeTimeout()))
+	n.migrateRelaySessions(peerID)
 	for _, channel := range n.pubsub.SnapshotLocal() {
 		n.maintainTopicMesh(channel)
 	}
@@ -1316,6 +1317,42 @@ func (n *Node) handleRelayClose(peer *peerConn, env gossip.Envelope) {
 	if targetPeer != nil && targetPeer.id != peer.id {
 		n.sendEnvelope(targetPeer, env)
 	}
+}
+
+func (n *Node) migrateRelaySessions(peerID string) {
+	n.mu.RLock()
+	sessions := make([]relayLocalSession, 0, len(n.relayLocals))
+	for _, session := range n.relayLocals {
+		if session.remotePeerID == peerID && session.established {
+			sessions = append(sessions, session)
+		}
+	}
+	n.mu.RUnlock()
+	for _, session := range sessions {
+		n.closeRelaySession(session)
+	}
+}
+
+func (n *Node) closeRelaySession(session relayLocalSession) {
+	n.mu.RLock()
+	viaPeer := n.peers[session.viaPeerID]
+	n.mu.RUnlock()
+	if viaPeer != nil {
+		n.sendEnvelope(viaPeer, gossip.Envelope{
+			Type:         gossip.TypeRelayClose,
+			RelaySession: session.sessionID,
+			RelaySource:  n.localPeerID(),
+			RelayTarget:  session.remotePeerID,
+		})
+	}
+	n.mu.Lock()
+	delete(n.relayLocals, session.sessionID)
+	n.mu.Unlock()
+	n.enqueueEvent(EventRelayMigrated, map[string]string{
+		"peer":    session.remotePeerID,
+		"session": session.sessionID,
+		"via":     session.viaPeerID,
+	})
 }
 
 func newRelaySessionID() (string, error) {
