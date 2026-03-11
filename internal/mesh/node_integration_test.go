@@ -1,6 +1,7 @@
 package mesh
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -257,6 +258,146 @@ func TestRelaySendToAutoOpensRelaySession(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for auto-relayed payload")
+	}
+}
+
+func TestRelayNodeEnforcesSessionLimit(t *testing.T) {
+	cfgRelay := DefaultConfig()
+	cfgRelay.Trackers = nil
+	cfgRelay.GossipSub.HeartbeatMS = 5000
+	cfgRelay.NAT.RelayMaxSessions = 1
+	relayNode, err := NewNode("mesh-relay-limit", nil, cfgRelay)
+	if err != nil {
+		t.Fatalf("NewNode relay failed: %v", err)
+	}
+	if code := relayNode.Start(); code != MOSS_OK {
+		t.Fatalf("relayNode.Start failed: %d", code)
+	}
+	defer relayNode.Stop()
+
+	makeLeaf := func() *Node {
+		cfg := DefaultConfig()
+		cfg.Trackers = nil
+		cfg.GossipSub.HeartbeatMS = 5000
+		cfg.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(relayNode.ListenPort()))}
+		node, err := NewNode("mesh-relay-limit", nil, cfg)
+		if err != nil {
+			t.Fatalf("NewNode leaf failed: %v", err)
+		}
+		if code := node.Start(); code != MOSS_OK {
+			t.Fatalf("leaf.Start failed: %d", code)
+		}
+		return node
+	}
+
+	nodeA := makeLeaf()
+	defer nodeA.Stop()
+	nodeB := makeLeaf()
+	defer nodeB.Stop()
+	nodeC := makeLeaf()
+	defer nodeC.Stop()
+	nodeD := makeLeaf()
+	defer nodeD.Stop()
+
+	waitForPeerCount(t, relayNode, 4)
+
+	relayPub := relayNode.PublicKey()
+	nodeBPub := nodeB.PublicKey()
+	sessionID, err := nodeA.OpenRelaySession(hex.EncodeToString(relayPub[:]), hex.EncodeToString(nodeBPub[:]), 2*time.Second)
+	if err != nil {
+		t.Fatalf("OpenRelaySession A->B failed: %v", err)
+	}
+	waitForRelaySession(t, nodeA, sessionID)
+	waitForRelaySession(t, nodeB, sessionID)
+	waitForRelayRoute(t, relayNode, sessionID)
+
+	nodeDPub := nodeD.PublicKey()
+	if _, err := nodeC.OpenRelaySession(hex.EncodeToString(relayPub[:]), hex.EncodeToString(nodeDPub[:]), 400*time.Millisecond); err == nil {
+		t.Fatal("expected second relay session to be rejected by relay session limit")
+	}
+}
+
+func TestRelayNodeEnforcesConfiguredBandwidth(t *testing.T) {
+	cfgRelay := DefaultConfig()
+	cfgRelay.Trackers = nil
+	cfgRelay.GossipSub.HeartbeatMS = 5000
+	cfgRelay.NAT.RelayMaxBandwidthKBPS = 1
+	cfgRelay.Security.RateLimitBurst = 1 << 20
+	cfgRelay.Security.RateLimitSustained = 1 << 20
+	relayNode, err := NewNode("mesh-relay-bandwidth", nil, cfgRelay)
+	if err != nil {
+		t.Fatalf("NewNode relay failed: %v", err)
+	}
+	if code := relayNode.Start(); code != MOSS_OK {
+		t.Fatalf("relayNode.Start failed: %d", code)
+	}
+	defer relayNode.Stop()
+
+	cfgA := DefaultConfig()
+	cfgA.Trackers = nil
+	cfgA.GossipSub.HeartbeatMS = 5000
+	cfgA.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(relayNode.ListenPort()))}
+	nodeA, err := NewNode("mesh-relay-bandwidth", nil, cfgA)
+	if err != nil {
+		t.Fatalf("NewNode nodeA failed: %v", err)
+	}
+	if code := nodeA.Start(); code != MOSS_OK {
+		t.Fatalf("nodeA.Start failed: %d", code)
+	}
+	defer nodeA.Stop()
+
+	cfgB := DefaultConfig()
+	cfgB.Trackers = nil
+	cfgB.GossipSub.HeartbeatMS = 5000
+	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(relayNode.ListenPort()))}
+	nodeB, err := NewNode("mesh-relay-bandwidth", nil, cfgB)
+	if err != nil {
+		t.Fatalf("NewNode nodeB failed: %v", err)
+	}
+	if code := nodeB.Start(); code != MOSS_OK {
+		t.Fatalf("nodeB.Start failed: %d", code)
+	}
+	defer nodeB.Stop()
+
+	waitForPeerCount(t, relayNode, 2)
+	waitForPeerCount(t, nodeA, 1)
+	waitForPeerCount(t, nodeB, 1)
+
+	received := make(chan []byte, 2)
+	nodeB.SetRelayCallback(func(senderID [32]byte, data []byte) {
+		_ = senderID
+		received <- append([]byte(nil), data...)
+	})
+
+	relayPub := relayNode.PublicKey()
+	targetPub := nodeB.PublicKey()
+	sessionID, err := nodeA.OpenRelaySession(hex.EncodeToString(relayPub[:]), hex.EncodeToString(targetPub[:]), 2*time.Second)
+	if err != nil {
+		t.Fatalf("OpenRelaySession failed: %v", err)
+	}
+
+	firstPayload := bytes.Repeat([]byte("a"), 1024)
+	secondPayload := bytes.Repeat([]byte("b"), 1024)
+	if err := nodeA.RelaySend(sessionID, firstPayload); err != nil {
+		t.Fatalf("first RelaySend failed: %v", err)
+	}
+	if err := nodeA.RelaySend(sessionID, secondPayload); err != nil {
+		t.Fatalf("second RelaySend failed: %v", err)
+	}
+
+	select {
+	case payload := <-received:
+		if !bytes.Equal(payload, firstPayload) {
+			t.Fatalf("unexpected first relay payload: %q", string(payload))
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for first relayed payload")
+	}
+
+	select {
+	case payload := <-received:
+		t.Fatalf("expected second relay payload to be throttled, got %d bytes", len(payload))
+	case <-time.After(400 * time.Millisecond):
 	}
 }
 
