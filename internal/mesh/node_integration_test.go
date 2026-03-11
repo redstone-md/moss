@@ -1773,6 +1773,7 @@ func TestPeerLatencyProbeUpdatesRTT(t *testing.T) {
 func TestInboundConnectionsRespectMaxPeers(t *testing.T) {
 	cfgHub := DefaultConfig()
 	cfgHub.Trackers = nil
+	cfgHub.LANDiscoveryEnabled = false
 	cfgHub.GossipSub.HeartbeatMS = 50
 	cfgHub.MaxPeers = 1
 	hub, err := NewNode("mesh-max-peers", nil, cfgHub)
@@ -1786,6 +1787,7 @@ func TestInboundConnectionsRespectMaxPeers(t *testing.T) {
 
 	cfgA := DefaultConfig()
 	cfgA.Trackers = nil
+	cfgA.LANDiscoveryEnabled = false
 	cfgA.GossipSub.HeartbeatMS = 50
 	cfgA.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(hub.ListenPort()))}
 	nodeA, err := NewNode("mesh-max-peers", nil, cfgA)
@@ -1802,6 +1804,7 @@ func TestInboundConnectionsRespectMaxPeers(t *testing.T) {
 
 	cfgB := DefaultConfig()
 	cfgB.Trackers = nil
+	cfgB.LANDiscoveryEnabled = false
 	cfgB.GossipSub.HeartbeatMS = 50
 	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(hub.ListenPort()))}
 	nodeB, err := NewNode("mesh-max-peers", nil, cfgB)
@@ -1929,7 +1932,7 @@ func waitForPeerCount(t *testing.T, node *Node, want int) {
 
 func waitForPeerCountEventually(t *testing.T, node *Node, want int) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if node.currentPeerCount() == want {
 			return

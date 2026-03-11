@@ -6,6 +6,7 @@ require (
 	github.com/ethereum/go-ethereum v1.17.1
 	github.com/flynn/noise v1.1.0
 	golang.org/x/crypto v0.44.0
+	golang.org/x/net v0.47.0
 )
 
 require (

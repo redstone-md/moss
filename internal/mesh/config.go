@@ -21,6 +21,9 @@ type Config struct {
 	MaxPeers            int             `json:"max_peers"`
 	StaticPeers         []string        `json:"static_peers"`
 	BootstrapTimeoutSec int             `json:"bootstrap_timeout_sec"`
+	LANDiscoveryEnabled bool            `json:"lan_discovery_enabled"`
+	LANDiscoveryPort    int             `json:"lan_discovery_port"`
+	LANDiscoveryMS      int             `json:"lan_discovery_ms"`
 	GossipSub           GossipSubConfig `json:"gossipsub"`
 	NAT                 NATConfig       `json:"nat"`
 	Security            SecurityConfig  `json:"security"`
@@ -61,6 +64,9 @@ func DefaultConfig() Config {
 		ListenPort:          0,
 		MaxPeers:            200,
 		BootstrapTimeoutSec: 3,
+		LANDiscoveryEnabled: true,
+		LANDiscoveryPort:    44445,
+		LANDiscoveryMS:      1500,
 		GossipSub: GossipSubConfig{
 			D:           6,
 			DLo:         4,
@@ -118,6 +124,12 @@ func (c *Config) applyDefaults(fields map[string]json.RawMessage) {
 	}
 	if c.BootstrapTimeoutSec <= 0 {
 		c.BootstrapTimeoutSec = d.BootstrapTimeoutSec
+	}
+	if c.LANDiscoveryPort <= 0 {
+		c.LANDiscoveryPort = d.LANDiscoveryPort
+	}
+	if c.LANDiscoveryMS <= 0 {
+		c.LANDiscoveryMS = d.LANDiscoveryMS
 	}
 	if c.GossipSub.D <= 0 {
 		c.GossipSub.D = d.GossipSub.D
