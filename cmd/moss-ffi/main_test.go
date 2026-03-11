@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"moss/internal/mesh"
 )
 
 func TestBuildSharedLibrary(t *testing.T) {
@@ -54,5 +56,64 @@ func TestBuildSharedLibrary(t *testing.T) {
 	}
 	if !strings.Contains(string(headerBytes), "Moss_SetScoringCallback") {
 		t.Fatal("generated header is missing Moss_SetScoringCallback")
+	}
+	if !strings.Contains(string(headerBytes), "Moss_SetKeyStore") {
+		t.Fatal("generated header is missing Moss_SetKeyStore")
+	}
+}
+
+func TestInitNodeUsesPersistentIdentityFromKeyStore(t *testing.T) {
+	previousLoad := loadIdentityBytes
+	previousSave := saveIdentityBytes
+	previousRegistry := registry
+	previousCounter := handleCounter.Load()
+	t.Cleanup(func() {
+		loadIdentityBytes = previousLoad
+		saveIdentityBytes = previousSave
+		registry = previousRegistry
+		handleCounter.Store(previousCounter)
+	})
+	registry = make(map[int64]*mesh.Node)
+	handleCounter.Store(0)
+
+	var stored []byte
+	saveCalls := 0
+	loadIdentityBytes = func() ([]byte, error) {
+		if len(stored) == 0 {
+			return nil, nil
+		}
+		return append([]byte(nil), stored...), nil
+	}
+	saveIdentityBytes = func(raw []byte) error {
+		saveCalls++
+		stored = append([]byte(nil), raw...)
+		return nil
+	}
+
+	handle1 := initNode("mesh-keystore", nil, "")
+	if handle1 <= 0 {
+		t.Fatalf("first initNode failed: %d", handle1)
+	}
+	node1 := registry[handle1]
+	if node1 == nil {
+		t.Fatal("first node missing from registry")
+	}
+	pub1 := node1.PublicKey()
+
+	handle2 := initNode("mesh-keystore", nil, "")
+	if handle2 <= 0 {
+		t.Fatalf("second initNode failed: %d", handle2)
+	}
+	node2 := registry[handle2]
+	if node2 == nil {
+		t.Fatal("second node missing from registry")
+	}
+	pub2 := node2.PublicKey()
+
+	if pub1 != pub2 {
+		t.Fatal("expected persisted keystore identity to be reused")
+	}
+	if saveCalls != 1 {
+		t.Fatalf("expected single keystore save, got %d", saveCalls)
 	}
 }
