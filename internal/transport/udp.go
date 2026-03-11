@@ -37,10 +37,12 @@ type UDPListener struct {
 type udpClientHandshake struct {
 	hs     *noise.HandshakeState
 	result chan udpDialResult
+	mode   byte
 }
 
 type udpServerHandshake struct {
-	hs *noise.HandshakeState
+	hs   *noise.HandshakeState
+	mode byte
 }
 
 type udpDialResult struct {
@@ -91,19 +93,39 @@ func (l *UDPListener) Accept() (*Session, error) {
 }
 
 func (l *UDPListener) DialContext(ctx context.Context, addr string) (*Session, error) {
+	return l.DialPeerContext(ctx, addr, nil)
+}
+
+func (l *UDPListener) DialPeerContext(ctx context.Context, addr string, remoteStatic []byte) (*Session, error) {
 	remote, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil {
 		return nil, err
 	}
 	key := remote.String()
-	hs, err := newHandshakeState(l.cfg, true)
+	cfg := l.cfg
+	cfg.RemoteStatic = append([]byte(nil), remoteStatic...)
+	mode := selectHandshakeMode(cfg, true)
+	hs, err := newHandshakeState(cfg, true, mode)
 	if err != nil {
 		return nil, err
 	}
-	msg1, _, _, err := hs.WriteMessage(nil, nil)
+	var msg1 []byte
+	if mode == HandshakeModeIK {
+		payload1, err := marshalIdentityPayload(cfg)
+		if err != nil {
+			return nil, err
+		}
+		msg1, _, _, err = hs.WriteMessage(nil, payload1)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		msg1, _, _, err = hs.WriteMessage(nil, nil)
+	}
 	if err != nil {
 		return nil, err
 	}
+	msg1 = append([]byte{mode}, msg1...)
 	result := make(chan udpDialResult, 1)
 
 	l.mu.Lock()
@@ -115,7 +137,7 @@ func (l *UDPListener) DialContext(ctx context.Context, addr string) (*Session, e
 		l.mu.Unlock()
 		return nil, errors.New("udp handshake is already in progress")
 	}
-	l.clients[key] = &udpClientHandshake{hs: hs, result: result}
+	l.clients[key] = &udpClientHandshake{hs: hs, result: result, mode: mode}
 	l.mu.Unlock()
 
 	defer func() {
@@ -195,6 +217,9 @@ func (l *UDPListener) readLoop() {
 }
 
 func (l *UDPListener) handleHandshakeInit(remote *net.UDPAddr, payload []byte) {
+	if len(payload) == 0 {
+		return
+	}
 	key := remote.String()
 	l.mu.Lock()
 	if l.sessions[key] != nil {
@@ -202,21 +227,55 @@ func (l *UDPListener) handleHandshakeInit(remote *net.UDPAddr, payload []byte) {
 		return
 	}
 	l.mu.Unlock()
-	hs, err := newHandshakeState(l.cfg, false)
+	mode := payload[0]
+	hs, err := newHandshakeState(l.cfg, false, mode)
 	if err != nil {
 		return
 	}
-	if _, _, _, err := hs.ReadMessage(nil, payload); err != nil {
+	body := payload[1:]
+	switch mode {
+	case HandshakeModeXX:
+		if _, _, _, err := hs.ReadMessage(nil, body); err != nil {
+			return
+		}
+		payload2, _, _, err := hs.WriteMessage(nil, mustMarshalIdentityPayload(l.cfg))
+		if err != nil {
+			return
+		}
+		l.mu.Lock()
+		l.servers[key] = &udpServerHandshake{hs: hs, mode: mode}
+		l.mu.Unlock()
+		_ = l.writeDatagram(remote, udpMessageHandshakeResp, payload2)
+	case HandshakeModeIK:
+		var remoteID [32]byte
+		payload1, _, _, err := hs.ReadMessage(nil, body)
+		if err != nil {
+			return
+		}
+		if err := verifyIdentityPayload(payload1, l.cfg.MeshID, hs.PeerStatic(), &remoteID); err != nil {
+			return
+		}
+		payload2, cs1, cs2, err := hs.WriteMessage(nil, mustMarshalIdentityPayload(l.cfg))
+		if err != nil {
+			return
+		}
+		if err := l.writeDatagram(remote, udpMessageHandshakeResp, payload2); err != nil {
+			return
+		}
+		remoteKey := peerStaticArray(hs.PeerStatic())
+		sendCipher, recvCipher := splitCipherStates(false, cs1, cs2)
+		session, err := l.establishSession(remote, sendCipher, recvCipher, remoteID, remoteKey, mode)
+		if err != nil {
+			return
+		}
+		select {
+		case l.acceptC <- session:
+		case <-l.closed:
+			_ = session.Close()
+		}
+	default:
 		return
 	}
-	payload2, _, _, err := hs.WriteMessage(nil, mustMarshalIdentityPayload(l.cfg))
-	if err != nil {
-		return
-	}
-	l.mu.Lock()
-	l.servers[key] = &udpServerHandshake{hs: hs}
-	l.mu.Unlock()
-	_ = l.writeDatagram(remote, udpMessageHandshakeResp, payload2)
 }
 
 func (l *UDPListener) handleHandshakeResp(remote *net.UDPAddr, payload []byte) {
@@ -228,25 +287,30 @@ func (l *UDPListener) handleHandshakeResp(remote *net.UDPAddr, payload []byte) {
 		return
 	}
 	var remoteID [32]byte
-	payload2, _, _, err := pending.hs.ReadMessage(nil, payload)
+	payload2, cs1, cs2, err := pending.hs.ReadMessage(nil, payload)
 	if err != nil {
 		l.finishDial(key, pending, udpDialResult{err: err})
 		return
 	}
-	if err := verifyIdentityPayload(payload2, l.cfg.MeshID, pending.hs.PeerStatic(), &remoteID); err != nil {
+	remoteKey := peerStaticArray(pending.hs.PeerStatic())
+	if err := verifyIdentityPayload(payload2, l.cfg.MeshID, remoteKey[:], &remoteID); err != nil {
 		l.finishDial(key, pending, udpDialResult{err: err})
 		return
 	}
-	payload3, sendCipher, recvCipher, err := pending.hs.WriteMessage(nil, mustMarshalIdentityPayload(l.cfg))
-	if err != nil {
-		l.finishDial(key, pending, udpDialResult{err: err})
-		return
+	sendCipher, recvCipher := splitCipherStates(true, cs1, cs2)
+	if pending.mode == HandshakeModeXX {
+		payload3, cs1, cs2, err := pending.hs.WriteMessage(nil, mustMarshalIdentityPayload(l.cfg))
+		if err != nil {
+			l.finishDial(key, pending, udpDialResult{err: err})
+			return
+		}
+		if err := l.writeDatagram(remote, udpMessageHandshakeDone, payload3); err != nil {
+			l.finishDial(key, pending, udpDialResult{err: err})
+			return
+		}
+		sendCipher, recvCipher = splitCipherStates(true, cs1, cs2)
 	}
-	if err := l.writeDatagram(remote, udpMessageHandshakeDone, payload3); err != nil {
-		l.finishDial(key, pending, udpDialResult{err: err})
-		return
-	}
-	session, err := l.establishSession(remote, sendCipher, recvCipher, remoteID)
+	session, err := l.establishSession(remote, sendCipher, recvCipher, remoteID, remoteKey, pending.mode)
 	l.finishDial(key, pending, udpDialResult{session: session, err: err})
 }
 
@@ -259,20 +323,22 @@ func (l *UDPListener) handleHandshakeDone(remote *net.UDPAddr, payload []byte) {
 		return
 	}
 	var remoteID [32]byte
-	payload3, recvCipher, sendCipher, err := pending.hs.ReadMessage(nil, payload)
+	payload3, cs1, cs2, err := pending.hs.ReadMessage(nil, payload)
 	if err != nil {
 		l.mu.Lock()
 		delete(l.servers, key)
 		l.mu.Unlock()
 		return
 	}
-	if err := verifyIdentityPayload(payload3, l.cfg.MeshID, pending.hs.PeerStatic(), &remoteID); err != nil {
+	remoteKey := peerStaticArray(pending.hs.PeerStatic())
+	if err := verifyIdentityPayload(payload3, l.cfg.MeshID, remoteKey[:], &remoteID); err != nil {
 		l.mu.Lock()
 		delete(l.servers, key)
 		l.mu.Unlock()
 		return
 	}
-	session, err := l.establishSession(remote, sendCipher, recvCipher, remoteID)
+	sendCipher, recvCipher := splitCipherStates(false, cs1, cs2)
+	session, err := l.establishSession(remote, sendCipher, recvCipher, remoteID, remoteKey, pending.mode)
 	l.mu.Lock()
 	delete(l.servers, key)
 	l.mu.Unlock()
@@ -297,7 +363,7 @@ func (l *UDPListener) handleData(remote *net.UDPAddr, payload []byte) {
 	carrier.enqueue(payload)
 }
 
-func (l *UDPListener) establishSession(remote *net.UDPAddr, sendCipher, recvCipher *noise.CipherState, remoteID [32]byte) (*Session, error) {
+func (l *UDPListener) establishSession(remote *net.UDPAddr, sendCipher, recvCipher *noise.CipherState, remoteID, remoteKey [32]byte, mode byte) (*Session, error) {
 	key := remote.String()
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -311,7 +377,7 @@ func (l *UDPListener) establishSession(remote *net.UDPAddr, sendCipher, recvCiph
 		closed:   make(chan struct{}),
 	}
 	l.sessions[key] = carrier
-	return NewSession(carrier, sendCipher, recvCipher, remoteID)
+	return NewSession(carrier, sendCipher, recvCipher, remoteID, remoteKey, mode)
 }
 
 func (l *UDPListener) finishDial(key string, pending *udpClientHandshake, result udpDialResult) {

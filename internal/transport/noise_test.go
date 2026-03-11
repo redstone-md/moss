@@ -124,3 +124,84 @@ func TestHandshakeFailsOnMeshMismatch(t *testing.T) {
 		t.Fatal("server handshake unexpectedly succeeded")
 	}
 }
+
+func TestReconnectUsesIKWithCachedRemoteStatic(t *testing.T) {
+	clientIdentity, err := mcrypto.NewIdentity()
+	if err != nil {
+		t.Fatalf("client identity failed: %v", err)
+	}
+	serverIdentity, err := mcrypto.NewIdentity()
+	if err != nil {
+		t.Fatalf("server identity failed: %v", err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen failed: %v", err)
+	}
+	defer listener.Close()
+
+	acceptHandshake := func() *Session {
+		t.Helper()
+		conn, err := listener.Accept()
+		if err != nil {
+			t.Fatalf("Accept failed: %v", err)
+		}
+		session, err := ServerHandshake(t.Context(), conn, HandshakeConfig{
+			MeshID:   "mesh-ik",
+			Identity: serverIdentity,
+		})
+		if err != nil {
+			t.Fatalf("ServerHandshake failed: %v", err)
+		}
+		return session
+	}
+
+	clientConn1, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatalf("Dial first failed: %v", err)
+	}
+	serverDone1 := make(chan *Session, 1)
+	go func() {
+		serverDone1 <- acceptHandshake()
+	}()
+	clientSession1, err := ClientHandshake(t.Context(), clientConn1, HandshakeConfig{
+		MeshID:   "mesh-ik",
+		Identity: clientIdentity,
+	})
+	if err != nil {
+		t.Fatalf("ClientHandshake first failed: %v", err)
+	}
+	serverSession1 := <-serverDone1
+	if clientSession1.HandshakeMode() != HandshakeModeXX || serverSession1.HandshakeMode() != HandshakeModeXX {
+		t.Fatalf("expected first handshake to use XX, got client=%d server=%d", clientSession1.HandshakeMode(), serverSession1.HandshakeMode())
+	}
+	remoteStatic := clientSession1.RemoteStaticPublic()
+	_ = clientSession1.Close()
+	_ = serverSession1.Close()
+
+	clientConn2, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatalf("Dial second failed: %v", err)
+	}
+	serverDone2 := make(chan *Session, 1)
+	go func() {
+		serverDone2 <- acceptHandshake()
+	}()
+	clientSession2, err := ClientHandshake(t.Context(), clientConn2, HandshakeConfig{
+		MeshID:       "mesh-ik",
+		Identity:     clientIdentity,
+		RemoteStatic: remoteStatic[:],
+	})
+	if err != nil {
+		t.Fatalf("ClientHandshake second failed: %v", err)
+	}
+	serverSession2 := <-serverDone2
+	defer clientSession2.Close()
+	defer serverSession2.Close()
+	if clientSession2.HandshakeMode() != HandshakeModeIK || serverSession2.HandshakeMode() != HandshakeModeIK {
+		t.Fatalf("expected reconnect handshake to use IK, got client=%d server=%d", clientSession2.HandshakeMode(), serverSession2.HandshakeMode())
+	}
+	if got := clientSession2.RemoteID(); got != serverIdentity.PublicKey() {
+		t.Fatal("client reconnect session did not bind responder identity")
+	}
+}

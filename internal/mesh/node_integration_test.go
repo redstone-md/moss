@@ -1162,10 +1162,10 @@ func TestDirectUDPConnectRegistersPeer(t *testing.T) {
 	defer nodeB.Stop()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	nodeA.connectPeerUDP(ctx, net.JoinHostPort("127.0.0.1", strconv.Itoa(nodeB.ListenPort())))
+	targetPub := nodeB.PublicKey()
+	nodeA.connectPeerUDP(ctx, hex.EncodeToString(targetPub[:]), net.JoinHostPort("127.0.0.1", strconv.Itoa(nodeB.ListenPort())))
 	cancel()
 
-	targetPub := nodeB.PublicKey()
 	sourcePub := nodeA.PublicKey()
 	waitForDirectPeer(t, nodeA, hex.EncodeToString(targetPub[:]))
 	waitForDirectPeer(t, nodeB, hex.EncodeToString(sourcePub[:]))
