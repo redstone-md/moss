@@ -210,7 +210,7 @@ class MossClient:
         self.listen_port = listen_port
         self.identity_path = identity_path
         self.bootstrap_peers = list(peers)
-        self.trackers = list(trackers or [])
+        self.trackers = None if trackers is None else list(trackers)
         self._message_handler: Callable[[str, str, bytes], None] | None = None
         self._event_handler: Callable[[int, dict], None] | None = None
         self._message_cb = MossMessageCallback(self._handle_message)
@@ -219,12 +219,13 @@ class MossClient:
         self._keystore_save_cb = None
 
         config = {
-            "trackers": trackers or [],
             "listen_port": listen_port,
             "static_peers": peers,
             "announce_interval_sec": 1,
             "gossipsub": {"heartbeat_ms": heartbeat_ms},
         }
+        if trackers is not None:
+            config["trackers"] = trackers
 
         with _INIT_LOCK:
             self._configure_keystore(identity_path)
@@ -486,9 +487,15 @@ class MossChatApp:
             f"Connected as {self.nickname}. Active mesh: {self.client.mesh_id}. "
             "Use F2/F3 to switch rooms and /help for commands."
         )
-        if not self.client.bootstrap_peers and not self.client.trackers:
+        if not self.client.bootstrap_peers and self.client.trackers == []:
             self._system_message(
                 "No bootstrap peers configured. This node stays isolated until another peer dials it or you use /connect HOST:PORT."
+            )
+        elif self.client.trackers is None:
+            self._system_message("Tracker bootstrap is enabled with the default public tracker set.")
+        elif self.client.trackers:
+            self._system_message(
+                f"Tracker bootstrap is enabled with {len(self.client.trackers)} configured tracker(s)."
             )
         if self.share_host:
             self._system_message(
@@ -816,6 +823,17 @@ def parse_args() -> argparse.Namespace:
         help="Initial room to join. Can be provided multiple times.",
     )
     parser.add_argument(
+        "--tracker",
+        action="append",
+        default=None,
+        help="Override tracker list. Can be provided multiple times.",
+    )
+    parser.add_argument(
+        "--no-trackers",
+        action="store_true",
+        help="Disable automatic tracker bootstrap and rely only on static peers or inbound dials.",
+    )
+    parser.add_argument(
         "--identity-file",
         help="Path to persist the Moss identity for this chat profile",
     )
@@ -839,10 +857,15 @@ def main() -> None:
     if not rooms:
         rooms = [DEFAULT_ROOM]
 
+    trackers = args.tracker
+    if args.no_trackers:
+        trackers = []
+
     client = MossClient(
         mesh_id=args.mesh,
         listen_port=args.listen_port,
         peers=args.peer,
+        trackers=trackers,
         identity_path=resolve_identity_path(args),
     )
     app = MossChatApp(client=client, nickname=args.nickname, initial_rooms=rooms)
