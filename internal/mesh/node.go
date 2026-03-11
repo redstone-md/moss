@@ -74,10 +74,13 @@ type Node struct {
 }
 
 type peerConn struct {
-	id       string
-	addr     string
-	session  *transport.Session
-	outbound bool
+	id          string
+	addr        string
+	session     *transport.Session
+	outbound    bool
+	lastRTT     time.Duration
+	pingSentAt  time.Time
+	pingPending string
 }
 
 type dispatchMessage struct {
@@ -737,7 +740,9 @@ func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 			n.broadcastIDontWant(env.Channel, []string{env.MessageID}, peer.id)
 		}
 	case gossip.TypePing:
-		n.sendEnvelope(peer, gossip.Envelope{Type: gossip.TypePong})
+		n.sendEnvelope(peer, gossip.Envelope{Type: gossip.TypePong, RequestID: env.RequestID})
+	case gossip.TypePong:
+		n.handlePong(peer, env)
 	}
 }
 
@@ -1240,6 +1245,77 @@ func (n *Node) evaluateMeshDeliveryDeficits(now time.Time) {
 	}
 }
 
+func (n *Node) handlePong(peer *peerConn, env gossip.Envelope) {
+	if peer == nil || env.RequestID == "" {
+		return
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	current := n.peers[peer.id]
+	if current == nil || current.pingPending != env.RequestID || current.pingSentAt.IsZero() {
+		return
+	}
+	current.lastRTT = time.Since(current.pingSentAt)
+	current.pingPending = ""
+	current.pingSentAt = time.Time{}
+}
+
+func (n *Node) probePeerLatency(now time.Time) {
+	type pingTarget struct {
+		peer      *peerConn
+		requestID string
+	}
+	interval := 30 * time.Second
+	if heartbeat := n.config.Heartbeat(); heartbeat > 0 && heartbeat < interval {
+		interval = heartbeat
+	}
+	targets := make([]pingTarget, 0)
+	n.mu.Lock()
+	for _, peer := range n.peers {
+		if peer.pingPending != "" && now.Sub(peer.pingSentAt) <= 2*time.Second {
+			continue
+		}
+		if peer.pingPending == "" && !peer.pingSentAt.IsZero() && now.Sub(peer.pingSentAt) < interval {
+			continue
+		}
+		requestID, err := newRelaySessionID()
+		if err != nil {
+			continue
+		}
+		peer.pingPending = requestID
+		peer.pingSentAt = now
+		targets = append(targets, pingTarget{peer: peer, requestID: requestID})
+	}
+	n.mu.Unlock()
+	for _, target := range targets {
+		n.sendEnvelope(target.peer, gossip.Envelope{Type: gossip.TypePing, RequestID: target.requestID})
+	}
+}
+
+func (n *Node) pruneHighLatencyPeers() {
+	n.mu.RLock()
+	now := time.Now()
+	ids := make([]string, 0, len(n.peers))
+	for id, peer := range n.peers {
+		if peer.lastRTT > 2*time.Second {
+			ids = append(ids, id)
+			continue
+		}
+		if peer.pingPending != "" && now.Sub(peer.pingSentAt) > 2*time.Second {
+			ids = append(ids, id)
+		}
+	}
+	n.mu.RUnlock()
+	for _, id := range ids {
+		n.mu.RLock()
+		peer := n.peers[id]
+		n.mu.RUnlock()
+		if peer != nil {
+			_ = peer.session.Close()
+		}
+	}
+}
+
 func (n *Node) maintenanceLoop(ctx context.Context) {
 	defer n.wg.Done()
 	ticker := time.NewTicker(n.config.Heartbeat())
@@ -1252,7 +1328,9 @@ func (n *Node) maintenanceLoop(ctx context.Context) {
 			atomic.AddUint64(&n.heartbeat, 1)
 			n.scoring.Tick()
 			n.evaluateMeshDeliveryDeficits(time.Now())
+			n.probePeerLatency(time.Now())
 			n.pruneLowScoringPeers()
+			n.pruneHighLatencyPeers()
 			n.connectKnownPeers()
 			n.promoteRelayPeers()
 			for _, channel := range n.pubsub.SnapshotLocal() {

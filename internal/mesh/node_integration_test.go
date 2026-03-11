@@ -1353,6 +1353,82 @@ func TestRelaySessionEstablishesWithinFiveSeconds(t *testing.T) {
 	}
 }
 
+func TestPeerLatencyProbeUpdatesRTT(t *testing.T) {
+	cfgA := DefaultConfig()
+	cfgA.Trackers = nil
+	cfgA.GossipSub.HeartbeatMS = 50
+	nodeA, err := NewNode("mesh-rtt", nil, cfgA)
+	if err != nil {
+		t.Fatalf("NewNode nodeA failed: %v", err)
+	}
+	if code := nodeA.Start(); code != MOSS_OK {
+		t.Fatalf("nodeA.Start failed: %d", code)
+	}
+	defer nodeA.Stop()
+
+	cfgB := DefaultConfig()
+	cfgB.Trackers = nil
+	cfgB.GossipSub.HeartbeatMS = 50
+	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(nodeA.ListenPort()))}
+	nodeB, err := NewNode("mesh-rtt", nil, cfgB)
+	if err != nil {
+		t.Fatalf("NewNode nodeB failed: %v", err)
+	}
+	if code := nodeB.Start(); code != MOSS_OK {
+		t.Fatalf("nodeB.Start failed: %d", code)
+	}
+	defer nodeB.Stop()
+
+	waitForPeerCount(t, nodeA, 1)
+	waitForPeerCount(t, nodeB, 1)
+
+	targetPub := nodeB.PublicKey()
+	targetID := hex.EncodeToString(targetPub[:])
+	nodeA.probePeerLatency(time.Now())
+	waitForPeerRTT(t, nodeA, targetID, 2*time.Second)
+}
+
+func TestHighLatencyPeerIsPruned(t *testing.T) {
+	cfgA := DefaultConfig()
+	cfgA.Trackers = nil
+	cfgA.GossipSub.HeartbeatMS = 50
+	nodeA, err := NewNode("mesh-prune-latency", nil, cfgA)
+	if err != nil {
+		t.Fatalf("NewNode nodeA failed: %v", err)
+	}
+	if code := nodeA.Start(); code != MOSS_OK {
+		t.Fatalf("nodeA.Start failed: %d", code)
+	}
+	defer nodeA.Stop()
+
+	cfgB := DefaultConfig()
+	cfgB.Trackers = nil
+	cfgB.GossipSub.HeartbeatMS = 50
+	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(nodeA.ListenPort()))}
+	nodeB, err := NewNode("mesh-prune-latency", nil, cfgB)
+	if err != nil {
+		t.Fatalf("NewNode nodeB failed: %v", err)
+	}
+	if code := nodeB.Start(); code != MOSS_OK {
+		t.Fatalf("nodeB.Start failed: %d", code)
+	}
+	defer nodeB.Stop()
+
+	waitForPeerCount(t, nodeA, 1)
+	waitForPeerCount(t, nodeB, 1)
+
+	targetPub := nodeB.PublicKey()
+	targetID := hex.EncodeToString(targetPub[:])
+	nodeA.mu.Lock()
+	if peer := nodeA.peers[targetID]; peer != nil {
+		peer.lastRTT = 3 * time.Second
+	}
+	nodeA.mu.Unlock()
+
+	nodeA.pruneHighLatencyPeers()
+	waitForPeerGone(t, nodeA, targetID)
+}
+
 func waitForPeerCount(t *testing.T, node *Node, want int) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
@@ -1420,6 +1496,40 @@ func waitForDirectPeer(t *testing.T, node *Node, wantPeerID string) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("direct peer %s was not connected", wantPeerID)
+}
+
+func waitForPeerGone(t *testing.T, node *Node, peerID string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		node.mu.RLock()
+		_, ok := node.peers[peerID]
+		node.mu.RUnlock()
+		if !ok {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("peer %s was not pruned", peerID)
+}
+
+func waitForPeerRTT(t *testing.T, node *Node, peerID string, max time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		node.mu.RLock()
+		peer := node.peers[peerID]
+		var rtt time.Duration
+		if peer != nil {
+			rtt = peer.lastRTT
+		}
+		node.mu.RUnlock()
+		if rtt > 0 && rtt <= max {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("peer %s did not report RTT within %s", peerID, max)
 }
 
 func waitForKnownPeerPort(t *testing.T, node *Node, wantPeerID, wantPort string) {
