@@ -2,9 +2,11 @@ package mesh
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"sort"
 	"strconv"
@@ -22,34 +24,39 @@ import (
 )
 
 type Node struct {
-	meshID      string
-	psk         []byte
-	config      Config
-	infoHash    [20]byte
-	peerID      [20]byte
-	identity    *mcrypto.Identity
-	tracker     *bootstrap.Manager
-	pubsub      *gossip.Manager
-	cache       *gossip.Cache
-	scoring     *gossip.Engine
-	profiler    *nat.Profiler
-	listener    *transport.Listener
-	listenPort  int
-	startedAt   time.Time
-	dispatchSem chan struct{}
+	meshID        string
+	psk           []byte
+	config        Config
+	infoHash      [20]byte
+	peerID        [20]byte
+	identity      *mcrypto.Identity
+	tracker       *bootstrap.Manager
+	pubsub        *gossip.Manager
+	cache         *gossip.Cache
+	scoring       *gossip.Engine
+	profiler      *nat.Profiler
+	listener      *transport.Listener
+	relaySessions *nat.SessionManager
+	listenPort    int
+	startedAt     time.Time
+	dispatchSem   chan struct{}
 
 	natProfile atomic.Value
 	seq        uint64
 
-	mu         sync.RWMutex
-	started    bool
-	cancel     context.CancelFunc
-	wg         sync.WaitGroup
-	peers      map[string]*peerConn
-	suppress   map[string]map[string]time.Time
-	messageCB  MessageCallback
-	eventCB    EventCallback
-	dispatchCh chan any
+	mu           sync.RWMutex
+	started      bool
+	cancel       context.CancelFunc
+	wg           sync.WaitGroup
+	peers        map[string]*peerConn
+	suppress     map[string]map[string]time.Time
+	relayRoutes  map[string]relayRoute
+	relayLocals  map[string]relayLocalSession
+	relayBuckets map[string]*nat.TokenBucket
+	messageCB    MessageCallback
+	eventCB      EventCallback
+	relayCB      RelayCallback
+	dispatchCh   chan any
 }
 
 type peerConn struct {
@@ -68,6 +75,24 @@ type dispatchMessage struct {
 type dispatchEvent struct {
 	eventType int32
 	detail    string
+}
+
+type dispatchRelay struct {
+	sender [32]byte
+	data   []byte
+}
+
+type relayRoute struct {
+	initiator string
+	target    string
+}
+
+type relayLocalSession struct {
+	sessionID    string
+	viaPeerID    string
+	remotePeerID string
+	established  bool
+	wait         chan struct{}
 }
 
 type meshInfo struct {
@@ -98,21 +123,25 @@ func NewNode(meshID string, psk []byte, cfg Config) (*Node, error) {
 		return nil, err
 	}
 	node := &Node{
-		meshID:      meshID,
-		psk:         append([]byte(nil), psk...),
-		config:      cfg,
-		infoHash:    infoHash,
-		peerID:      peerID,
-		identity:    identity,
-		tracker:     bootstrap.NewManager(time.Duration(cfg.BootstrapTimeoutSec) * time.Second),
-		pubsub:      gossip.NewManager(),
-		cache:       gossip.NewCache(2 * time.Minute),
-		scoring:     gossip.NewEngine(),
-		profiler:    nat.NewProfiler(),
-		peers:       make(map[string]*peerConn),
-		suppress:    make(map[string]map[string]time.Time),
-		dispatchSem: make(chan struct{}, 500),
-		dispatchCh:  make(chan any, 1024),
+		meshID:        meshID,
+		psk:           append([]byte(nil), psk...),
+		config:        cfg,
+		infoHash:      infoHash,
+		peerID:        peerID,
+		identity:      identity,
+		tracker:       bootstrap.NewManager(time.Duration(cfg.BootstrapTimeoutSec) * time.Second),
+		pubsub:        gossip.NewManager(),
+		cache:         gossip.NewCache(2 * time.Minute),
+		scoring:       gossip.NewEngine(),
+		profiler:      nat.NewProfiler(),
+		relaySessions: nat.NewSessionManager(cfg.NAT.RelayMaxSessions, time.Duration(cfg.NAT.RelaySessionTTLSec)*time.Second),
+		peers:         make(map[string]*peerConn),
+		suppress:      make(map[string]map[string]time.Time),
+		relayRoutes:   make(map[string]relayRoute),
+		relayLocals:   make(map[string]relayLocalSession),
+		relayBuckets:  make(map[string]*nat.TokenBucket),
+		dispatchSem:   make(chan struct{}, 500),
+		dispatchCh:    make(chan any, 1024),
 	}
 	node.natProfile.Store(nat.Profile{Type: nat.TypeUnknown})
 	return node, nil
@@ -234,6 +263,12 @@ func (n *Node) SetEventCallback(cb EventCallback) {
 	n.eventCB = cb
 }
 
+func (n *Node) SetRelayCallback(cb RelayCallback) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.relayCB = cb
+}
+
 func (n *Node) MeshInfoJSON() string {
 	profile := n.natProfile.Load().(nat.Profile)
 	pubKey := n.identity.PublicKey()
@@ -266,6 +301,66 @@ func (n *Node) NATType() string {
 
 func (n *Node) ListenPort() int {
 	return n.listenPort
+}
+
+func (n *Node) OpenRelaySession(viaPeerID, targetPeerID string, timeout time.Duration) (string, error) {
+	if viaPeerID == "" || targetPeerID == "" {
+		return "", errors.New("via and target peer IDs are required")
+	}
+	n.mu.RLock()
+	peer := n.peers[viaPeerID]
+	n.mu.RUnlock()
+	if peer == nil {
+		return "", errors.New("relay peer is not connected")
+	}
+	sessionID, err := newRelaySessionID()
+	if err != nil {
+		return "", err
+	}
+	wait := make(chan struct{})
+	n.mu.Lock()
+	n.relayLocals[sessionID] = relayLocalSession{
+		sessionID:    sessionID,
+		viaPeerID:    viaPeerID,
+		remotePeerID: targetPeerID,
+		wait:         wait,
+	}
+	n.mu.Unlock()
+	n.sendEnvelope(peer, gossip.Envelope{
+		Type:         gossip.TypeRelayRequest,
+		RelaySession: sessionID,
+		RelaySource:  n.localPeerID(),
+		RelayTarget:  targetPeerID,
+	})
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-wait:
+		return sessionID, nil
+	case <-timer.C:
+		n.mu.Lock()
+		delete(n.relayLocals, sessionID)
+		n.mu.Unlock()
+		return "", errors.New("relay session open timed out")
+	}
+}
+
+func (n *Node) RelaySend(sessionID string, data []byte) error {
+	n.mu.RLock()
+	session, ok := n.relayLocals[sessionID]
+	peer := n.peers[session.viaPeerID]
+	n.mu.RUnlock()
+	if !ok || peer == nil || !session.established {
+		return errors.New("relay session is not established")
+	}
+	n.sendEnvelope(peer, gossip.Envelope{
+		Type:         gossip.TypeRelayData,
+		RelaySession: sessionID,
+		RelaySource:  n.localPeerID(),
+		RelayTarget:  session.remotePeerID,
+		Payload:      append([]byte(nil), data...),
+	})
+	return nil
 }
 
 func (n *Node) acceptLoop(ctx context.Context) {
@@ -437,6 +532,14 @@ func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 		n.handleIWant(peer, env)
 	case gossip.TypeIDontWant:
 		n.rememberSuppression(peer.id, env.MessageIDs, env.MessageID)
+	case gossip.TypeRelayRequest:
+		n.handleRelayRequest(peer, env)
+	case gossip.TypeRelayAccept:
+		n.handleRelayAccept(peer, env)
+	case gossip.TypeRelayData:
+		n.handleRelayData(peer, env)
+	case gossip.TypeRelayClose:
+		n.handleRelayClose(peer, env)
 	case gossip.TypePublish:
 		if env.Channel == "" || env.MessageID == "" {
 			n.scoring.PenalizeInvalid(peer.id)
@@ -623,6 +726,7 @@ func (n *Node) removePeer(peerID string) {
 		delete(n.peers, peerID)
 	}
 	delete(n.suppress, peerID)
+	delete(n.relayBuckets, peerID)
 	n.mu.Unlock()
 	n.pubsub.RemovePeer(peerID)
 	if peer != nil {
@@ -693,6 +797,13 @@ func (n *Node) dispatchLoop(ctx context.Context) {
 				n.mu.RUnlock()
 				if cb != nil {
 					cb(v.eventType, v.detail)
+				}
+			case dispatchRelay:
+				n.mu.RLock()
+				cb := n.relayCB
+				n.mu.RUnlock()
+				if cb != nil {
+					cb(v.sender, v.data)
 				}
 			}
 			<-n.dispatchSem
@@ -892,6 +1003,139 @@ func (n *Node) isOutboundPeer(peerID string) bool {
 	defer n.mu.RUnlock()
 	peer := n.peers[peerID]
 	return peer != nil && peer.outbound
+}
+
+func (n *Node) handleRelayRequest(peer *peerConn, env gossip.Envelope) {
+	if env.RelaySession == "" || env.RelaySource == "" || env.RelayTarget == "" {
+		return
+	}
+	if env.RelayTarget == n.localPeerID() {
+		n.mu.Lock()
+		n.relayLocals[env.RelaySession] = relayLocalSession{
+			sessionID:    env.RelaySession,
+			viaPeerID:    peer.id,
+			remotePeerID: env.RelaySource,
+			established:  true,
+		}
+		n.mu.Unlock()
+		n.sendEnvelope(peer, gossip.Envelope{
+			Type:         gossip.TypeRelayAccept,
+			RelaySession: env.RelaySession,
+			RelaySource:  env.RelayTarget,
+			RelayTarget:  env.RelaySource,
+		})
+		return
+	}
+	n.mu.RLock()
+	targetPeer := n.peers[env.RelayTarget]
+	n.mu.RUnlock()
+	if targetPeer == nil {
+		return
+	}
+	if !n.relaySessions.Acquire(env.RelaySession) {
+		return
+	}
+	n.mu.Lock()
+	n.relayRoutes[env.RelaySession] = relayRoute{initiator: env.RelaySource, target: env.RelayTarget}
+	n.mu.Unlock()
+	n.sendEnvelope(targetPeer, env)
+}
+
+func (n *Node) handleRelayAccept(peer *peerConn, env gossip.Envelope) {
+	if env.RelaySession == "" {
+		return
+	}
+	if env.RelayTarget == n.localPeerID() {
+		n.mu.Lock()
+		session, ok := n.relayLocals[env.RelaySession]
+		if ok {
+			session.established = true
+			n.relayLocals[env.RelaySession] = session
+			if session.wait != nil {
+				close(session.wait)
+				session.wait = nil
+				n.relayLocals[env.RelaySession] = session
+			}
+		}
+		n.mu.Unlock()
+		return
+	}
+	n.mu.RLock()
+	targetPeer := n.peers[env.RelayTarget]
+	n.mu.RUnlock()
+	if targetPeer != nil {
+		n.sendEnvelope(targetPeer, env)
+	}
+}
+
+func (n *Node) handleRelayData(peer *peerConn, env gossip.Envelope) {
+	if env.RelaySession == "" || env.RelayTarget == "" {
+		return
+	}
+	if env.RelayTarget == n.localPeerID() {
+		var sender [32]byte
+		raw, err := hex.DecodeString(env.RelaySource)
+		if err == nil {
+			copy(sender[:], raw)
+		}
+		n.dispatchCh <- dispatchRelay{sender: sender, data: append([]byte(nil), env.Payload...)}
+		return
+	}
+	n.mu.RLock()
+	targetPeer := n.peers[env.RelayTarget]
+	n.mu.RUnlock()
+	if targetPeer == nil {
+		return
+	}
+	bucket := n.relayBucketFor(peer.id)
+	if !bucket.Allow(len(env.Payload)) {
+		return
+	}
+	n.sendEnvelope(targetPeer, env)
+}
+
+func (n *Node) handleRelayClose(peer *peerConn, env gossip.Envelope) {
+	if env.RelaySession == "" {
+		return
+	}
+	n.mu.Lock()
+	delete(n.relayLocals, env.RelaySession)
+	delete(n.relayRoutes, env.RelaySession)
+	n.mu.Unlock()
+	n.relaySessions.Release(env.RelaySession)
+	if env.RelayTarget == "" || env.RelayTarget == n.localPeerID() {
+		return
+	}
+	n.mu.RLock()
+	targetPeer := n.peers[env.RelayTarget]
+	n.mu.RUnlock()
+	if targetPeer != nil && targetPeer.id != peer.id {
+		n.sendEnvelope(targetPeer, env)
+	}
+}
+
+func newRelaySessionID() (string, error) {
+	var raw [16]byte
+	if _, err := io.ReadFull(rand.Reader, raw[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(raw[:]), nil
+}
+
+func (n *Node) localPeerID() string {
+	pub := n.identity.PublicKey()
+	return hex.EncodeToString(pub[:])
+}
+
+func (n *Node) relayBucketFor(peerID string) *nat.TokenBucket {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	bucket := n.relayBuckets[peerID]
+	if bucket == nil {
+		bucket = nat.NewTokenBucket(n.config.Security.RateLimitBurst, n.config.Security.RateLimitSustained)
+		n.relayBuckets[peerID] = bucket
+	}
+	return bucket
 }
 
 func validChannel(channel string) bool {

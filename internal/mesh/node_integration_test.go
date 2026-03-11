@@ -1,6 +1,7 @@
 package mesh
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"net"
 	"strconv"
@@ -119,6 +120,75 @@ func TestLateSubscriberRequestsCachedMessageViaIHaveIWant(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for cached message replay")
+	}
+}
+
+func TestRelaySessionDeliversThroughIntermediatePeer(t *testing.T) {
+	cfgRelay := DefaultConfig()
+	cfgRelay.Trackers = nil
+	cfgRelay.GossipSub.HeartbeatMS = 50
+	relayNode, err := NewNode("mesh-relay", nil, cfgRelay)
+	if err != nil {
+		t.Fatalf("NewNode relay failed: %v", err)
+	}
+	if code := relayNode.Start(); code != MOSS_OK {
+		t.Fatalf("relayNode.Start failed: %d", code)
+	}
+	defer relayNode.Stop()
+
+	cfgA := DefaultConfig()
+	cfgA.Trackers = nil
+	cfgA.GossipSub.HeartbeatMS = 50
+	cfgA.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(relayNode.ListenPort()))}
+	nodeA, err := NewNode("mesh-relay", nil, cfgA)
+	if err != nil {
+		t.Fatalf("NewNode nodeA failed: %v", err)
+	}
+	if code := nodeA.Start(); code != MOSS_OK {
+		t.Fatalf("nodeA.Start failed: %d", code)
+	}
+	defer nodeA.Stop()
+
+	cfgB := DefaultConfig()
+	cfgB.Trackers = nil
+	cfgB.GossipSub.HeartbeatMS = 50
+	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(relayNode.ListenPort()))}
+	nodeB, err := NewNode("mesh-relay", nil, cfgB)
+	if err != nil {
+		t.Fatalf("NewNode nodeB failed: %v", err)
+	}
+	if code := nodeB.Start(); code != MOSS_OK {
+		t.Fatalf("nodeB.Start failed: %d", code)
+	}
+	defer nodeB.Stop()
+
+	waitForPeerCount(t, relayNode, 2)
+	waitForPeerCount(t, nodeA, 1)
+	waitForPeerCount(t, nodeB, 1)
+
+	received := make(chan []byte, 1)
+	nodeB.SetRelayCallback(func(senderID [32]byte, data []byte) {
+		_ = senderID
+		received <- append([]byte(nil), data...)
+	})
+
+	relayPub := relayNode.PublicKey()
+	targetPub := nodeB.PublicKey()
+	sessionID, err := nodeA.OpenRelaySession(hex.EncodeToString(relayPub[:]), hex.EncodeToString(targetPub[:]), 2*time.Second)
+	if err != nil {
+		t.Fatalf("OpenRelaySession failed: %v", err)
+	}
+	if err := nodeA.RelaySend(sessionID, []byte("through-relay")); err != nil {
+		t.Fatalf("RelaySend failed: %v", err)
+	}
+
+	select {
+	case payload := <-received:
+		if string(payload) != "through-relay" {
+			t.Fatalf("unexpected relay payload: %q", string(payload))
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for relayed payload")
 	}
 }
 

@@ -11,3 +11,4 @@ const (
 
 type MessageCallback func(channel string, senderID [32]byte, data []byte)
 type EventCallback func(eventType int32, detailJSON string)
+type RelayCallback func(senderID [32]byte, data []byte)
