@@ -612,7 +612,7 @@ func (n *Node) announceAndConnect(ctx context.Context, event bootstrap.Event) {
 	req := bootstrap.AnnounceRequest{
 		InfoHash: n.infoHash,
 		PeerID:   n.peerID,
-		Port:     n.listenPort,
+		Port:     n.announcePort(),
 		Event:    event,
 		NumWant:  50,
 	}
@@ -624,7 +624,7 @@ func (n *Node) announceAndConnect(ctx context.Context, event bootstrap.Event) {
 	}
 	n.rememberTrackerSeeds(peers)
 	for _, peer := range peers {
-		n.connectPeer(ctx, peer)
+		n.connectBootstrapPeer(ctx, peer)
 	}
 	n.enqueueEvent(EventTrackerAnnounce, map[string]int{
 		"candidate_peers": len(peers),
@@ -680,6 +680,10 @@ func (n *Node) connectPeerWithHint(ctx context.Context, addr, peerID string) err
 		}
 	}
 	n.mu.RUnlock()
+	return n.connectPeerTCPWithHint(ctx, addr, peerID)
+}
+
+func (n *Node) connectPeerTCPWithHint(ctx context.Context, addr, peerID string) error {
 	remoteStatic := n.cachedRemoteStatic(peerID, addr)
 	if err := n.connectPeerOnce(ctx, addr, remoteStatic); err != nil {
 		if len(remoteStatic) == 32 && ctx.Err() == nil {
@@ -2280,6 +2284,19 @@ func (n *Node) advertisedListenAddr() string {
 	return net.JoinHostPort("127.0.0.1", strconv.Itoa(n.listenPort))
 }
 
+func (n *Node) announcePort() int {
+	addr := n.advertisedListenAddr()
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return n.listenPort
+	}
+	parsed, err := strconv.Atoi(port)
+	if err != nil || parsed <= 0 {
+		return n.listenPort
+	}
+	return parsed
+}
+
 func (n *Node) shouldAdvertiseLoopback() bool {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
@@ -2844,18 +2861,7 @@ func (n *Node) freshObservedUDPAddr(peerID string, timeout time.Duration) string
 }
 
 func (n *Node) connectPeerUDP(ctx context.Context, targetPeerID, addr string) {
-	if n.udpListener == nil || addr == "" {
-		return
-	}
-	remoteStatic := n.cachedRemoteStatic(targetPeerID, addr)
-	session, err := n.udpListener.DialPeerContext(ctx, addr, remoteStatic)
-	if err != nil && len(remoteStatic) == 32 && ctx.Err() == nil {
-		session, err = n.udpListener.DialContext(ctx, addr)
-	}
-	if err != nil {
-		return
-	}
-	n.registerPeer(session, true)
+	_ = n.connectPeerUDPWithHint(ctx, targetPeerID, addr)
 }
 
 func (n *Node) waitForDirectPeer(targetPeerID string, timeout time.Duration) bool {
@@ -2913,6 +2919,55 @@ func (n *Node) cachedRemoteStatic(peerID, addr string) []byte {
 		if info.addr == addr && len(info.noiseStatic) == 32 {
 			return append([]byte(nil), info.noiseStatic...)
 		}
+	}
+	return nil
+}
+
+func (n *Node) connectPeerUDPWithHint(ctx context.Context, targetPeerID, addr string) error {
+	if n.udpListener == nil || addr == "" {
+		return errors.New("udp transport unavailable")
+	}
+	remoteStatic := n.cachedRemoteStatic(targetPeerID, addr)
+	session, err := n.udpListener.DialPeerContext(ctx, addr, remoteStatic)
+	if err != nil && len(remoteStatic) == 32 && ctx.Err() == nil {
+		session, err = n.udpListener.DialContext(ctx, addr)
+	}
+	if err != nil {
+		return err
+	}
+	n.registerPeer(session, true)
+	return nil
+}
+
+func (n *Node) connectBootstrapPeer(ctx context.Context, addr string) error {
+	if addr == "" {
+		return errors.New("peer address is required")
+	}
+	if n.udpListener == nil {
+		return n.connectPeer(ctx, addr)
+	}
+	attemptCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	results := make(chan error, 2)
+	go func() {
+		results <- n.connectPeer(attemptCtx, addr)
+	}()
+	go func() {
+		results <- n.connectPeerUDPWithHint(attemptCtx, "", addr)
+	}()
+	var firstErr error
+	for range 2 {
+		err := <-results
+		if err == nil {
+			cancel()
+			return nil
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	if firstErr != nil {
+		return firstErr
 	}
 	return nil
 }
