@@ -54,6 +54,7 @@ type Node struct {
 	relayRoutes  map[string]relayRoute
 	relayLocals  map[string]relayLocalSession
 	relayBuckets map[string]*nat.TokenBucket
+	directProbes map[string]time.Time
 	knownPeers   map[string]knownPeer
 	bindingWait  map[string]chan string
 	messageCB    MessageCallback
@@ -150,6 +151,7 @@ func NewNode(meshID string, psk []byte, cfg Config) (*Node, error) {
 		relayRoutes:   make(map[string]relayRoute),
 		relayLocals:   make(map[string]relayLocalSession),
 		relayBuckets:  make(map[string]*nat.TokenBucket),
+		directProbes:  make(map[string]time.Time),
 		knownPeers:    make(map[string]knownPeer),
 		bindingWait:   make(map[string]chan string),
 		dispatchSem:   make(chan struct{}, 500),
@@ -542,6 +544,9 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 	n.sendKnownPeerSnapshot(peer)
 	n.broadcastPeerAnnouncement(peerID, addr, peerID)
 	go n.refreshExternalAddress(time.Now().Add(n.config.HandshakeTimeout()))
+	n.mu.Lock()
+	delete(n.directProbes, peerID)
+	n.mu.Unlock()
 	n.migrateRelaySessions(peerID)
 	for _, channel := range n.pubsub.SnapshotLocal() {
 		n.maintainTopicMesh(channel)
@@ -927,6 +932,7 @@ func (n *Node) removePeer(peerID string) {
 	}
 	delete(n.suppress, peerID)
 	delete(n.relayBuckets, peerID)
+	delete(n.directProbes, peerID)
 	if info, ok := n.knownPeers[peerID]; ok {
 		info.direct = false
 		info.lastSeen = time.Now()
@@ -950,6 +956,7 @@ func (n *Node) maintenanceLoop(ctx context.Context) {
 		case <-ticker.C:
 			n.scoring.Tick()
 			n.pruneLowScoringPeers()
+			n.promoteRelayPeers()
 			for _, channel := range n.pubsub.SnapshotLocal() {
 				n.maintainTopicMesh(channel)
 			}
@@ -1347,12 +1354,46 @@ func (n *Node) closeRelaySession(session relayLocalSession) {
 	}
 	n.mu.Lock()
 	delete(n.relayLocals, session.sessionID)
+	delete(n.directProbes, session.remotePeerID)
 	n.mu.Unlock()
 	n.enqueueEvent(EventRelayMigrated, map[string]string{
 		"peer":    session.remotePeerID,
 		"session": session.sessionID,
 		"via":     session.viaPeerID,
 	})
+}
+
+func (n *Node) promoteRelayPeers() {
+	targets := n.relayPromotionTargets()
+	for _, peerID := range targets {
+		go n.tryDirectConnect(peerID, n.config.HandshakeTimeout())
+	}
+}
+
+func (n *Node) relayPromotionTargets() []string {
+	now := time.Now()
+	cooldown := n.config.Heartbeat()
+	if cooldown <= 0 {
+		cooldown = 250 * time.Millisecond
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	targets := make([]string, 0, len(n.relayLocals))
+	for _, session := range n.relayLocals {
+		if !session.established {
+			continue
+		}
+		if _, direct := n.peers[session.remotePeerID]; direct {
+			continue
+		}
+		lastAttempt := n.directProbes[session.remotePeerID]
+		if !lastAttempt.IsZero() && now.Sub(lastAttempt) < cooldown {
+			continue
+		}
+		n.directProbes[session.remotePeerID] = now
+		targets = append(targets, session.remotePeerID)
+	}
+	return targets
 }
 
 func newRelaySessionID() (string, error) {

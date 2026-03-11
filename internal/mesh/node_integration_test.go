@@ -483,6 +483,67 @@ func TestDirectPeerConnectionMigratesRelaySession(t *testing.T) {
 	waitForRelayRouteClosed(t, relayNode, sessionID)
 }
 
+func TestRelaySessionAutoPromotesToDirectConnection(t *testing.T) {
+	cfgRelay := DefaultConfig()
+	cfgRelay.Trackers = nil
+	cfgRelay.GossipSub.HeartbeatMS = 50
+	relayNode, err := NewNode("mesh-auto-migrate", nil, cfgRelay)
+	if err != nil {
+		t.Fatalf("NewNode relay failed: %v", err)
+	}
+	if code := relayNode.Start(); code != MOSS_OK {
+		t.Fatalf("relayNode.Start failed: %d", code)
+	}
+	defer relayNode.Stop()
+
+	cfgA := DefaultConfig()
+	cfgA.Trackers = nil
+	cfgA.GossipSub.HeartbeatMS = 50
+	cfgA.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(relayNode.ListenPort()))}
+	nodeA, err := NewNode("mesh-auto-migrate", nil, cfgA)
+	if err != nil {
+		t.Fatalf("NewNode nodeA failed: %v", err)
+	}
+	if code := nodeA.Start(); code != MOSS_OK {
+		t.Fatalf("nodeA.Start failed: %d", code)
+	}
+	defer nodeA.Stop()
+
+	cfgB := DefaultConfig()
+	cfgB.Trackers = nil
+	cfgB.GossipSub.HeartbeatMS = 50
+	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(relayNode.ListenPort()))}
+	nodeB, err := NewNode("mesh-auto-migrate", nil, cfgB)
+	if err != nil {
+		t.Fatalf("NewNode nodeB failed: %v", err)
+	}
+	if code := nodeB.Start(); code != MOSS_OK {
+		t.Fatalf("nodeB.Start failed: %d", code)
+	}
+	defer nodeB.Stop()
+
+	waitForPeerCount(t, relayNode, 2)
+	waitForPeerCount(t, nodeA, 1)
+	waitForPeerCount(t, nodeB, 1)
+
+	relayPub := relayNode.PublicKey()
+	targetPub := nodeB.PublicKey()
+	sessionID, err := nodeA.OpenRelaySession(hex.EncodeToString(relayPub[:]), hex.EncodeToString(targetPub[:]), 2*time.Second)
+	if err != nil {
+		t.Fatalf("OpenRelaySession failed: %v", err)
+	}
+	waitForRelaySession(t, nodeA, sessionID)
+	waitForRelaySession(t, nodeB, sessionID)
+	waitForRelayRoute(t, relayNode, sessionID)
+
+	sourcePub := nodeA.PublicKey()
+	waitForDirectPeer(t, nodeA, hex.EncodeToString(targetPub[:]))
+	waitForDirectPeer(t, nodeB, hex.EncodeToString(sourcePub[:]))
+	waitForRelaySessionClosed(t, nodeA, sessionID)
+	waitForRelaySessionClosed(t, nodeB, sessionID)
+	waitForRelayRouteClosed(t, relayNode, sessionID)
+}
+
 func waitForPeerCount(t *testing.T, node *Node, want int) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
