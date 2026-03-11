@@ -1,8 +1,10 @@
 package transport
 
 import (
+	"crypto/rand"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -16,6 +18,8 @@ const (
 	udpMessageHandshakeResp byte = 2
 	udpMessageHandshakeDone byte = 3
 	udpMessageData          byte = 4
+	udpMessageObserveReq    byte = 5
+	udpMessageObserveResp   byte = 6
 )
 
 var errUDPAlreadyConnected = errors.New("udp peer is already connected")
@@ -31,6 +35,7 @@ type UDPListener struct {
 	sessions map[string]*udpCarrier
 	clients  map[string]*udpClientHandshake
 	servers  map[string]*udpServerHandshake
+	observes map[string]chan string
 	closeErr error
 }
 
@@ -71,6 +76,7 @@ func ListenUDP(port int, cfg HandshakeConfig) (*UDPListener, int, error) {
 		sessions: make(map[string]*udpCarrier),
 		clients:  make(map[string]*udpClientHandshake),
 		servers:  make(map[string]*udpServerHandshake),
+		observes: make(map[string]chan string),
 	}
 	go listener.readLoop()
 	return listener, conn.LocalAddr().(*net.UDPAddr).Port, nil
@@ -169,6 +175,46 @@ func (l *UDPListener) DialPeerContext(ctx context.Context, addr string, remoteSt
 	}
 }
 
+func (l *UDPListener) ObserveContext(ctx context.Context, addr string) (string, error) {
+	remote, err := net.ResolveUDPAddr("udp", addr)
+	if err != nil {
+		return "", err
+	}
+	token, err := newObserveToken()
+	if err != nil {
+		return "", err
+	}
+	wait := make(chan string, 1)
+	l.mu.Lock()
+	l.observes[string(token)] = wait
+	l.mu.Unlock()
+	defer func() {
+		l.mu.Lock()
+		delete(l.observes, string(token))
+		l.mu.Unlock()
+	}()
+
+	ticker := time.NewTicker(75 * time.Millisecond)
+	defer ticker.Stop()
+	if err := l.writeDatagram(remote, udpMessageObserveReq, token); err != nil {
+		return "", err
+	}
+	for {
+		select {
+		case observed := <-wait:
+			return observed, nil
+		case <-ticker.C:
+			if err := l.writeDatagram(remote, udpMessageObserveReq, token); err != nil {
+				return "", err
+			}
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-l.closed:
+			return "", io.EOF
+		}
+	}
+}
+
 func (l *UDPListener) Close() error {
 	l.once.Do(func() {
 		l.mu.Lock()
@@ -182,6 +228,13 @@ func (l *UDPListener) Close() error {
 		}
 		l.clients = make(map[string]*udpClientHandshake)
 		l.servers = make(map[string]*udpServerHandshake)
+		for _, wait := range l.observes {
+			select {
+			case wait <- "":
+			default:
+			}
+		}
+		l.observes = make(map[string]chan string)
 		close(l.closed)
 		close(l.acceptC)
 		l.mu.Unlock()
@@ -212,6 +265,10 @@ func (l *UDPListener) readLoop() {
 			l.handleHandshakeDone(remote, payload)
 		case udpMessageData:
 			l.handleData(remote, payload)
+		case udpMessageObserveReq:
+			l.handleObserveReq(remote, payload)
+		case udpMessageObserveResp:
+			l.handleObserveResp(payload)
 		}
 	}
 }
@@ -363,6 +420,34 @@ func (l *UDPListener) handleData(remote *net.UDPAddr, payload []byte) {
 	carrier.enqueue(payload)
 }
 
+func (l *UDPListener) handleObserveReq(remote *net.UDPAddr, payload []byte) {
+	if len(payload) != 16 {
+		return
+	}
+	response := make([]byte, 16+len(remote.String()))
+	copy(response, payload)
+	copy(response[16:], remote.String())
+	_ = l.writeDatagram(remote, udpMessageObserveResp, response)
+}
+
+func (l *UDPListener) handleObserveResp(payload []byte) {
+	if len(payload) < 17 {
+		return
+	}
+	token := string(payload[:16])
+	observed := string(payload[16:])
+	l.mu.Lock()
+	wait := l.observes[token]
+	l.mu.Unlock()
+	if wait == nil {
+		return
+	}
+	select {
+	case wait <- observed:
+	default:
+	}
+}
+
 func (l *UDPListener) establishSession(remote *net.UDPAddr, sendCipher, recvCipher *noise.CipherState, remoteID, remoteKey [32]byte, mode byte) (*Session, error) {
 	key := remote.String()
 	l.mu.Lock()
@@ -459,4 +544,12 @@ func mustMarshalIdentityPayload(cfg HandshakeConfig) []byte {
 		return nil
 	}
 	return payload
+}
+
+func newObserveToken() ([]byte, error) {
+	token := make([]byte, 16)
+	if _, err := rand.Read(token); err != nil {
+		return nil, fmt.Errorf("read observe token: %w", err)
+	}
+	return token, nil
 }

@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"net"
 	"strconv"
 	"testing"
 	"time"
@@ -156,5 +157,46 @@ func TestUDPReconnectUsesIKWithCachedRemoteStatic(t *testing.T) {
 	}
 	if got := clientSession2.RemoteID(); got != serverIdentity.PublicKey() {
 		t.Fatal("udp reconnect session did not bind responder identity")
+	}
+}
+
+func TestUDPObserveContextReportsObservedEndpoint(t *testing.T) {
+	identity, err := mcrypto.NewIdentity()
+	if err != nil {
+		t.Fatalf("identity failed: %v", err)
+	}
+	serverListener, serverPort, err := ListenUDP(0, HandshakeConfig{
+		MeshID:   "mesh-udp-observe",
+		Identity: identity,
+	})
+	if err != nil {
+		t.Fatalf("ListenUDP server failed: %v", err)
+	}
+	defer serverListener.Close()
+
+	clientListener, clientPort, err := ListenUDP(0, HandshakeConfig{
+		MeshID:   "mesh-udp-observe",
+		Identity: identity,
+	})
+	if err != nil {
+		t.Fatalf("ListenUDP client failed: %v", err)
+	}
+	defer clientListener.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	observed, err := clientListener.ObserveContext(ctx, "127.0.0.1:"+strconv.Itoa(serverPort))
+	if err != nil {
+		t.Fatalf("ObserveContext failed: %v", err)
+	}
+	host, port, err := net.SplitHostPort(observed)
+	if err != nil {
+		t.Fatalf("observed endpoint invalid: %v", err)
+	}
+	if host != "127.0.0.1" {
+		t.Fatalf("unexpected observed host %s", host)
+	}
+	if port != strconv.Itoa(clientPort) {
+		t.Fatalf("expected observed port %d, got %s", clientPort, port)
 	}
 }
