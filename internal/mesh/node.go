@@ -129,12 +129,19 @@ type meshInfo struct {
 }
 
 func NewNode(meshID string, psk []byte, cfg Config) (*Node, error) {
+	return NewNodeWithIdentity(meshID, psk, cfg, nil)
+}
+
+func NewNodeWithIdentity(meshID string, psk []byte, cfg Config, identity *mcrypto.Identity) (*Node, error) {
 	if meshID == "" {
 		return nil, errors.New("mesh id is required")
 	}
-	identity, err := mcrypto.NewIdentity()
-	if err != nil {
-		return nil, err
+	var err error
+	if identity == nil {
+		identity, err = mcrypto.NewIdentity()
+		if err != nil {
+			return nil, err
+		}
 	}
 	infoHash, err := bootstrap.InfoHash(meshID, psk)
 	if err != nil {

@@ -15,6 +15,10 @@ typedef void (*MossEventCallback)(int32_t event_type,
 
 typedef double (*MossScoringCallback)(const uint8_t* peer_id,
                                        double base_score);
+typedef uint32_t (*MossKeyStoreLoadCallback)(uint8_t* buffer,
+                                             uint32_t capacity);
+typedef void (*MossKeyStoreSaveCallback)(const uint8_t* data,
+                                         uint32_t len);
 
 static inline void callMessageCallback(MossMessageCallback cb,
                                        const char* channel,
@@ -35,14 +39,28 @@ static inline double callScoringCallback(MossScoringCallback cb,
                                          double base_score) {
   return cb(peer_id, base_score);
 }
+
+static inline uint32_t callKeyStoreLoad(MossKeyStoreLoadCallback cb,
+                                        uint8_t* buffer,
+                                        uint32_t capacity) {
+  return cb(buffer, capacity);
+}
+
+static inline void callKeyStoreSave(MossKeyStoreSaveCallback cb,
+                                    const uint8_t* data,
+                                    uint32_t len) {
+  cb(data, len);
+}
 */
 import "C"
 
 import (
+	"errors"
 	"sync"
 	"sync/atomic"
 	"unsafe"
 
+	mcrypto "moss/internal/crypto"
 	"moss/internal/mesh"
 )
 
@@ -50,6 +68,44 @@ var (
 	handleCounter atomic.Int64
 	registryMu    sync.RWMutex
 	registry      = make(map[int64]*mesh.Node)
+	keystoreMu    sync.RWMutex
+	keystoreLoad  C.MossKeyStoreLoadCallback
+	keystoreSave  C.MossKeyStoreSaveCallback
+
+	loadIdentityBytes = func() ([]byte, error) {
+		keystoreMu.RLock()
+		load := keystoreLoad
+		keystoreMu.RUnlock()
+		if load == nil {
+			return nil, nil
+		}
+		size := C.callKeyStoreLoad(load, nil, 0)
+		if size == 0 {
+			return nil, nil
+		}
+		buffer := C.malloc(C.size_t(size))
+		if buffer == nil {
+			return nil, errors.New("keystore load allocation failed")
+		}
+		defer C.free(buffer)
+		read := C.callKeyStoreLoad(load, (*C.uint8_t)(buffer), size)
+		if read == 0 {
+			return nil, nil
+		}
+		return C.GoBytes(buffer, C.int(read)), nil
+	}
+	saveIdentityBytes = func(raw []byte) error {
+		keystoreMu.RLock()
+		save := keystoreSave
+		keystoreMu.RUnlock()
+		if save == nil || len(raw) == 0 {
+			return nil
+		}
+		ptr := C.CBytes(raw)
+		defer C.free(ptr)
+		C.callKeyStoreSave(save, (*C.uint8_t)(ptr), C.uint32_t(len(raw)))
+		return nil
+	}
 )
 
 func main() {}
@@ -59,19 +115,7 @@ func Moss_Init(meshID *C.char, psk *C.uint8_t, config *C.char) C.MossHandle {
 	if meshID == nil {
 		return C.MossHandle(mesh.MOSS_ERR_CONFIG_INVALID)
 	}
-	cfg, err := mesh.ParseConfig(cString(config))
-	if err != nil {
-		return C.MossHandle(mesh.MOSS_ERR_CONFIG_INVALID)
-	}
-	node, err := mesh.NewNode(C.GoString(meshID), pskBytes(psk), cfg)
-	if err != nil {
-		return C.MossHandle(mesh.MOSS_ERR_CONFIG_INVALID)
-	}
-	handle := handleCounter.Add(1)
-	registryMu.Lock()
-	registry[handle] = node
-	registryMu.Unlock()
-	return C.MossHandle(handle)
+	return C.MossHandle(initNode(C.GoString(meshID), pskBytes(psk), cString(config)))
 }
 
 //export Moss_Start
@@ -183,6 +227,15 @@ func Moss_SetScoringCallback(handle C.MossHandle, cb C.MossScoringCallback) C.in
 	return C.int32_t(mesh.MOSS_OK)
 }
 
+//export Moss_SetKeyStore
+func Moss_SetKeyStore(load C.MossKeyStoreLoadCallback, save C.MossKeyStoreSaveCallback) C.int32_t {
+	keystoreMu.Lock()
+	defer keystoreMu.Unlock()
+	keystoreLoad = load
+	keystoreSave = save
+	return C.int32_t(mesh.MOSS_OK)
+}
+
 //export Moss_GetMeshInfo
 func Moss_GetMeshInfo(handle C.MossHandle) *C.char {
 	node, code := getNode(int64(handle))
@@ -248,4 +301,45 @@ func bytesFromPointer(data *C.uint8_t, length int) []byte {
 		return nil
 	}
 	return C.GoBytes(unsafe.Pointer(data), C.int(length))
+}
+
+func initNode(meshID string, psk []byte, config string) int64 {
+	cfg, err := mesh.ParseConfig(config)
+	if err != nil {
+		return int64(mesh.MOSS_ERR_CONFIG_INVALID)
+	}
+	identity, err := resolveIdentity()
+	if err != nil {
+		return int64(mesh.MOSS_ERR_CONFIG_INVALID)
+	}
+	node, err := mesh.NewNodeWithIdentity(meshID, psk, cfg, identity)
+	if err != nil {
+		return int64(mesh.MOSS_ERR_CONFIG_INVALID)
+	}
+	handle := handleCounter.Add(1)
+	registryMu.Lock()
+	registry[handle] = node
+	registryMu.Unlock()
+	return handle
+}
+
+func resolveIdentity() (*mcrypto.Identity, error) {
+	raw, err := loadIdentityBytes()
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) != 0 {
+		identity, err := mcrypto.DecodeIdentity(raw)
+		if err == nil {
+			return identity, nil
+		}
+	}
+	identity, err := mcrypto.NewIdentity()
+	if err != nil {
+		return nil, err
+	}
+	if err := saveIdentityBytes(identity.Encode()); err != nil {
+		return nil, err
+	}
+	return identity, nil
 }
