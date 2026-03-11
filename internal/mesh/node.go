@@ -64,6 +64,7 @@ type Node struct {
 	overloadedUntil  time.Time
 	bindingHistory   []string
 	knownPeers       map[string]knownPeer
+	trackerSeeds     map[string]time.Time
 	bindingWait      map[string]chan string
 	reachabilityWait map[string]chan bool
 	scoringMu        sync.RWMutex
@@ -79,6 +80,8 @@ type peerConn struct {
 	addr        string
 	session     *transport.Session
 	outbound    bool
+	bootstrap   bool
+	connectedAt time.Time
 	lastRTT     time.Duration
 	pingSentAt  time.Time
 	pingPending string
@@ -124,6 +127,7 @@ type knownPeer struct {
 	id              string
 	addr            string
 	direct          bool
+	bootstrap       bool
 	lan             bool
 	natType         nat.Type
 	publicReachable bool
@@ -190,6 +194,7 @@ func NewNodeWithIdentity(meshID string, psk []byte, cfg Config, identity *mcrypt
 		meshDeliveries:   make(map[string]*meshDeliveryObservation),
 		bindingHistory:   make([]string, 0, 4),
 		knownPeers:       make(map[string]knownPeer),
+		trackerSeeds:     make(map[string]time.Time),
 		bindingWait:      make(map[string]chan string),
 		reachabilityWait: make(map[string]chan bool),
 		dispatchSem:      make(chan struct{}, 500),
@@ -601,6 +606,7 @@ func (n *Node) announceAndConnect(ctx context.Context, event bootstrap.Event) {
 		n.enqueueEvent(EventTrackerFailure, map[string]string{"error": err.Error()})
 		return
 	}
+	n.rememberTrackerSeeds(peers)
 	for _, peer := range peers {
 		n.connectPeer(ctx, peer)
 	}
@@ -608,6 +614,27 @@ func (n *Node) announceAndConnect(ctx context.Context, event bootstrap.Event) {
 		"candidate_peers": len(peers),
 		"connected_peers": n.currentPeerCount(),
 	})
+}
+
+func (n *Node) rememberTrackerSeeds(peers []string) {
+	if len(peers) == 0 {
+		return
+	}
+	cutoff := time.Now().Add(-10 * time.Minute)
+	now := time.Now()
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	for addr, seenAt := range n.trackerSeeds {
+		if seenAt.Before(cutoff) {
+			delete(n.trackerSeeds, addr)
+		}
+	}
+	for _, peer := range peers {
+		if peer == "" {
+			continue
+		}
+		n.trackerSeeds[peer] = now
+	}
 }
 
 func (n *Node) connectPeer(ctx context.Context, addr string) error {
@@ -697,13 +724,15 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 		_ = session.Close()
 		return
 	}
-	peer := &peerConn{id: peerID, addr: addr, session: session, outbound: outbound}
+	bootstrapSeed := !n.trackerSeeds[addr].IsZero()
+	peer := &peerConn{id: peerID, addr: addr, session: session, outbound: outbound, bootstrap: bootstrapSeed, connectedAt: time.Now()}
 	current := n.knownPeers[peerID]
 	n.peers[peerID] = peer
 	n.knownPeers[peerID] = knownPeer{
 		id:              peerID,
 		addr:            addr,
 		direct:          true,
+		bootstrap:       current.bootstrap || bootstrapSeed,
 		lan:             current.lan,
 		natType:         current.natType,
 		publicReachable: current.publicReachable,
@@ -739,6 +768,9 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 func (n *Node) selectOverflowPrunePeerLocked() *peerConn {
 	var selected *peerConn
 	for _, peer := range n.peers {
+		if n.shouldRetainPeerLocked(peer) {
+			continue
+		}
 		if peer.lastRTT <= 2*time.Second && n.peerScore(peer.id) >= 0 {
 			continue
 		}
@@ -788,6 +820,26 @@ func comparePrunePriority(a, b *peerConn, node *Node) int {
 	default:
 		return 0
 	}
+}
+
+func (n *Node) shouldRetainPeer(peer *peerConn) bool {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.shouldRetainPeerLocked(peer)
+}
+
+func (n *Node) shouldRetainPeerLocked(peer *peerConn) bool {
+	if peer == nil {
+		return false
+	}
+	if peer.bootstrap {
+		return true
+	}
+	if time.Since(peer.connectedAt) < 30*time.Second {
+		return true
+	}
+	info := n.knownPeers[peer.id]
+	return info.bootstrap || info.relayCapable || info.publicReachable
 }
 
 func shouldReplaceDuplicatePeer(localPeerID, remotePeerID string, existingOutbound, newOutbound bool) bool {
@@ -986,6 +1038,7 @@ func (n *Node) localKnownPeer() knownPeer {
 		id:              n.localPeerID(),
 		addr:            n.advertisedListenAddr(),
 		direct:          true,
+		bootstrap:       false,
 		lan:             false,
 		natType:         profile.Type,
 		publicReachable: profile.PublicReachable,
@@ -1013,6 +1066,9 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 	if env.AdvertisedPeerID == "" || env.AdvertisedAddr == "" || env.AdvertisedPeerID == n.localPeerID() {
 		return
 	}
+	if peer != nil && peer.outbound && env.AdvertisedPeerID == peer.id {
+		env.AdvertisedAddr = peer.addr
+	}
 	changed := false
 	n.mu.Lock()
 	current, ok := n.knownPeers[env.AdvertisedPeerID]
@@ -1021,10 +1077,15 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 		if ok && current.direct {
 			direct = true
 		}
+		bootstrap := current.bootstrap
+		if peer != nil && peer.outbound && env.AdvertisedPeerID == peer.id && peer.bootstrap {
+			bootstrap = true
+		}
 		n.knownPeers[env.AdvertisedPeerID] = knownPeer{
 			id:              env.AdvertisedPeerID,
 			addr:            env.AdvertisedAddr,
 			direct:          direct,
+			bootstrap:       bootstrap,
 			lan:             current.lan,
 			natType:         nat.Type(env.AdvertisedNATType),
 			publicReachable: env.AdvertisedReachable,
@@ -1445,6 +1506,9 @@ func (n *Node) pruneHighLatencyPeers() {
 	ids := make([]string, 0, len(n.peers))
 	n.mu.Lock()
 	for id, peer := range n.peers {
+		if n.shouldRetainPeerLocked(peer) {
+			continue
+		}
 		if peer.lastRTT > 2*time.Second {
 			ids = append(ids, id)
 			continue
@@ -1497,7 +1561,10 @@ func (n *Node) maintenanceLoop(ctx context.Context) {
 func (n *Node) pruneLowScoringPeers() {
 	n.mu.RLock()
 	ids := make([]string, 0, len(n.peers))
-	for id := range n.peers {
+	for id, peer := range n.peers {
+		if n.shouldRetainPeerLocked(peer) {
+			continue
+		}
 		if n.peerScore(id) < 0 {
 			ids = append(ids, id)
 		}
@@ -1657,9 +1724,6 @@ func (n *Node) discoveredPeerTargets() []discoveredPeerTarget {
 		if peerID == n.localPeerID() || info.addr == "" {
 			continue
 		}
-		if info.lan && n.localPeerID() > peerID {
-			continue
-		}
 		if _, connected := n.peers[peerID]; connected {
 			continue
 		}
@@ -1675,6 +1739,9 @@ func (n *Node) discoveredPeerTargets() []discoveredPeerTarget {
 	}
 
 	sort.Slice(targets, func(i, j int) bool {
+		if targets[i].info.bootstrap != targets[j].info.bootstrap {
+			return targets[i].info.bootstrap
+		}
 		rankI := relayCandidateRank(targets[i].info)
 		rankJ := relayCandidateRank(targets[j].info)
 		if rankI != rankJ {
@@ -2606,6 +2673,7 @@ func (n *Node) updateKnownPeer(peerID, addr string, direct bool) {
 		id:              peerID,
 		addr:            addr,
 		direct:          direct,
+		bootstrap:       current.bootstrap,
 		lan:             current.lan,
 		natType:         current.natType,
 		publicReachable: current.publicReachable,

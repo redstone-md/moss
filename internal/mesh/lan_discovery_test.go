@@ -70,3 +70,17 @@ func TestHandleLANBeaconIgnoresDifferentMeshAndSelf(t *testing.T) {
 		t.Fatalf("expected no known peers, got %d", len(node.knownPeers))
 	}
 }
+
+func TestLANDiscoveryBroadcastCalculation(t *testing.T) {
+	ip := net.IPv4(192, 168, 10, 24)
+	mask := net.CIDRMask(24, 32)
+	broadcast := net.IPv4(
+		ip[12]|^mask[0],
+		ip[13]|^mask[1],
+		ip[14]|^mask[2],
+		ip[15]|^mask[3],
+	)
+	if got := broadcast.String(); got != "192.168.10.255" {
+		t.Fatalf("unexpected broadcast %q", got)
+	}
+}
