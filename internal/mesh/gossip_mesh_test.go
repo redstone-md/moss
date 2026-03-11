@@ -2,6 +2,7 @@ package mesh
 
 import (
 	"testing"
+	"time"
 
 	"moss/internal/gossip"
 )
@@ -103,5 +104,44 @@ func TestPublishBelowThresholdIsDropped(t *testing.T) {
 
 	if _, ok := node.cache.Get("msg-1"); ok {
 		t.Fatal("expected low-scored publish to be dropped before cache store")
+	}
+}
+
+func TestMeshDeliveryDeficitPenalizesSilentMeshPeers(t *testing.T) {
+	node, err := NewNode("mesh-delivery-deficit", nil, DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+	node.pubsub.SetMeshPeer("alpha", "peer-a", true)
+	node.pubsub.SetMeshPeer("alpha", "peer-b", true)
+
+	node.observeMeshDelivery("alpha", "msg-1", "peer-a")
+	node.evaluateMeshDeliveryDeficits(time.Now().Add(2 * node.config.Heartbeat()))
+
+	if score := node.scoring.Score("peer-a"); score != 0 {
+		t.Fatalf("expected delivering peer to avoid deficit penalty, got %f", score)
+	}
+	if score := node.scoring.Score("peer-b"); score != -0.5 {
+		t.Fatalf("expected silent mesh peer to receive deficit penalty, got %f", score)
+	}
+}
+
+func TestMeshDeliveryDeficitSkipsPeersThatForward(t *testing.T) {
+	node, err := NewNode("mesh-delivery-forward", nil, DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+	node.pubsub.SetMeshPeer("alpha", "peer-a", true)
+	node.pubsub.SetMeshPeer("alpha", "peer-b", true)
+
+	node.observeMeshDelivery("alpha", "msg-2", "peer-a")
+	node.observeMeshDelivery("alpha", "msg-2", "peer-b")
+	node.evaluateMeshDeliveryDeficits(time.Now().Add(2 * node.config.Heartbeat()))
+
+	if score := node.scoring.Score("peer-a"); score != 0 {
+		t.Fatalf("expected peer-a to avoid deficit penalty, got %f", score)
+	}
+	if score := node.scoring.Score("peer-b"); score != 0 {
+		t.Fatalf("expected peer-b to avoid deficit penalty, got %f", score)
 	}
 }

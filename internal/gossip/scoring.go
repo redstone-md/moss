@@ -48,6 +48,12 @@ func (e *Engine) RewardFirstDelivery(peerID string) {
 	e.ensureLocked(peerID).FirstMessageDeliveries += 0.66
 }
 
+func (e *Engine) PenalizeMeshDelivery(peerID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.ensureLocked(peerID).MeshDeliveryDeficit -= 0.5
+}
+
 func (e *Engine) PenalizeInvalid(peerID string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()

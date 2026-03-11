@@ -15,6 +15,15 @@ func TestScoringEngineTracksRewardsAndPenalties(t *testing.T) {
 	}
 }
 
+func TestPenalizeMeshDeliveryDeficit(t *testing.T) {
+	engine := NewEngine()
+	engine.Ensure("peer-1")
+	engine.PenalizeMeshDelivery("peer-1")
+	if score := engine.Score("peer-1"); score != -0.5 {
+		t.Fatalf("expected mesh delivery deficit penalty, got %f", score)
+	}
+}
+
 func TestApplyIPColocationPenaltyResetsWhenPeerBecomesUnique(t *testing.T) {
 	engine := NewEngine()
 	engine.Ensure("peer-1")

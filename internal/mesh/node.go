@@ -60,6 +60,7 @@ type Node struct {
 	relayBuckets     map[string]*nat.TokenBucket
 	directProbes     map[string]time.Time
 	peerDials        map[string]time.Time
+	meshDeliveries   map[string]*meshDeliveryObservation
 	bindingHistory   []string
 	knownPeers       map[string]knownPeer
 	bindingWait      map[string]chan string
@@ -106,6 +107,12 @@ type relayLocalSession struct {
 	remotePeerID string
 	established  bool
 	wait         chan struct{}
+}
+
+type meshDeliveryObservation struct {
+	due       time.Time
+	expected  map[string]struct{}
+	delivered map[string]struct{}
 }
 
 type knownPeer struct {
@@ -173,6 +180,7 @@ func NewNodeWithIdentity(meshID string, psk []byte, cfg Config, identity *mcrypt
 		relayBuckets:     make(map[string]*nat.TokenBucket),
 		directProbes:     make(map[string]time.Time),
 		peerDials:        make(map[string]time.Time),
+		meshDeliveries:   make(map[string]*meshDeliveryObservation),
 		bindingHistory:   make([]string, 0, 4),
 		knownPeers:       make(map[string]knownPeer),
 		bindingWait:      make(map[string]chan string),
@@ -716,6 +724,7 @@ func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 			n.scoring.PenalizeInvalid(peer.id)
 			return
 		}
+		n.observeMeshDelivery(env.Channel, env.MessageID, peer.id)
 		if n.cache.Seen(env.MessageID) {
 			return
 		}
@@ -1152,6 +1161,63 @@ func (n *Node) removePeer(peerID string) {
 	}
 }
 
+func (n *Node) observeMeshDelivery(channel, messageID, peerID string) {
+	if channel == "" || messageID == "" {
+		return
+	}
+	expected := make(map[string]struct{})
+	for _, meshPeerID := range n.pubsub.MeshPeers(channel) {
+		if n.isPeerBelowBaseline(meshPeerID) {
+			continue
+		}
+		expected[meshPeerID] = struct{}{}
+	}
+	if len(expected) == 0 {
+		return
+	}
+	due := time.Now().Add(n.config.Heartbeat())
+	if n.config.Heartbeat() <= 0 {
+		due = time.Now().Add(time.Second)
+	}
+
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	obs := n.meshDeliveries[messageID]
+	if obs == nil {
+		obs = &meshDeliveryObservation{
+			due:       due,
+			expected:  expected,
+			delivered: make(map[string]struct{}),
+		}
+		n.meshDeliveries[messageID] = obs
+	}
+	if _, ok := obs.expected[peerID]; ok {
+		obs.delivered[peerID] = struct{}{}
+	}
+}
+
+func (n *Node) evaluateMeshDeliveryDeficits(now time.Time) {
+	n.mu.Lock()
+	expired := make([]*meshDeliveryObservation, 0, len(n.meshDeliveries))
+	for messageID, obs := range n.meshDeliveries {
+		if now.Before(obs.due) {
+			continue
+		}
+		expired = append(expired, obs)
+		delete(n.meshDeliveries, messageID)
+	}
+	n.mu.Unlock()
+
+	for _, obs := range expired {
+		for peerID := range obs.expected {
+			if _, delivered := obs.delivered[peerID]; delivered {
+				continue
+			}
+			n.scoring.PenalizeMeshDelivery(peerID)
+		}
+	}
+}
+
 func (n *Node) maintenanceLoop(ctx context.Context) {
 	defer n.wg.Done()
 	ticker := time.NewTicker(n.config.Heartbeat())
@@ -1163,6 +1229,7 @@ func (n *Node) maintenanceLoop(ctx context.Context) {
 		case <-ticker.C:
 			atomic.AddUint64(&n.heartbeat, 1)
 			n.scoring.Tick()
+			n.evaluateMeshDeliveryDeficits(time.Now())
 			n.pruneLowScoringPeers()
 			n.connectKnownPeers()
 			n.promoteRelayPeers()
