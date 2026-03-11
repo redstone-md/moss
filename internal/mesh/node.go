@@ -824,6 +824,12 @@ func (n *Node) handlePeerAnnounce(peer *peerConn, env gossip.Envelope) {
 
 func (n *Node) handleSupernodeStatus(peer *peerConn, env gossip.Envelope, relayCapable bool) {
 	env.AdvertisedRelayCapable = relayCapable
+	if !verifySupernodeEnvelope(env) {
+		if peer != nil {
+			n.scoring.PenalizeInvalid(peer.id)
+		}
+		return
+	}
 	n.handleKnownPeerEnvelope(peer, env, env.Type)
 }
 
@@ -1250,14 +1256,15 @@ func (n *Node) refreshSupernodeStatus() {
 		eventType = EventSupernodePromoted
 	}
 
-	n.broadcastToAll(gossip.Envelope{
+	signed := n.signSupernodeEnvelope(gossip.Envelope{
 		Type:                   envType,
 		AdvertisedPeerID:       info.id,
 		AdvertisedAddr:         info.addr,
 		AdvertisedNATType:      string(info.natType),
 		AdvertisedReachable:    info.publicReachable,
 		AdvertisedRelayCapable: ready,
-	}, "")
+	})
+	n.broadcastToAll(signed, "")
 	n.broadcastPeerAnnouncement(info, "")
 	n.enqueueEvent(eventType, map[string]string{"nat_type": string(profile.Type)})
 }

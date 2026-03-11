@@ -43,6 +43,7 @@ type Envelope struct {
 	AdvertisedNATType      string       `json:"advertised_nat_type,omitempty"`
 	AdvertisedReachable    bool         `json:"advertised_reachable,omitempty"`
 	AdvertisedRelayCapable bool         `json:"advertised_relay_capable,omitempty"`
+	AdvertisedSignature    []byte       `json:"advertised_signature,omitempty"`
 	Reachable              bool         `json:"reachable,omitempty"`
 	Payload                []byte       `json:"payload,omitempty"`
 }
