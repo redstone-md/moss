@@ -119,3 +119,39 @@ func TestSelectRelayPeersReturnsOrderedCandidates(t *testing.T) {
 		t.Fatalf("unexpected relay candidate order: %v", candidates)
 	}
 }
+
+func TestSelectRelayPeersPrefersLessLoadedRelay(t *testing.T) {
+	node, err := NewNode("mesh-relay-load", nil, DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+
+	node.peers["peer-a"] = &peerConn{id: "peer-a"}
+	node.peers["peer-b"] = &peerConn{id: "peer-b"}
+	node.knownPeers["peer-a"] = knownPeer{
+		id:              "peer-a",
+		addr:            "198.51.100.10:4000",
+		natType:         nat.TypePublic,
+		publicReachable: true,
+		relayCapable:    true,
+	}
+	node.knownPeers["peer-b"] = knownPeer{
+		id:              "peer-b",
+		addr:            "198.51.100.11:4000",
+		natType:         nat.TypePublic,
+		publicReachable: true,
+		relayCapable:    true,
+	}
+	node.scoring.SetApplicationScore("peer-a", 10)
+	node.scoring.SetApplicationScore("peer-b", 1)
+	node.relayLocals["session-1"] = relayLocalSession{sessionID: "session-1", viaPeerID: "peer-a", remotePeerID: "target-1", established: true}
+	node.relayLocals["session-2"] = relayLocalSession{sessionID: "session-2", viaPeerID: "peer-a", remotePeerID: "target-2", established: true}
+
+	candidates, err := node.selectRelayPeers("target-peer")
+	if err != nil {
+		t.Fatalf("selectRelayPeers failed: %v", err)
+	}
+	if candidates[0] != "peer-b" {
+		t.Fatalf("expected less-loaded relay peer-b first, got %v", candidates)
+	}
+}
