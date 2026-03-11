@@ -50,6 +50,7 @@ type Node struct {
 
 	mu               sync.RWMutex
 	started          bool
+	supernodeActive  bool
 	cancel           context.CancelFunc
 	wg               sync.WaitGroup
 	peers            map[string]*peerConn
@@ -656,6 +657,10 @@ func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 		n.rememberSuppression(peer.id, env.MessageIDs, env.MessageID)
 	case gossip.TypePeerAnnounce:
 		n.handlePeerAnnounce(peer, env)
+	case gossip.TypeSupernodeAnnounce:
+		n.handleSupernodeStatus(peer, env, true)
+	case gossip.TypeSupernodeRevoke:
+		n.handleSupernodeStatus(peer, env, false)
 	case gossip.TypeBindingRequest:
 		n.handleBindingRequest(peer, env)
 	case gossip.TypeBindingResponse:
@@ -792,6 +797,15 @@ func (n *Node) localKnownPeer() knownPeer {
 }
 
 func (n *Node) handlePeerAnnounce(peer *peerConn, env gossip.Envelope) {
+	n.handleKnownPeerEnvelope(peer, env, gossip.TypePeerAnnounce)
+}
+
+func (n *Node) handleSupernodeStatus(peer *peerConn, env gossip.Envelope, relayCapable bool) {
+	env.AdvertisedRelayCapable = relayCapable
+	n.handleKnownPeerEnvelope(peer, env, env.Type)
+}
+
+func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forwardType gossip.EnvelopeType) {
 	if env.AdvertisedPeerID == "" || env.AdvertisedAddr == "" || env.AdvertisedPeerID == n.localPeerID() {
 		return
 	}
@@ -817,14 +831,13 @@ func (n *Node) handlePeerAnnounce(peer *peerConn, env gossip.Envelope) {
 	}
 	n.mu.Unlock()
 	if changed {
-		n.broadcastPeerAnnouncement(knownPeer{
-			id:              env.AdvertisedPeerID,
-			addr:            env.AdvertisedAddr,
-			direct:          false,
-			natType:         nat.Type(env.AdvertisedNATType),
-			publicReachable: env.AdvertisedReachable,
-			relayCapable:    env.AdvertisedRelayCapable,
-			lastSeen:        time.Now(),
+		n.broadcastToAll(gossip.Envelope{
+			Type:                   forwardType,
+			AdvertisedPeerID:       env.AdvertisedPeerID,
+			AdvertisedAddr:         env.AdvertisedAddr,
+			AdvertisedNATType:      env.AdvertisedNATType,
+			AdvertisedReachable:    env.AdvertisedReachable,
+			AdvertisedRelayCapable: env.AdvertisedRelayCapable,
 		}, peer.id)
 	}
 }
@@ -1106,10 +1119,7 @@ func (n *Node) maintenanceLoop(ctx context.Context) {
 			for _, channel := range n.pubsub.SnapshotLocal() {
 				n.maintainTopicMesh(channel)
 			}
-			profile := n.natProfile.Load().(nat.Profile)
-			if n.supernodeReady(profile) {
-				n.enqueueEvent(EventSupernodePromoted, map[string]string{"nat_type": string(profile.Type)})
-			}
+			n.refreshSupernodeStatus()
 		}
 	}
 }
@@ -1193,6 +1203,39 @@ func (n *Node) supernodeReady(profile nat.Profile) bool {
 		MinBandwidthKBytes: n.config.NAT.RelayMaxBandwidthKBPS,
 		MinScore:           1.0,
 	})
+}
+
+func (n *Node) refreshSupernodeStatus() {
+	profile := n.natProfile.Load().(nat.Profile)
+	ready := n.supernodeReady(profile)
+
+	n.mu.Lock()
+	if n.supernodeActive == ready {
+		n.mu.Unlock()
+		return
+	}
+	n.supernodeActive = ready
+	n.mu.Unlock()
+
+	info := n.localKnownPeer()
+	info.relayCapable = ready
+	envType := gossip.TypeSupernodeRevoke
+	eventType := int32(EventSupernodeRevoked)
+	if ready {
+		envType = gossip.TypeSupernodeAnnounce
+		eventType = EventSupernodePromoted
+	}
+
+	n.broadcastToAll(gossip.Envelope{
+		Type:                   envType,
+		AdvertisedPeerID:       info.id,
+		AdvertisedAddr:         info.addr,
+		AdvertisedNATType:      string(info.natType),
+		AdvertisedReachable:    info.publicReachable,
+		AdvertisedRelayCapable: ready,
+	}, "")
+	n.broadcastPeerAnnouncement(info, "")
+	n.enqueueEvent(eventType, map[string]string{"nat_type": string(profile.Type)})
 }
 
 func (n *Node) enqueueEvent(eventType int32, detail any) {

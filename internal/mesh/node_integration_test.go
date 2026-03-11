@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"moss/internal/nat"
 )
 
 func TestTwoNodesExchangePubSubMessages(t *testing.T) {
@@ -398,6 +400,88 @@ func TestRelayNodeEnforcesConfiguredBandwidth(t *testing.T) {
 	case payload := <-received:
 		t.Fatalf("expected second relay payload to be throttled, got %d bytes", len(payload))
 	case <-time.After(400 * time.Millisecond):
+	}
+}
+
+func TestSupernodeStatusAnnounceAndRevokePropagatesOnce(t *testing.T) {
+	cfgA := DefaultConfig()
+	cfgA.Trackers = nil
+	cfgA.GossipSub.HeartbeatMS = 50
+	cfgA.NAT.SuperNodeMinUptimeSec = 0
+	nodeA, err := NewNode("mesh-supernode-status", nil, cfgA)
+	if err != nil {
+		t.Fatalf("NewNode nodeA failed: %v", err)
+	}
+	if code := nodeA.Start(); code != MOSS_OK {
+		t.Fatalf("nodeA.Start failed: %d", code)
+	}
+	defer nodeA.Stop()
+
+	cfgB := DefaultConfig()
+	cfgB.Trackers = nil
+	cfgB.GossipSub.HeartbeatMS = 50
+	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(nodeA.ListenPort()))}
+	nodeB, err := NewNode("mesh-supernode-status", nil, cfgB)
+	if err != nil {
+		t.Fatalf("NewNode nodeB failed: %v", err)
+	}
+	if code := nodeB.Start(); code != MOSS_OK {
+		t.Fatalf("nodeB.Start failed: %d", code)
+	}
+	defer nodeB.Stop()
+
+	waitForPeerCount(t, nodeA, 1)
+	waitForPeerCount(t, nodeB, 1)
+
+	promoted := make(chan struct{}, 4)
+	revoked := make(chan struct{}, 4)
+	nodeA.SetEventCallback(func(eventType int32, detailJSON string) {
+		switch eventType {
+		case EventSupernodePromoted:
+			promoted <- struct{}{}
+		case EventSupernodeRevoked:
+			revoked <- struct{}{}
+		}
+	})
+
+	nodeAPub := nodeA.PublicKey()
+	nodeAID := hex.EncodeToString(nodeAPub[:])
+	nodeA.natProfile.Store(nat.Profile{
+		Type:            nat.TypePublic,
+		PublicReachable: true,
+		ExternalAddress: net.JoinHostPort("203.0.113.10", strconv.Itoa(nodeA.ListenPort())),
+	})
+
+	waitForKnownPeerRelayCapable(t, nodeB, nodeAID, true)
+	select {
+	case <-promoted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for supernode promotion event")
+	}
+
+	select {
+	case <-promoted:
+		t.Fatal("unexpected duplicate supernode promotion event")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	nodeA.natProfile.Store(nat.Profile{
+		Type:            nat.TypeSymmetric,
+		PublicReachable: false,
+		ExternalAddress: net.JoinHostPort("203.0.113.10", strconv.Itoa(nodeA.ListenPort())),
+	})
+
+	waitForKnownPeerRelayCapable(t, nodeB, nodeAID, false)
+	select {
+	case <-revoked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for supernode revoke event")
+	}
+
+	select {
+	case <-revoked:
+		t.Fatal("unexpected duplicate supernode revoke event")
+	case <-time.After(200 * time.Millisecond):
 	}
 }
 
@@ -1082,6 +1166,21 @@ func waitForKnownPeerPort(t *testing.T, node *Node, wantPeerID, wantPort string)
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("known peer %s did not converge to port %s", wantPeerID, wantPort)
+}
+
+func waitForKnownPeerRelayCapable(t *testing.T, node *Node, wantPeerID string, want bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		node.mu.RLock()
+		info, ok := node.knownPeers[wantPeerID]
+		node.mu.RUnlock()
+		if ok && info.relayCapable == want {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("known peer %s did not converge to relayCapable=%t", wantPeerID, want)
 }
 
 func waitForRelaySession(t *testing.T, node *Node, sessionID string) {
