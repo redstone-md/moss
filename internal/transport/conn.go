@@ -21,14 +21,18 @@ type Session struct {
 	writeMu    sync.Mutex
 	readMu     sync.Mutex
 	remoteID   [32]byte
+	remoteKey  [32]byte
+	handshake  byte
 }
 
-func NewSession(carrier carrier, sendCipher, recvCipher *noise.CipherState, remoteID [32]byte) (*Session, error) {
+func NewSession(carrier carrier, sendCipher, recvCipher *noise.CipherState, remoteID, remoteKey [32]byte, handshake byte) (*Session, error) {
 	return &Session{
 		carrier:    carrier,
 		sendCipher: sendCipher,
 		recvCipher: recvCipher,
 		remoteID:   remoteID,
+		remoteKey:  remoteKey,
+		handshake:  handshake,
 	}, nil
 }
 
@@ -54,6 +58,14 @@ func (s *Session) ReadPacket() ([]byte, error) {
 
 func (s *Session) RemoteID() [32]byte {
 	return s.remoteID
+}
+
+func (s *Session) RemoteStaticPublic() [32]byte {
+	return s.remoteKey
+}
+
+func (s *Session) HandshakeMode() byte {
+	return s.handshake
 }
 
 func (s *Session) RemoteAddr() net.Addr {

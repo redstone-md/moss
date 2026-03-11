@@ -128,6 +128,7 @@ type knownPeer struct {
 	relayCapable    bool
 	lastSeen        time.Time
 	observations    []string
+	noiseStatic     []byte
 }
 
 type meshInfo struct {
@@ -601,6 +602,10 @@ func (n *Node) announceAndConnect(ctx context.Context, event bootstrap.Event) {
 }
 
 func (n *Node) connectPeer(ctx context.Context, addr string) error {
+	return n.connectPeerWithHint(ctx, addr, "")
+}
+
+func (n *Node) connectPeerWithHint(ctx context.Context, addr, peerID string) error {
 	if addr == "" {
 		return errors.New("peer address is required")
 	}
@@ -623,15 +628,27 @@ func (n *Node) connectPeer(ctx context.Context, addr string) error {
 		}
 	}
 	n.mu.RUnlock()
+	remoteStatic := n.cachedRemoteStatic(peerID, addr)
+	if err := n.connectPeerOnce(ctx, addr, remoteStatic); err != nil {
+		if len(remoteStatic) == 32 && ctx.Err() == nil {
+			return n.connectPeerOnce(ctx, addr, nil)
+		}
+		return err
+	}
+	return nil
+}
+
+func (n *Node) connectPeerOnce(ctx context.Context, addr string, remoteStatic []byte) error {
 	dialer := &net.Dialer{Timeout: n.config.HandshakeTimeout()}
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return err
 	}
 	session, err := transport.ClientHandshake(withTimeout(ctx, n.config.HandshakeTimeout()), conn, transport.HandshakeConfig{
-		MeshID:   n.meshID,
-		PSK:      n.psk,
-		Identity: n.identity,
+		MeshID:       n.meshID,
+		PSK:          n.psk,
+		Identity:     n.identity,
+		RemoteStatic: remoteStatic,
 	})
 	if err != nil {
 		_ = conn.Close()
@@ -645,6 +662,7 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 	remoteID := session.RemoteID()
 	peerID := hex.EncodeToString(remoteID[:])
 	addr := session.RemoteAddr().String()
+	remoteStatic := session.RemoteStaticPublic()
 	var overflowPeer *peerConn
 	n.mu.Lock()
 	if !n.started {
@@ -678,6 +696,7 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 		relayCapable:    current.relayCapable,
 		lastSeen:        time.Now(),
 		observations:    appendObservation(current.observations, addr),
+		noiseStatic:     append([]byte(nil), remoteStatic[:]...),
 	}
 	n.scoring.Ensure(peerID)
 	n.mu.Unlock()
@@ -983,6 +1002,7 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 			relayCapable:    env.AdvertisedRelayCapable,
 			lastSeen:        time.Now(),
 			observations:    appendObservation(current.observations, env.AdvertisedAddr),
+			noiseStatic:     append([]byte(nil), current.noiseStatic...),
 		}
 		changed = true
 	}
@@ -1652,7 +1672,7 @@ func (n *Node) discoveredPeerTargets() []discoveredPeerTarget {
 func (n *Node) dialKnownPeer(peerID, addr string) {
 	ctx, cancel := context.WithTimeout(context.Background(), n.config.HandshakeTimeout())
 	defer cancel()
-	n.connectPeer(ctx, addr)
+	n.connectPeerWithHint(ctx, addr, peerID)
 	n.mu.Lock()
 	delete(n.peerDials, peerID)
 	n.mu.Unlock()
@@ -2269,7 +2289,7 @@ func (n *Node) tryDirectConnect(targetPeerID string, timeout time.Duration) bool
 	n.mu.RUnlock()
 	if ok && targetInfo.addr != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), n.config.HandshakeTimeout())
-		n.connectPeer(ctx, targetInfo.addr)
+		n.connectPeerWithHint(ctx, targetInfo.addr, targetPeerID)
 		cancel()
 		if n.waitForDirectPeer(targetPeerID, time.Until(deadline)) {
 			return true
@@ -2485,7 +2505,7 @@ func (n *Node) tryHolePunchDial(targetPeerID, addr string) {
 			return
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), n.config.HandshakeTimeout())
-		n.connectPeerUDP(ctx, pair.Remote)
+		n.connectPeerUDP(ctx, targetPeerID, pair.Remote)
 		cancel()
 		if n.directPeerConnected(targetPeerID) {
 			return
@@ -2494,11 +2514,15 @@ func (n *Node) tryHolePunchDial(targetPeerID, addr string) {
 	}
 }
 
-func (n *Node) connectPeerUDP(ctx context.Context, addr string) {
+func (n *Node) connectPeerUDP(ctx context.Context, targetPeerID, addr string) {
 	if n.udpListener == nil || addr == "" {
 		return
 	}
-	session, err := n.udpListener.DialContext(ctx, addr)
+	remoteStatic := n.cachedRemoteStatic(targetPeerID, addr)
+	session, err := n.udpListener.DialPeerContext(ctx, addr, remoteStatic)
+	if err != nil && len(remoteStatic) == 32 && ctx.Err() == nil {
+		session, err = n.udpListener.DialContext(ctx, addr)
+	}
 	if err != nil {
 		return
 	}
@@ -2547,7 +2571,27 @@ func (n *Node) updateKnownPeer(peerID, addr string, direct bool) {
 		relayCapable:    current.relayCapable,
 		lastSeen:        time.Now(),
 		observations:    appendObservation(current.observations, addr),
+		noiseStatic:     append([]byte(nil), current.noiseStatic...),
 	}
+}
+
+func (n *Node) cachedRemoteStatic(peerID, addr string) []byte {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	if peerID != "" {
+		if info, ok := n.knownPeers[peerID]; ok && len(info.noiseStatic) == 32 {
+			return append([]byte(nil), info.noiseStatic...)
+		}
+	}
+	if addr == "" {
+		return nil
+	}
+	for _, info := range n.knownPeers {
+		if info.addr == addr && len(info.noiseStatic) == 32 {
+			return append([]byte(nil), info.noiseStatic...)
+		}
+	}
+	return nil
 }
 
 func (n *Node) relayBucketFor(peerID string) *nat.TokenBucket {
