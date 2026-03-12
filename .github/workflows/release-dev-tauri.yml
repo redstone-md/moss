@@ -1,25 +1,16 @@
-name: Moss Chat Tauri Dev
+name: Release Dev Tauri
 
 on:
   push:
-    branches:
-      - dev
-    paths:
-      - apps/moss-chat-tauri/**
-      - .github/workflows/moss-chat-tauri-dev.yml
-  pull_request:
-    branches:
-      - dev
-    paths:
-      - apps/moss-chat-tauri/**
-      - .github/workflows/moss-chat-tauri-dev.yml
+    tags:
+      - "dev-*"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: moss-chat-tauri-dev-${{ github.ref }}
+  group: release-dev-tauri-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

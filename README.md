@@ -51,19 +51,23 @@ CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
 
 The generated header is emitted next to the shared library as `moss.h` or `libmoss.h`, depending on the output name.
 
-GitHub Actions publishes separate macOS artifacts for both architectures:
+GitHub Actions publishes release artifacts only from tags.
+
+Main release tags (`v*`) publish separate macOS artifacts for both architectures:
 
 - `moss-macos-amd64-shared`
 - `moss-macos-arm64-shared`
 - `moss-chat-macos-amd64`
 - `moss-chat-macos-arm64`
 
-The `dev` branch also publishes dedicated Tauri desktop artifacts:
+Dev desktop tags (`dev-*`) publish dedicated Tauri desktop artifacts:
 
 - `moss-chat-tauri-dev-linux-amd64`
 - `moss-chat-tauri-dev-windows-amd64`
 - `moss-chat-tauri-dev-macos-amd64`
 - `moss-chat-tauri-dev-macos-arm64`
+
+Regular `main` / `dev` branch CI now runs tests and smoke builds only. It does not upload release artifacts on every push.
 
 ## Test
 
