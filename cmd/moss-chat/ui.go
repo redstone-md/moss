@@ -92,6 +92,13 @@ type runtimeInfo struct {
 	SupernodeReady bool     `json:"supernode_ready"`
 }
 
+type choicePrompt struct {
+	Title   string
+	Body    string
+	Buttons []string
+	OnSelect func(string)
+}
+
 type chatApp struct {
 	node         *mesh.Node
 	meshID       string
@@ -134,6 +141,7 @@ type chatApp struct {
 	currentRoom  string
 	info         runtimeInfo
 	refreshCh    chan struct{}
+	activeChoice *choicePrompt
 }
 
 func newChatApp(cfg chatConfig) *chatApp {
@@ -369,6 +377,9 @@ func (c *chatApp) buildUI() {
 	c.pages = tview.NewPages().AddPage("main", c.root, true, true)
 
 	c.ui.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if c.handleChoicePromptInput(event) {
+			return nil
+		}
 		switch event.Key() {
 		case tcell.KeyF1:
 			c.showHelpModal()
@@ -600,52 +611,107 @@ func (c *chatApp) showInputModal(title, label, initial string, submit func(strin
 }
 
 func (c *chatApp) showChoiceModal(title, body string, buttons []string, onSelect func(label string)) {
-	form := tview.NewForm()
-	form.AddTextView("body", body, 0, 0, false, false)
-	runChoice := func(label string) {
-		c.closeModal(title)
-		if onSelect != nil {
-			onSelect(label)
+	c.queueUI(func() {
+		c.activeChoice = &choicePrompt{
+			Title:    title,
+			Body:     body,
+			Buttons:  append([]string(nil), buttons...),
+			OnSelect: onSelect,
 		}
-	}
-	for _, label := range buttons {
-		buttonLabel := label
-		form.AddButton(buttonLabel, func() {
-			runChoice(buttonLabel)
-		})
-	}
-	form.SetBorder(true).SetTitle(" " + title + " ")
-	form.SetButtonsAlign(tview.AlignCenter)
-	form.SetCancelFunc(func() {
-		c.closeModal(title)
+		c.pages.RemovePage("choice")
+		c.pages.AddPage("choice", c.renderChoicePrompt(), true, true)
 	})
-	form.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		switch event.Key() {
-		case tcell.KeyEscape:
-			c.closeModal(title)
-			return nil
+}
+
+func (c *chatApp) renderChoicePrompt() tview.Primitive {
+	c.mu.RLock()
+	prompt := c.activeChoice
+	c.mu.RUnlock()
+	if prompt == nil {
+		return centered(68, 11, tview.NewTextView().SetText(""))
+	}
+	lines := []string{
+		prompt.Body,
+		"",
+		"[Enter/Y] " + prompt.Buttons[0],
+	}
+	if len(prompt.Buttons) > 1 {
+		lines = append(lines, "[N/Esc] "+prompt.Buttons[1])
+	}
+	text := tview.NewTextView().
+		SetDynamicColors(true).
+		SetWrap(true).
+		SetText(strings.Join(lines, "\n"))
+	text.SetBorder(true).SetTitle(" " + prompt.Title + " ")
+	return centered(68, 11, text)
+}
+
+func (c *chatApp) handleChoicePromptInput(event *tcell.EventKey) bool {
+	c.mu.RLock()
+	prompt := c.activeChoice
+	c.mu.RUnlock()
+	if prompt == nil {
+		return false
+	}
+	switch event.Key() {
+	case tcell.KeyEnter:
+		if len(prompt.Buttons) > 0 {
+			c.resolveChoicePrompt(prompt.Buttons[0])
+		} else {
+			c.dismissChoicePrompt()
 		}
+		return true
+	case tcell.KeyEscape:
+		if len(prompt.Buttons) > 1 {
+			c.resolveChoicePrompt(prompt.Buttons[1])
+		} else {
+			c.dismissChoicePrompt()
+		}
+		return true
+	case tcell.KeyRune:
 		switch strings.ToLower(string(event.Rune())) {
 		case "y":
-			if len(buttons) > 0 {
-				runChoice(buttons[0])
-				return nil
+			if len(prompt.Buttons) > 0 {
+				c.resolveChoicePrompt(prompt.Buttons[0])
+				return true
 			}
 		case "n":
-			if len(buttons) > 1 {
-				runChoice(buttons[1])
-				return nil
+			if len(prompt.Buttons) > 1 {
+				c.resolveChoicePrompt(prompt.Buttons[1])
+				return true
 			}
-			c.closeModal(title)
-			return nil
+			c.dismissChoicePrompt()
+			return true
 		}
-		return event
-	})
-	if len(buttons) > 0 {
-		form.SetFocus(1)
 	}
-	modal := centered(68, 11, form)
-	c.showModal(title, modal, form)
+	return true
+}
+
+func (c *chatApp) resolveChoicePrompt(label string) {
+	c.mu.Lock()
+	var onSelect func(string)
+	if c.activeChoice != nil {
+		onSelect = c.activeChoice.OnSelect
+	}
+	c.activeChoice = nil
+	c.mu.Unlock()
+	c.queueUI(func() {
+		c.pages.RemovePage("choice")
+		c.setFocus(2)
+	})
+	if onSelect != nil {
+		onSelect(label)
+	}
+}
+
+func (c *chatApp) dismissChoicePrompt() {
+	c.mu.Lock()
+	c.activeChoice = nil
+	c.mu.Unlock()
+	c.queueUI(func() {
+		c.pages.RemovePage("choice")
+		c.setFocus(2)
+	})
 }
 
 func centered(width, height int, primitive tview.Primitive) tview.Primitive {
