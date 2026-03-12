@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ActionDeck } from './components/ActionDeck'
 import { DiagnosticsPanel } from './components/DiagnosticsPanel'
 import { MessagePanel } from './components/MessagePanel'
+import { OnboardingScreen } from './components/OnboardingScreen'
 import { PeerPanel } from './components/PeerPanel'
 import { RoomList } from './components/RoomList'
 import { RuntimePanel } from './components/RuntimePanel'
@@ -14,6 +15,7 @@ import { getFallbackRoom } from './lib/fallbacks'
 
 export function App() {
   const [selectedRoomId, setSelectedRoomId] = useState('lobby')
+  const [onboardingDismissed, setOnboardingDismissed] = useState(false)
   const [nicknameDraft, setNicknameDraft] = useState<string | null>(null)
   const [meshDraft, setMeshDraft] = useState<string | null>(null)
   const [listenPortDraft, setListenPortDraft] = useState<string | null>(null)
@@ -165,6 +167,45 @@ export function App() {
       : peer.rooms.includes(activeRoom.label) ||
         peer.rooms.includes(`#${activeRoom.id}`),
   )
+
+  async function applyAndStartRuntime() {
+    const updatedSnapshot = await updateRuntimeSettings.mutateAsync()
+    setSelectedRoomId(updatedSnapshot.settings.initialRoom)
+    if (updatedSnapshot.runtime.state !== 'Runtime online') {
+      const runningSnapshot = await toggleRuntime.mutateAsync()
+      setSelectedRoomId(runningSnapshot.settings.initialRoom)
+    }
+    setOnboardingDismissed(true)
+  }
+
+  const showOnboarding =
+    data.runtime.state !== 'Runtime online' && !onboardingDismissed
+
+  if (showOnboarding) {
+    return (
+      <OnboardingScreen
+        nickname={nicknameValue}
+        meshId={meshValue}
+        listenPort={listenPortValue}
+        initialRoom={initialRoomValue}
+        startupPeer={startupPeerValue}
+        trackerMode={trackerModeValue}
+        lanDiscoveryEnabled={lanDiscoveryValue}
+        configPreview={settings.configPreview}
+        errorNote={settingsError ?? runtimeError}
+        isSaving={updateRuntimeSettings.isPending || toggleRuntime.isPending}
+        onNicknameChange={setNicknameDraft}
+        onMeshIdChange={setMeshDraft}
+        onListenPortChange={setListenPortDraft}
+        onInitialRoomChange={setInitialRoomDraft}
+        onStartupPeerChange={setStartupPeerDraft}
+        onTrackerModeChange={setTrackerModeDraft}
+        onLanDiscoveryChange={setLanDiscoveryDraft}
+        onSave={() => void applyAndStartRuntime()}
+        onSkip={() => setOnboardingDismissed(true)}
+      />
+    )
+  }
 
   return (
     <main className="shell shell-chat">
