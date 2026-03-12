@@ -111,3 +111,38 @@ jobs:
             ${{ matrix.output }}
             ${{ matrix.header }}
           if-no-files-found: error
+
+  build-chat:
+    name: Build Chat (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            output: moss-chat
+          - os: windows-latest
+            output: moss-chat.exe
+          - os: macos-latest
+            output: moss-chat
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build native chat
+        run: go build -trimpath -ldflags "-s -w" -o ${{ matrix.output }} ./cmd/moss-chat
+
+      - name: Upload chat artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: moss-chat-${{ runner.os }}
+          path: |
+            ${{ matrix.output }}
+            cmd/moss-chat/README.md
+          if-no-files-found: error
