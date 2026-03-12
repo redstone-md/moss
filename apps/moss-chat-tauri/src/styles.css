@@ -43,6 +43,13 @@ button {
   gap: 16px;
 }
 
+.onboarding-shell {
+  display: grid;
+  gap: 20px;
+  padding-top: 56px;
+  padding-bottom: 56px;
+}
+
 .loading {
   display: grid;
   place-items: center;
@@ -354,6 +361,17 @@ button {
   gap: 16px;
 }
 
+.onboarding-hero {
+  display: grid;
+  gap: 18px;
+}
+
+.onboarding-hero h1 {
+  margin: 0;
+  font-size: clamp(2.2rem, 5vw, 4rem);
+  color: #f7fff8;
+}
+
 .setup-grid,
 .diagnostics-grid {
   display: grid;
@@ -392,6 +410,12 @@ button {
 .toggle-field input {
   width: 18px;
   height: 18px;
+}
+
+.setup-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
 }
 
 .preview-card {

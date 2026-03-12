@@ -9,6 +9,8 @@ type RuntimeSetupPanelProps = {
   configPreview: string
   errorNote?: string
   isSaving: boolean
+  primaryActionLabel?: string
+  secondaryActionLabel?: string
   onNicknameChange: (value: string) => void
   onMeshIdChange: (value: string) => void
   onListenPortChange: (value: string) => void
@@ -17,6 +19,7 @@ type RuntimeSetupPanelProps = {
   onTrackerModeChange: (value: 'default' | 'disabled') => void
   onLanDiscoveryChange: (value: boolean) => void
   onSave: () => void
+  onSecondaryAction?: () => void
 }
 
 export function RuntimeSetupPanel({
@@ -30,6 +33,8 @@ export function RuntimeSetupPanel({
   configPreview,
   errorNote,
   isSaving,
+  primaryActionLabel,
+  secondaryActionLabel,
   onNicknameChange,
   onMeshIdChange,
   onListenPortChange,
@@ -38,6 +43,7 @@ export function RuntimeSetupPanel({
   onTrackerModeChange,
   onLanDiscoveryChange,
   onSave,
+  onSecondaryAction,
 }: RuntimeSetupPanelProps) {
   return (
     <section className="panel setup-panel">
@@ -115,9 +121,21 @@ export function RuntimeSetupPanel({
         <pre>{configPreview}</pre>
       </div>
       {errorNote ? <p className="runtime-error">{errorNote}</p> : null}
-      <button className="primary-action" onClick={onSave} disabled={isSaving}>
-        {isSaving ? 'Saving...' : 'Apply settings'}
-      </button>
+      <div className="setup-actions">
+        <button className="primary-action" onClick={onSave} disabled={isSaving}>
+          {primaryActionLabel ?? (isSaving ? 'Saving...' : 'Apply settings')}
+        </button>
+        {onSecondaryAction ? (
+          <button
+            className="secondary-action"
+            onClick={onSecondaryAction}
+            disabled={isSaving}
+            type="button"
+          >
+            {secondaryActionLabel ?? 'Cancel'}
+          </button>
+        ) : null}
+      </div>
     </section>
   )
 }
