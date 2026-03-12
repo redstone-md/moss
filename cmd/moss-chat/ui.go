@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -111,6 +112,7 @@ type chatApp struct {
 	input    *tview.InputField
 	help     *tview.TextView
 	status   *tview.TextView
+	members  *tview.TextView
 
 	stopCh chan struct{}
 	once   sync.Once
@@ -123,6 +125,7 @@ type chatApp struct {
 	roomOrder    []string
 	roomByName   map[string]*roomState
 	peerNames    map[string]string
+	presenceSeen map[string]bool
 	callState    callState
 	incoming     map[string]*incomingAttachment
 	outgoing     map[string]*outgoingAttachment
@@ -154,6 +157,7 @@ func newChatApp(cfg chatConfig) *chatApp {
 		roomOrder:   []string{systemRoom},
 		currentRoom: defaultRoom,
 		peerNames:   make(map[string]string),
+		presenceSeen: make(map[string]bool),
 		incoming:    make(map[string]*incomingAttachment),
 		outgoing:    make(map[string]*outgoingAttachment),
 		refreshCh:   make(chan struct{}, 1),
@@ -207,6 +211,7 @@ func (c *chatApp) run() error {
 		c.systemMessage("Static peers: " + strings.Join(c.bootstrap, ", "))
 	}
 	c.systemMessage("Identity file: " + c.identityPath)
+	go c.broadcastPresence()
 	go c.statusLoop()
 	defer c.shutdown()
 	c.ui.SetRoot(c.pages, true)
@@ -321,6 +326,11 @@ func (c *chatApp) buildUI() {
 		}
 	})
 
+	c.members = tview.NewTextView().
+		SetDynamicColors(true).
+		SetWrap(false)
+	c.members.SetBorder(true).SetTitle(" Channel ")
+
 	c.input = tview.NewInputField().
 		SetLabel("> ")
 	c.input.SetBorder(true).SetTitle(" Composer ")
@@ -341,7 +351,8 @@ func (c *chatApp) buildUI() {
 
 	body := tview.NewFlex().
 		AddItem(c.rooms, 26, 1, false).
-		AddItem(c.messages, 0, 4, false)
+		AddItem(c.messages, 0, 4, false).
+		AddItem(c.members, 24, 1, false)
 	footer := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(c.input, 3, 0, true).
 		AddItem(c.help, 1, 0, false).
@@ -946,6 +957,16 @@ func (c *chatApp) handleControlMessage(senderID string, data []byte) {
 		return
 	}
 	switch payload.Kind {
+	case "presence":
+		name := emptyFallback(payload.Nick, c.displayNameForPeer(senderID))
+		c.rememberPeerName(senderID, payload.Nick)
+		c.mu.Lock()
+		firstSeen := !c.presenceSeen[senderID]
+		c.presenceSeen[senderID] = true
+		c.mu.Unlock()
+		if firstSeen {
+			c.lobbyMessage(name + " joined the chat.")
+		}
 	case "dm_invite":
 		room, err := normalizeRoom(payload.Room)
 		if err != nil {
@@ -968,9 +989,16 @@ func (c *chatApp) onEvent(eventType int32, detailJSON string) {
 	switch eventType {
 	case mesh.EventPeerJoined:
 		c.rememberPeerName(detail.Peer, "")
-		c.lobbyMessage(fmt.Sprintf("Peer joined: %s @ %s", formatPeer(detail.Peer), detail.Addr))
+		go func() {
+			time.Sleep(200 * time.Millisecond)
+			c.broadcastPresence()
+		}()
 	case mesh.EventPeerLeft:
-		c.lobbyMessage("Peer left: " + formatPeer(detail.Peer))
+		name := c.displayNameForPeer(detail.Peer)
+		c.mu.Lock()
+		delete(c.presenceSeen, detail.Peer)
+		c.mu.Unlock()
+		c.lobbyMessage(name + " left the chat.")
 	case mesh.EventSupernodePromoted:
 		c.systemMessage("Local node became relay-capable (" + detail.NATType + ").")
 	case mesh.EventSupernodeRevoked:
@@ -1075,6 +1103,19 @@ func (c *chatApp) displayNameForPeer(peerID string) string {
 		return name
 	}
 	return formatPeer(peerID)
+}
+
+func (c *chatApp) broadcastPresence() {
+	payload, _ := json.Marshal(chatPayload{
+		Kind:   "presence",
+		Nick:   c.nickname,
+		SentAt: time.Now().Format("15:04:05"),
+	})
+	code := c.node.Publish(controlRoom, payload)
+	if code == mesh.MOSS_OK || code == mesh.MOSS_ERR_NO_PEERS {
+		return
+	}
+	c.systemMessage(fmt.Sprintf("Presence publish failed with code %d.", code))
 }
 
 func (c *chatApp) ensureRoom(room string, subscribed bool) {
@@ -1333,6 +1374,7 @@ func (c *chatApp) refresh() {
 	}
 	c.messages.SetText(lines)
 	c.messages.ScrollToEnd()
+	c.members.SetText(strings.Join(c.currentRoomMembers(currentRoom), "\n"))
 	c.input.SetLabel(fmt.Sprintf("%s@%s> ", nickname, currentRoom))
 	c.status.SetText(fmt.Sprintf(
 		"mesh=%s nick=%s room=#%s peers=%d nat=%s relay-ready=%t debug=%t call=%s advertised=%s",
@@ -1346,6 +1388,37 @@ func (c *chatApp) refresh() {
 		callLabel,
 		emptyFallback(info.AdvertisedAddr, net.JoinHostPort("127.0.0.1", strconv.Itoa(info.ListenPort))),
 	))
+}
+
+func (c *chatApp) currentRoomMembers(room string) []string {
+	if room == "" {
+		return []string{"(no room)"}
+	}
+	members := make([]string, 0, 8)
+	if room == systemRoom {
+		members = append(members, "System")
+		c.mu.RLock()
+		for peerID, name := range c.peerNames {
+			if peerID == c.localPeerID {
+				continue
+			}
+			members = append(members, name)
+		}
+		c.mu.RUnlock()
+		sort.Strings(members[1:])
+		return members
+	}
+	if containsString(c.subscribedRooms(), room) {
+		members = append(members, c.nickname+" (you)")
+	}
+	for _, peerID := range c.node.ChannelSubscribers(room) {
+		members = append(members, c.displayNameForPeer(peerID))
+	}
+	if len(members) == 0 {
+		return []string{"No members"}
+	}
+	sort.Strings(members[1:])
+	return members
 }
 
 func (c *chatApp) handleMessageRegion(regionID string) {

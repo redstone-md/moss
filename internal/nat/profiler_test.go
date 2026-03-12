@@ -22,17 +22,17 @@ func TestProfilerDetectClassifiesSpecialRanges(t *testing.T) {
 	}
 }
 
-func TestProfilerWithExternalAddressMarksProfileReachable(t *testing.T) {
+func TestProfilerWithExternalAddressKeepsReachabilityConservative(t *testing.T) {
 	profiler := NewProfiler()
-	base := profiler.Detect("10.0.0.5:4040")
+	base := profiler.Detect("0.0.0.0:4040")
 	mapped := profiler.WithExternalAddress(base, "198.51.100.10:5050")
-	if !mapped.PublicReachable {
-		t.Fatal("expected mapped profile to be public reachable")
+	if mapped.PublicReachable {
+		t.Fatal("expected mapped profile to stay unconfirmed")
 	}
 	if mapped.ExternalAddress != "198.51.100.10:5050" {
 		t.Fatalf("unexpected external address %q", mapped.ExternalAddress)
 	}
-	if mapped.Type != TypeFullCone {
+	if mapped.Type != TypePortRestricted {
 		t.Fatalf("unexpected mapped type %q", mapped.Type)
 	}
 }
