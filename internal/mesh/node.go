@@ -62,6 +62,7 @@ type Node struct {
 	relayBuckets     map[string]*nat.TokenBucket
 	directProbes     map[string]time.Time
 	peerDials        map[string]time.Time
+	bootstrapDials   map[string]time.Time
 	meshDeliveries   map[string]*meshDeliveryObservation
 	overloadedUntil  time.Time
 	bindingHistory   []string
@@ -196,6 +197,7 @@ func NewNodeWithIdentity(meshID string, psk []byte, cfg Config, identity *mcrypt
 		relayBuckets:     make(map[string]*nat.TokenBucket),
 		directProbes:     make(map[string]time.Time),
 		peerDials:        make(map[string]time.Time),
+		bootstrapDials:   make(map[string]time.Time),
 		meshDeliveries:   make(map[string]*meshDeliveryObservation),
 		bindingHistory:   make([]string, 0, 4),
 		knownPeers:       make(map[string]knownPeer),
@@ -625,9 +627,7 @@ func (n *Node) announceAndConnect(ctx context.Context, event bootstrap.Event) {
 		return
 	}
 	n.rememberTrackerSeeds(peers)
-	for _, peer := range peers {
-		n.connectBootstrapPeer(ctx, peer)
-	}
+	n.kickBootstrapPeers(ctx, peers)
 	n.enqueueEvent(EventTrackerAnnounce, map[string]int{
 		"candidate_peers": len(peers),
 		"connected_peers": n.currentPeerCount(),
@@ -652,6 +652,29 @@ func (n *Node) rememberTrackerSeeds(peers []string) {
 			continue
 		}
 		n.trackerSeeds[peer] = now
+	}
+}
+
+func (n *Node) kickBootstrapPeers(ctx context.Context, peers []string) {
+	if len(peers) == 0 {
+		return
+	}
+	limit := n.config.GossipSub.DOut
+	if limit <= 0 {
+		limit = 2
+	}
+	if limit > len(peers) {
+		limit = len(peers)
+	}
+	for _, peer := range peers[:limit] {
+		if peer == "" {
+			continue
+		}
+		go func(addr string) {
+			attemptCtx, cancel := context.WithTimeout(ctx, n.config.HandshakeTimeout())
+			defer cancel()
+			_ = n.connectBootstrapPeer(attemptCtx, addr)
+		}(peer)
 	}
 }
 
@@ -1586,6 +1609,7 @@ func (n *Node) maintenanceLoop(ctx context.Context) {
 			n.pruneLowScoringPeers()
 			n.pruneHighLatencyPeers()
 			n.connectKnownPeers()
+			n.connectBootstrapSeeds(ctx)
 			n.promoteRelayPeers()
 			for _, channel := range n.pubsub.SnapshotLocal() {
 				n.maintainTopicMesh(channel)
@@ -1732,6 +1756,76 @@ func (n *Node) connectKnownPeers() {
 	for _, candidate := range candidates {
 		go n.dialKnownPeer(candidate.peerID, candidate.addr)
 	}
+}
+
+func (n *Node) connectBootstrapSeeds(ctx context.Context) {
+	addrs := n.bootstrapSeedTargets()
+	for _, addr := range addrs {
+		go func(seed string) {
+			attemptCtx, cancel := context.WithTimeout(ctx, n.config.HandshakeTimeout())
+			defer cancel()
+			_ = n.connectBootstrapPeer(attemptCtx, seed)
+		}(addr)
+	}
+}
+
+func (n *Node) bootstrapSeedTargets() []string {
+	now := time.Now()
+	cutoff := now.Add(-10 * time.Minute)
+	cooldown := n.config.HandshakeTimeout()
+	if cooldown < 2*time.Second {
+		cooldown = 2 * time.Second
+	}
+	localAddr := n.advertisedListenAddr()
+
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if len(n.peers) >= n.config.MaxPeers {
+		return nil
+	}
+
+	targets := make([]string, 0, len(n.trackerSeeds))
+	for addr, seenAt := range n.trackerSeeds {
+		if addr == "" {
+			continue
+		}
+		if seenAt.Before(cutoff) {
+			delete(n.trackerSeeds, addr)
+			delete(n.bootstrapDials, addr)
+			continue
+		}
+		if addr == localAddr || hasPeerAddrLocked(n.peers, addr) {
+			continue
+		}
+		lastDial := n.bootstrapDials[addr]
+		if !lastDial.IsZero() && now.Sub(lastDial) < cooldown {
+			continue
+		}
+		targets = append(targets, addr)
+	}
+
+	sort.Strings(targets)
+	limit := n.config.GossipSub.DOut
+	if limit <= 0 {
+		limit = 2
+	}
+	if len(targets) < limit {
+		limit = len(targets)
+	}
+	selected := append([]string(nil), targets[:limit]...)
+	for _, addr := range selected {
+		n.bootstrapDials[addr] = now
+	}
+	return selected
+}
+
+func hasPeerAddrLocked(peers map[string]*peerConn, addr string) bool {
+	for _, peer := range peers {
+		if peer.addr == addr {
+			return true
+		}
+	}
+	return false
 }
 
 type discoveredPeerTarget struct {
