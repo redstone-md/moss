@@ -744,6 +744,7 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 	remoteID := session.RemoteID()
 	peerID := hex.EncodeToString(remoteID[:])
 	addr := session.RemoteAddr().String()
+	network := session.RemoteAddr().Network()
 	remoteStatic := session.RemoteStaticPublic()
 	var overflowPeer *peerConn
 	var replacedPeer *peerConn
@@ -779,10 +780,14 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 	bootstrapSeed := !n.trackerSeeds[addr].IsZero()
 	peer := &peerConn{id: peerID, addr: addr, session: session, outbound: outbound, bootstrap: bootstrapSeed, connectedAt: time.Now()}
 	current := n.knownPeers[peerID]
+	knownAddr := addr
+	if !outbound && strings.HasPrefix(network, "tcp") {
+		knownAddr = current.addr
+	}
 	n.peers[peerID] = peer
 	n.knownPeers[peerID] = knownPeer{
 		id:              peerID,
-		addr:            addr,
+		addr:            knownAddr,
 		direct:          true,
 		bootstrap:       current.bootstrap || bootstrapSeed,
 		lan:             current.lan,
@@ -790,7 +795,7 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 		publicReachable: current.publicReachable,
 		relayCapable:    current.relayCapable,
 		lastSeen:        time.Now(),
-		observations:    appendObservation(current.observations, addr),
+		observations:    appendObservation(current.observations, knownAddr),
 		noiseStatic:     append([]byte(nil), remoteStatic[:]...),
 	}
 	n.scoring.Ensure(peerID)
@@ -1146,13 +1151,13 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 	if env.AdvertisedPeerID == "" || env.AdvertisedAddr == "" || env.AdvertisedPeerID == n.localPeerID() {
 		return
 	}
-	if peer != nil && peer.outbound && env.AdvertisedPeerID == peer.id {
-		env.AdvertisedAddr = peer.addr
-	}
 	changed := false
 	n.mu.Lock()
 	current, ok := n.knownPeers[env.AdvertisedPeerID]
 	addr := preferredKnownPeerAddr(current, env.AdvertisedAddr)
+	if current.direct && current.addr != "" {
+		addr = current.addr
+	}
 	lan := current.lan && knownPeerAddrRank(addr) <= 1
 	if !ok || current.addr != addr || !current.direct || current.natType != nat.Type(env.AdvertisedNATType) || current.publicReachable != env.AdvertisedReachable || current.relayCapable != env.AdvertisedRelayCapable {
 		direct := false

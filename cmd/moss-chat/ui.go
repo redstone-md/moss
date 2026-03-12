@@ -913,6 +913,15 @@ func (c *chatApp) showPeerSummary() {
 
 func (c *chatApp) onMessage(channel string, sender [32]byte, data []byte) {
 	senderID := hex.EncodeToString(sender[:])
+	var payload chatPayload
+	if json.Unmarshal(data, &payload) == nil && payload.Attachment {
+		targetRoom := channel
+		if payload.Room != "" {
+			targetRoom = payload.Room
+		}
+		c.handleAttachmentPayload(targetRoom, senderID, payload)
+		return
+	}
 	if channel == controlRoom {
 		c.handleControlMessage(senderID, data)
 		return
@@ -924,30 +933,24 @@ func (c *chatApp) onMessage(channel string, sender [32]byte, data []byte) {
 	c.ensureRoom(room, true)
 
 	line := string(data)
-	var payload chatPayload
 	if json.Unmarshal(data, &payload) == nil {
-		switch payload.Kind {
-		case "attachment-meta", "attachment-chunk":
-			c.handleAttachmentPayload(room, senderID, payload)
-			return
-		}
-	}
-	if json.Unmarshal(data, &payload) == nil && payload.Text != "" {
-		c.rememberPeerName(senderID, payload.Nick)
-		nick := payload.Nick
-		if nick == "" {
-			nick = c.displayNameForPeer(senderID)
-		}
-		if senderID == c.localPeerID {
-			nick = "you"
-		}
-		sentAt := payload.SentAt
-		if sentAt == "" {
-			sentAt = time.Now().Format("15:04:05")
-		}
-		line = fmt.Sprintf("[%s] %s: %s", sentAt, nick, payload.Text)
-		if senderID != c.localPeerID {
-			c.notifyIncomingMessage(room, nick, payload.Text)
+		if payload.Text != "" {
+			c.rememberPeerName(senderID, payload.Nick)
+			nick := payload.Nick
+			if nick == "" {
+				nick = c.displayNameForPeer(senderID)
+			}
+			if senderID == c.localPeerID {
+				nick = "you"
+			}
+			sentAt := payload.SentAt
+			if sentAt == "" {
+				sentAt = time.Now().Format("15:04:05")
+			}
+			line = fmt.Sprintf("[%s] %s: %s", sentAt, nick, payload.Text)
+			if senderID != c.localPeerID {
+				c.notifyIncomingMessage(room, nick, payload.Text)
+			}
 		}
 	}
 	c.appendLine(room, line)
@@ -975,11 +978,13 @@ func (c *chatApp) handleControlMessage(senderID string, data []byte) {
 			c.lobbyMessage(name + " joined the chat.")
 		}
 	case "attachment-request":
-		go func() {
-			if err := c.resendAttachment(payload.TransferID); err != nil {
-				c.showAlert("Attachment", err.Error())
-			}
-		}()
+		c.promptAttachmentRequest(senderID, payload.TransferID)
+	case "attachment-start", "attachment-chunk", "attachment-denied":
+		targetRoom := payload.Room
+		if targetRoom == "" {
+			targetRoom = defaultRoom
+		}
+		c.handleAttachmentPayload(targetRoom, senderID, payload)
 	case "dm_invite":
 		room, err := normalizeRoom(payload.Room)
 		if err != nil {
