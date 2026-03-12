@@ -3,5 +3,9 @@
   "identifier": "default",
   "description": "Default capability for the Moss desktop dev shell.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "notification:default"
+  ]
 }
