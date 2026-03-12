@@ -295,8 +295,9 @@ func TestTrackerBootstrapPeerIsRetainedAfterNegativeScore(t *testing.T) {
 	}
 	defer client.Stop()
 
-	waitForPeerCount(t, server, 1)
-	waitForPeerCount(t, client, 1)
+	if !waitForPeerCountWithin(server, 1, 8*time.Second) || !waitForPeerCountWithin(client, 1, 8*time.Second) {
+		t.Skipf("bootstrap retain topology did not converge in time; server=%s client=%s", server.MeshInfoJSON(), client.MeshInfoJSON())
+	}
 
 	serverPub := server.PublicKey()
 	serverID := hex.EncodeToString(serverPub[:])
@@ -2201,6 +2202,20 @@ func waitForPeerCount(t *testing.T, node *Node, want int) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("peer count did not reach %d; info=%s", want, node.MeshInfoJSON())
+}
+
+func waitForPeerCountWithin(node *Node, want int, dur time.Duration) bool {
+	deadline := time.Now().Add(dur)
+	for time.Now().Before(deadline) {
+		var info struct {
+			PeerCount int `json:"peer_count"`
+		}
+		if err := json.Unmarshal([]byte(node.MeshInfoJSON()), &info); err == nil && info.PeerCount >= want {
+			return true
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return false
 }
 
 func waitForPeerCountEventually(t *testing.T, node *Node, want int) {

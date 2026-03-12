@@ -619,6 +619,7 @@ func (c *chatApp) showModal(name string, primitive tview.Primitive) {
 	c.queueUI(func() {
 		c.pages.RemovePage(name)
 		c.pages.AddPage(name, primitive, true, true)
+		c.ui.SetFocus(primitive)
 	})
 }
 
