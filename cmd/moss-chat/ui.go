@@ -90,10 +90,12 @@ type chatApp struct {
 	once   sync.Once
 	mu     sync.RWMutex
 
-	roomOrder   []string
-	roomByName  map[string]*roomState
-	currentRoom string
-	info        runtimeInfo
+	syncingRooms bool
+	visibleRooms []string
+	roomOrder    []string
+	roomByName   map[string]*roomState
+	currentRoom  string
+	info         runtimeInfo
 }
 
 func newChatApp(cfg chatConfig) *chatApp {
@@ -185,8 +187,12 @@ func (c *chatApp) buildUI() {
 	c.rooms.SetBorder(true).SetTitle(" Rooms ")
 	c.rooms.SetChangedFunc(func(index int, _, _ string, _ rune) {
 		c.mu.Lock()
-		if index >= 0 && index < len(c.roomOrder) {
-			c.currentRoom = c.roomOrder[index]
+		if c.syncingRooms {
+			c.mu.Unlock()
+			return
+		}
+		if index >= 0 && index < len(c.visibleRooms) {
+			c.currentRoom = c.visibleRooms[index]
 			if room := c.roomByName[c.currentRoom]; room != nil {
 				room.unread = 0
 			}
@@ -650,9 +656,12 @@ func (c *chatApp) refresh() {
 	nickname := c.nickname
 	c.mu.RUnlock()
 
+	c.mu.Lock()
+	c.syncingRooms = true
+	c.mu.Unlock()
 	c.rooms.Clear()
+	visibleRooms := make([]string, 0, len(roomOrder))
 	selectedIndex := 0
-	renderedIndex := 0
 	for _, room := range roomOrder {
 		state := roomByName[room]
 		if room != systemRoom && !state.subscribed {
@@ -663,14 +672,20 @@ func (c *chatApp) refresh() {
 			title = fmt.Sprintf("%s (%d)", title, state.unread)
 		}
 		c.rooms.AddItem(title, "", 0, nil)
+		visibleRooms = append(visibleRooms, room)
 		if room == currentRoom {
-			selectedIndex = renderedIndex
+			selectedIndex = len(visibleRooms) - 1
 		}
-		renderedIndex++
 	}
+	c.mu.Lock()
+	c.visibleRooms = visibleRooms
+	c.mu.Unlock()
 	if c.rooms.GetItemCount() > 0 {
 		c.rooms.SetCurrentItem(selectedIndex)
 	}
+	c.mu.Lock()
+	c.syncingRooms = false
+	c.mu.Unlock()
 
 	lines := "No messages yet."
 	if currentState != nil && len(currentState.lines) > 0 {
