@@ -600,6 +600,28 @@ func (c *chatApp) showInputModal(title, label, initial string, submit func(strin
 	c.ui.SetFocus(input)
 }
 
+func (c *chatApp) showChoiceModal(title, body string, buttons []string, onSelect func(label string)) {
+	form := tview.NewForm()
+	for _, label := range buttons {
+		buttonLabel := label
+		form.AddButton(buttonLabel, func() {
+			c.closeModal(title)
+			if onSelect != nil {
+				onSelect(buttonLabel)
+			}
+		})
+	}
+	form.AddTextView("body", body, 0, 0, false, false)
+	form.SetBorder(true).SetTitle(" " + title + " ")
+	form.SetButtonsAlign(tview.AlignCenter)
+	form.SetCancelFunc(func() {
+		c.closeModal(title)
+	})
+	modal := centered(68, 11, form)
+	c.showModal(title, modal)
+	c.ui.SetFocus(form)
+}
+
 func centered(width, height int, primitive tview.Primitive) tview.Primitive {
 	return tview.NewFlex().
 		AddItem(nil, 0, 1, false).
