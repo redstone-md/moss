@@ -25,6 +25,7 @@ func (c callState) summary() string {
 }
 
 func (c *chatApp) startCall(target string) error {
+	c.tracef("call: start target=%q", target)
 	peerID, label, err := c.resolvePeerTarget(target)
 	if err != nil {
 		return err
@@ -47,6 +48,7 @@ func (c *chatApp) startCall(target string) error {
 }
 
 func (c *chatApp) answerCall() error {
+	c.tracef("call: answer")
 	c.mu.Lock()
 	state := c.callState
 	if state.Status != "ringing" {
@@ -63,6 +65,7 @@ func (c *chatApp) answerCall() error {
 }
 
 func (c *chatApp) declineCall() error {
+	c.tracef("call: decline")
 	c.mu.Lock()
 	state := c.callState
 	if state.Status != "ringing" {
@@ -76,6 +79,7 @@ func (c *chatApp) declineCall() error {
 }
 
 func (c *chatApp) hangupCall() error {
+	c.tracef("call: hangup")
 	c.mu.Lock()
 	state := c.callState
 	if state.Status == "" {
@@ -89,6 +93,7 @@ func (c *chatApp) hangupCall() error {
 }
 
 func (c *chatApp) sendCallSignal(kind, target, callID, room string) error {
+	c.tracef("call: signal kind=%s target=%s call=%s room=%s", kind, formatPeer(target), callID, room)
 	payload, _ := json.Marshal(chatPayload{
 		Kind:       kind,
 		Nick:       c.nickname,
@@ -105,6 +110,7 @@ func (c *chatApp) sendCallSignal(kind, target, callID, room string) error {
 }
 
 func (c *chatApp) handleCallPayload(senderID string, payload chatPayload) {
+	c.tracef("call: payload kind=%s sender=%s target=%s call=%s room=%s", payload.Kind, formatPeer(senderID), formatPeer(payload.Target), payload.CallID, payload.Room)
 	peerName := emptyFallback(payload.Nick, c.displayNameForPeer(senderID))
 	switch payload.Kind {
 	case "call_invite":

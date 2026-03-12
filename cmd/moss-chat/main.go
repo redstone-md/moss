@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	mcrypto "moss/internal/crypto"
 	"moss/internal/mesh"
@@ -52,6 +53,7 @@ type options struct {
 	noSound      bool
 	identityFile string
 	downloadsDir string
+	logFile      string
 }
 
 func main() {
@@ -85,6 +87,21 @@ func main() {
 		fmt.Fprintf(os.Stderr, "downloads dir error: %v\n", err)
 		os.Exit(1)
 	}
+	logPath, err := resolveLogPath(opts.nickname, opts.logFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "log path error: %v\n", err)
+		os.Exit(1)
+	}
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "log path error: %v\n", err)
+		os.Exit(1)
+	}
+	logHandle, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "log open error: %v\n", err)
+		os.Exit(1)
+	}
+	defer logHandle.Close()
 
 	cfg := mesh.DefaultConfig()
 	cfg.ListenPort = opts.listenPort
@@ -116,6 +133,8 @@ func main() {
 		identityPath: identityPath,
 		downloadsDir: downloadsDir,
 		localPeerID:  hex.EncodeToString(pub[:]),
+		logFile:      logHandle,
+		logPath:      logPath,
 	})
 	if err := app.run(); err != nil {
 		fmt.Fprintf(os.Stderr, "chat error: %v\n", err)
@@ -143,6 +162,7 @@ func parseFlags() (options, error) {
 	flag.BoolVar(&opts.noSound, "no-sound", false, "disable desktop and beep notifications")
 	flag.StringVar(&opts.identityFile, "identity-file", "", "path to persistent identity file")
 	flag.StringVar(&opts.downloadsDir, "downloads-dir", "", "directory where incoming attachments are stored")
+	flag.StringVar(&opts.logFile, "log-file", "", "path to persistent runtime trace log")
 	flag.Parse()
 
 	opts.nickname = strings.TrimSpace(opts.nickname)
@@ -348,6 +368,18 @@ func resolveDownloadsPath(explicit string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(configDir, "moss-chat", "downloads"), nil
+}
+
+func resolveLogPath(nickname, explicit string) (string, error) {
+	if explicit != "" {
+		return filepath.Abs(explicit)
+	}
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	safeName := sanitizeName(nickname)
+	return filepath.Join(configDir, "moss-chat", "logs", fmt.Sprintf("%s-%s.log", safeName, time.Now().Format("20060102-150405"))), nil
 }
 
 func loadOrCreateIdentity(path string) (*mcrypto.Identity, error) {

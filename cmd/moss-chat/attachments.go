@@ -63,6 +63,7 @@ type preparedAttachment struct {
 }
 
 func (c *chatApp) sendAttachment(room, rawPath string) error {
+	c.tracef("attachment: send room=%s raw_path=%q", room, rawPath)
 	if room == systemRoom || room == controlRoom {
 		return fmt.Errorf("switch to a chat room before sending attachments")
 	}
@@ -75,6 +76,7 @@ func (c *chatApp) sendAttachment(room, rawPath string) error {
 }
 
 func (c *chatApp) prepareAttachment(room, rawPath string) (*preparedAttachment, error) {
+	c.tracef("attachment: prepare room=%s raw_path=%q", room, rawPath)
 	if room == systemRoom || room == controlRoom {
 		return nil, fmt.Errorf("switch to a chat room before sending attachments")
 	}
@@ -111,6 +113,7 @@ func (c *chatApp) prepareAttachment(room, rawPath string) (*preparedAttachment, 
 		return nil, err
 	}
 	chunkCount := int((info.Size() + attachmentChunkSize - 1) / attachmentChunkSize)
+	c.tracef("attachment: prepared file=%s size=%d chunks=%d sha=%s", filepath.Base(absPath), info.Size(), chunkCount, sum)
 	return &preparedAttachment{
 		Room:       room,
 		Path:       absPath,
@@ -125,6 +128,7 @@ func (c *chatApp) confirmAttachmentSend(prepared *preparedAttachment) {
 	if prepared == nil {
 		return
 	}
+	c.tracef("attachment: confirm-offer file=%s room=%s size=%d", prepared.FileName, prepared.Room, prepared.FileSize)
 	body := fmt.Sprintf(
 		"Offer %s (%s) in #%s?\n\nThe file will not transfer until somebody requests it and you approve the upload.",
 		prepared.FileName,
@@ -164,6 +168,7 @@ func (c *chatApp) offerAttachment(prepared *preparedAttachment) error {
 	c.outgoing[transferID] = state
 	c.mu.Unlock()
 	c.appendActionLine(prepared.Room, lineID, outgoingAttachmentOfferLine(state))
+	c.tracef("attachment: offer transfer=%s room=%s file=%s chunks=%d", transferID, prepared.Room, prepared.FileName, prepared.ChunkCount)
 
 	meta, _ := json.Marshal(chatPayload{
 		Kind:       "attachment-meta",
@@ -177,6 +182,7 @@ func (c *chatApp) offerAttachment(prepared *preparedAttachment) error {
 		Attachment: true,
 	})
 	if code := c.node.Publish(prepared.Room, meta); code != mesh.MOSS_OK {
+		c.tracef("attachment: offer publish failed transfer=%s code=%d", transferID, code)
 		c.failOutgoingTransfer(transferID, fmt.Sprintf("offer failed: %v", publishError(prepared.Room, code)))
 		return publishError(prepared.Room, code)
 	}
@@ -184,6 +190,7 @@ func (c *chatApp) offerAttachment(prepared *preparedAttachment) error {
 }
 
 func (c *chatApp) handleAttachmentPayload(room, senderID string, payload chatPayload) {
+	c.tracef("attachment: payload kind=%s transfer=%s sender=%s room=%s target=%s chunk=%d/%d", payload.Kind, payload.TransferID, formatPeer(senderID), room, formatPeer(payload.Target), payload.ChunkIndex+1, payload.ChunkCount)
 	if payload.Target != "" && payload.Target != c.localPeerID {
 		return
 	}
@@ -213,6 +220,7 @@ func (c *chatApp) handleAttachmentPayload(room, senderID string, payload chatPay
 			SentAt:     payload.SentAt,
 		}
 		c.mu.Unlock()
+		c.tracef("attachment: incoming-meta transfer=%s sender=%s file=%s chunks=%d", payload.TransferID, senderName, payload.FileName, payload.ChunkCount)
 		c.appendActionLine(room, lineID, incomingAttachmentOfferLine(c.incoming[payload.TransferID]))
 	case "attachment-start":
 		c.mu.Lock()
@@ -222,6 +230,7 @@ func (c *chatApp) handleAttachmentPayload(room, senderID string, payload chatPay
 			c.updateRoomLineLocked(state.Room, state.LineID, incomingAttachmentLine(state))
 		}
 		c.mu.Unlock()
+		c.tracef("attachment: incoming-start transfer=%s sender=%s", payload.TransferID, senderName)
 		c.queueRefresh()
 	case "attachment-denied":
 		c.mu.Lock()
@@ -230,6 +239,7 @@ func (c *chatApp) handleAttachmentPayload(room, senderID string, payload chatPay
 			c.updateRoomLineLocked(state.Room, state.LineID, fmt.Sprintf("[%s] %s declined sending %s.", time.Now().Format("15:04:05"), senderName, state.FileName))
 		}
 		c.mu.Unlock()
+		c.tracef("attachment: incoming-denied transfer=%s sender=%s", payload.TransferID, senderName)
 		c.queueRefresh()
 	case "attachment-chunk":
 		raw, err := base64.StdEncoding.DecodeString(payload.ChunkData)
@@ -243,6 +253,7 @@ func (c *chatApp) handleAttachmentPayload(room, senderID string, payload chatPay
 			return
 		}
 		if complete {
+			c.tracef("attachment: incoming-complete transfer=%s path=%s", payload.TransferID, savedPath)
 			c.notifyTransferComplete(senderName, payload.FileName)
 			c.showAlert("Attachment", "Saved to "+savedPath)
 		}
@@ -262,6 +273,9 @@ func (c *chatApp) storeAttachmentChunk(transferID string, index int, raw []byte)
 	if state.Chunks[index] == nil {
 		state.Chunks[index] = append([]byte(nil), raw...)
 		state.Received++
+		if state.Received == 1 || state.Received == state.ChunkCount || state.Received%32 == 0 {
+			c.tracef("attachment: chunk transfer=%s received=%d/%d", transferID, state.Received, state.ChunkCount)
+		}
 	}
 	c.updateRoomLineLocked(state.Room, state.LineID, incomingAttachmentLine(state))
 	if state.Received < state.ChunkCount {
@@ -284,6 +298,7 @@ func (c *chatApp) finalizeIncomingAttachmentLocked(transferID string, state *inc
 	}
 	sum := sha256.Sum256(data)
 	if hex.EncodeToString(sum[:]) != state.FileSHA256 {
+		c.tracef("attachment: checksum-mismatch transfer=%s expected=%s got=%s", transferID, state.FileSHA256, hex.EncodeToString(sum[:]))
 		delete(c.incoming, transferID)
 		return "", fmt.Errorf("attachment checksum mismatch")
 	}
@@ -313,10 +328,12 @@ func (c *chatApp) finalizeIncomingAttachmentLocked(transferID string, state *inc
 		targetPath,
 	))
 	delete(c.incoming, transferID)
+	c.tracef("attachment: saved transfer=%s path=%s", transferID, targetPath)
 	return targetPath, nil
 }
 
 func (c *chatApp) showIncomingAttachmentModal(transferID string) {
+	c.tracef("attachment: prompt-download transfer=%s", transferID)
 	c.mu.RLock()
 	state := c.incoming[transferID]
 	c.mu.RUnlock()
@@ -346,6 +363,7 @@ func (c *chatApp) showIncomingAttachmentModal(transferID string) {
 }
 
 func (c *chatApp) acceptIncomingAttachment(transferID string) error {
+	c.tracef("attachment: accept transfer=%s", transferID)
 	c.mu.RLock()
 	state := c.incoming[transferID]
 	c.mu.RUnlock()
@@ -384,6 +402,7 @@ func (c *chatApp) requestAttachmentTransfer(transferID string) {
 	if state == nil {
 		return
 	}
+	c.tracef("attachment: request transfer=%s sender=%s room=%s", transferID, formatPeer(state.SenderID), state.Room)
 	payload, _ := json.Marshal(chatPayload{
 		Kind:       "attachment-request",
 		Nick:       c.nickname,
@@ -394,12 +413,14 @@ func (c *chatApp) requestAttachmentTransfer(transferID string) {
 		FileName:   state.FileName,
 	})
 	code := c.node.Publish(controlRoom, payload)
+	c.tracef("attachment: request published transfer=%s code=%d", transferID, code)
 	if code != mesh.MOSS_OK && code != mesh.MOSS_ERR_NO_PEERS {
 		c.showAlert("Attachment", fmt.Sprintf("Attachment request failed: %d", code))
 	}
 }
 
 func (c *chatApp) promptAttachmentRequest(requesterID, transferID string) {
+	c.tracef("attachment: prompt-upload transfer=%s requester=%s", transferID, formatPeer(requesterID))
 	c.mu.RLock()
 	state := c.outgoing[transferID]
 	c.mu.RUnlock()
@@ -428,6 +449,7 @@ func (c *chatApp) promptAttachmentRequest(requesterID, transferID string) {
 }
 
 func (c *chatApp) streamAttachmentToTarget(transferID, targetPeerID string) error {
+	c.tracef("attachment: stream-start transfer=%s target=%s", transferID, formatPeer(targetPeerID))
 	c.mu.Lock()
 	state := c.outgoing[transferID]
 	if state != nil {
@@ -463,6 +485,7 @@ func (c *chatApp) streamAttachmentToTarget(transferID, targetPeerID string) erro
 		Attachment: true,
 	})
 	if code := c.node.Publish(controlRoom, started); code != mesh.MOSS_OK {
+		c.tracef("attachment: stream-start publish failed transfer=%s code=%d", transferID, code)
 		c.failOutgoingTransfer(transferID, fmt.Sprintf("send failed: %v", publishError(controlRoom, code)))
 		return publishError(controlRoom, code)
 	}
@@ -493,8 +516,12 @@ func (c *chatApp) streamAttachmentToTarget(transferID, targetPeerID string) erro
 			Attachment: true,
 		})
 		if code := c.node.Publish(controlRoom, chunk); code != mesh.MOSS_OK {
+			c.tracef("attachment: chunk publish failed transfer=%s index=%d code=%d", transferID, index, code)
 			c.failOutgoingTransfer(transferID, fmt.Sprintf("send failed: %v", publishError(controlRoom, code)))
 			return publishError(controlRoom, code)
+		}
+		if index == 0 || index+1 == state.ChunkCount || (index+1)%32 == 0 {
+			c.tracef("attachment: chunk sent transfer=%s sent=%d/%d target=%s", transferID, index+1, state.ChunkCount, formatPeer(targetPeerID))
 		}
 		c.updateOutgoingProgress(transferID, index+1, targetPeerID)
 		if errors.Is(readErr, io.EOF) || errors.Is(readErr, io.ErrUnexpectedEOF) {
@@ -502,10 +529,12 @@ func (c *chatApp) streamAttachmentToTarget(transferID, targetPeerID string) erro
 		}
 	}
 	c.finishOutgoingTransfer(transferID, targetPeerID)
+	c.tracef("attachment: stream-complete transfer=%s target=%s", transferID, formatPeer(targetPeerID))
 	return nil
 }
 
 func (c *chatApp) declineAttachmentTransfer(transferID, targetPeerID string) {
+	c.tracef("attachment: decline transfer=%s target=%s", transferID, formatPeer(targetPeerID))
 	payload, _ := json.Marshal(chatPayload{
 		Kind:       "attachment-denied",
 		Nick:       c.nickname,
@@ -538,6 +567,7 @@ func (c *chatApp) finishOutgoingTransfer(transferID, targetPeerID string) {
 }
 
 func (c *chatApp) failOutgoingTransfer(transferID, status string) {
+	c.tracef("attachment: fail transfer=%s status=%s", transferID, status)
 	c.mu.Lock()
 	state := c.outgoing[transferID]
 	c.mu.Unlock()
