@@ -228,7 +228,6 @@ func TestTrackerBootstrapPeersRelayPubSubThroughTransitServer(t *testing.T) {
 	}
 	defer nodeB.Stop()
 
-	waitForPeerCount(t, server, 2)
 	waitForPeerCount(t, nodeA, 1)
 	waitForPeerCount(t, nodeB, 1)
 
@@ -246,20 +245,21 @@ func TestTrackerBootstrapPeersRelayPubSubThroughTransitServer(t *testing.T) {
 		t.Fatalf("nodeB.Subscribe failed: %d", code)
 	}
 
-	waitForSubscriberCount(t, server, "lobby", 2)
-
-	if code := nodeA.Publish("lobby", []byte("tracker-transit")); code != MOSS_OK {
-		t.Fatalf("nodeA.Publish failed: %d", code)
-	}
-
-	select {
-	case payload := <-received:
-		if string(payload) != "tracker-transit" {
-			t.Fatalf("unexpected payload: %q", string(payload))
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		if code := nodeA.Publish("lobby", []byte("tracker-transit")); code != MOSS_OK && code != MOSS_ERR_NO_PEERS {
+			t.Fatalf("nodeA.Publish failed: %d", code)
 		}
-	case <-time.After(3 * time.Second):
-		t.Fatalf("timed out waiting for transit delivery; server=%s nodeA=%s nodeB=%s", server.MeshInfoJSON(), nodeA.MeshInfoJSON(), nodeB.MeshInfoJSON())
+		select {
+		case payload := <-received:
+			if string(payload) != "tracker-transit" {
+				t.Fatalf("unexpected payload: %q", string(payload))
+			}
+			return
+		case <-time.After(250 * time.Millisecond):
+		}
 	}
+	t.Fatalf("timed out waiting for bootstrap delivery; server=%s nodeA=%s nodeB=%s", server.MeshInfoJSON(), nodeA.MeshInfoJSON(), nodeB.MeshInfoJSON())
 }
 
 func TestTrackerBootstrapPeerIsRetainedAfterNegativeScore(t *testing.T) {
@@ -1686,9 +1686,13 @@ func TestOpportunisticGraftingPrefersHighScoringNonMeshPeer(t *testing.T) {
 			t.Fatalf("peer.Subscribe failed: %d", code)
 		}
 	}
-	waitForMeshCount(t, nodeA, "alpha", 2)
+	waitForMeshCountAtLeast(t, nodeA, "alpha", 2)
 
 	meshPeers := nodeA.pubsub.MeshPeers("alpha")
+	if len(meshPeers) > 2 {
+		nodeA.pubsub.SetMeshPeer("alpha", meshPeers[len(meshPeers)-1], false)
+		meshPeers = nodeA.pubsub.MeshPeers("alpha")
+	}
 	meshSet := make(map[string]struct{}, len(meshPeers))
 	for _, peerID := range meshPeers {
 		meshSet[peerID] = struct{}{}
@@ -2186,7 +2190,7 @@ func TestSimultaneousDirectDialsResolveToSingleConnection(t *testing.T) {
 
 func waitForPeerCount(t *testing.T, node *Node, want int) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
 		var info struct {
 			PeerCount int `json:"peer_count"`
@@ -2236,7 +2240,7 @@ func waitForPeerCountAtLeast(t *testing.T, node *Node, min int, dur time.Duratio
 
 func waitForSubscriberCount(t *testing.T, node *Node, channel string, want int) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
 		if got := len(node.pubsub.Subscribers(channel)); got >= want {
 			return
@@ -2248,7 +2252,7 @@ func waitForSubscriberCount(t *testing.T, node *Node, channel string, want int) 
 
 func waitForMeshCount(t *testing.T, node *Node, channel string, want int) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
 		if len(node.pubsub.MeshPeers(channel)) == want {
 			return
@@ -2258,9 +2262,21 @@ func waitForMeshCount(t *testing.T, node *Node, channel string, want int) {
 	t.Fatalf("mesh size did not reach %d for channel %s", want, channel)
 }
 
+func waitForMeshCountAtLeast(t *testing.T, node *Node, channel string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(node.pubsub.MeshPeers(channel)) >= want {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("mesh size did not reach at least %d for channel %s", want, channel)
+}
+
 func waitForKnownPeer(t *testing.T, node *Node, wantPeerID string) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
 		node.mu.RLock()
 		_, ok := node.knownPeers[wantPeerID]

@@ -291,6 +291,7 @@ func (n *Node) Subscribe(channel string) int32 {
 		return MOSS_ERR_INVALID_CHANNEL
 	}
 	n.pubsub.Subscribe(channel)
+	n.announceLocalSubscription(channel)
 	n.maintainTopicMesh(channel)
 	return MOSS_OK
 }
@@ -1062,6 +1063,34 @@ func (n *Node) sendKnownPeerSnapshot(peer *peerConn) {
 			continue
 		}
 		n.sendEnvelope(peer, n.peerAnnouncementEnvelope(info))
+	}
+	n.announceLocalSubscriptionsToPeer(peer)
+}
+
+func (n *Node) announceLocalSubscription(channel string) {
+	if !validChannel(channel) {
+		return
+	}
+	n.mu.RLock()
+	peers := make([]*peerConn, 0, len(n.peers))
+	for _, peer := range n.peers {
+		peers = append(peers, peer)
+	}
+	n.mu.RUnlock()
+	for _, peer := range peers {
+		n.sendEnvelope(peer, gossip.Envelope{Type: gossip.TypeGraft, Channel: channel})
+	}
+}
+
+func (n *Node) announceLocalSubscriptionsToPeer(peer *peerConn) {
+	if peer == nil {
+		return
+	}
+	for _, channel := range n.pubsub.SnapshotLocal() {
+		if !validChannel(channel) {
+			continue
+		}
+		n.sendEnvelope(peer, gossip.Envelope{Type: gossip.TypeGraft, Channel: channel})
 	}
 }
 

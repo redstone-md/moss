@@ -457,6 +457,17 @@ func (c *chatApp) showTextModal(title, body string) {
 	c.showModal("overlay", modal)
 }
 
+func (c *chatApp) showAlert(title, body string) {
+	modal := tview.NewModal().
+		SetText(body).
+		AddButtons([]string{"OK"}).
+		SetDoneFunc(func(buttonIndex int, buttonLabel string) {
+			c.closeModal("alert")
+		})
+	modal.SetTitle(" " + title + " ").SetBorder(true)
+	c.showModal("alert", modal)
+}
+
 func (c *chatApp) showJoinRoomModal() {
 	c.showInputModal("Join Room", "Room", "", func(value string) {
 		c.handleCommand("join " + value)
@@ -479,9 +490,14 @@ func (c *chatApp) showConnectModal() {
 }
 
 func (c *chatApp) showAttachModal() {
-	c.showInputModal("Send Attachment", "File path", "", func(value string) {
-		c.handleCommand("attach " + value)
-	})
+	c.mu.RLock()
+	room := c.currentRoom
+	c.mu.RUnlock()
+	go func() {
+		if err := c.sendAttachment(room, ""); err != nil {
+			c.showAlert("Attachment", err.Error())
+		}
+	}()
 }
 
 func (c *chatApp) showDirectMessageModal() {
@@ -754,7 +770,7 @@ func (c *chatApp) handleCommand(raw string) {
 		room := c.currentRoom
 		c.mu.RUnlock()
 		if err := c.sendAttachment(room, arg); err != nil {
-			c.systemMessage(err.Error())
+			c.showAlert("Attachment", err.Error())
 		}
 	case "call":
 		if arg == "" {
@@ -762,19 +778,19 @@ func (c *chatApp) handleCommand(raw string) {
 			return
 		}
 		if err := c.startCall(arg); err != nil {
-			c.systemMessage(err.Error())
+			c.showAlert("Call", err.Error())
 		}
 	case "answer":
 		if err := c.answerCall(); err != nil {
-			c.systemMessage(err.Error())
+			c.showAlert("Call", err.Error())
 		}
 	case "decline":
 		if err := c.declineCall(); err != nil {
-			c.systemMessage(err.Error())
+			c.showAlert("Call", err.Error())
 		}
 	case "hangup":
 		if err := c.hangupCall(); err != nil {
-			c.systemMessage(err.Error())
+			c.showAlert("Call", err.Error())
 		}
 	case "debug":
 		c.toggleDebug()
@@ -791,11 +807,11 @@ func (c *chatApp) handleCommand(raw string) {
 		c.showNetworkStatus()
 	case "connect":
 		if arg == "" {
-			c.systemMessage("Usage: /connect HOST:PORT")
+			c.showAlert("Connect", "Usage: /connect HOST:PORT")
 			return
 		}
 		if code := c.node.Connect(arg); code != mesh.MOSS_OK {
-			c.systemMessage(fmt.Sprintf("Connect to %s failed: %d", arg, code))
+			c.showAlert("Connect", fmt.Sprintf("Connect to %s failed: %d", arg, code))
 			return
 		}
 		c.systemMessage("Connecting to " + arg + "...")
