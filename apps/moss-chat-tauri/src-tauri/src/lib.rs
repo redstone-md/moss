@@ -1,4 +1,5 @@
 mod commands;
+mod ffi;
 mod models;
 mod state;
 
