@@ -12,7 +12,10 @@ Moss is an embeddable P2P mesh core written in Go and exported through CGO as a 
 - native single-binary terminal chat in `cmd/moss-chat`
 - unit, integration, and shared-library smoke tests
 
-API reference: [docs/API.md](docs/API.md)
+FFI docs:
+
+- API reference: [docs/API.md](docs/API.md)
+- Shared integration guide: [docs/SHARED_INTEGRATION.md](docs/SHARED_INTEGRATION.md)
 
 ## Layout
 
