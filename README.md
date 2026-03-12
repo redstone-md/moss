@@ -11,7 +11,7 @@ Moss is an embeddable P2P mesh core written in Go and exported through CGO as a 
 - NAT profiling, relay rate limiting primitives, and supernode eligibility checks
 - C FFI surface with examples for C, C++, Python (`ctypes`), and Rust
 - native single-binary terminal chat in `cmd/moss-chat`
-- separate Tauri desktop migration shell in `apps/moss-chat-tauri`
+- separate Tauri desktop client in `apps/moss-chat-tauri` for the `dev` branch migration
 - unit, integration, and shared-library smoke tests
 
 FFI docs:

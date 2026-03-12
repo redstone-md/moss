@@ -4,10 +4,12 @@ import {
   desktopSnapshotSchema,
   publishMessageInputSchema,
   subscribeRoomInputSchema,
+  updateRuntimeSettingsInputSchema,
   type ConnectPeerInput,
   type DesktopSnapshot,
   type PublishMessageInput,
   type SubscribeRoomInput,
+  type UpdateRuntimeSettingsInput,
 } from './schemas'
 
 export class DesktopStatusClient {
@@ -25,6 +27,18 @@ export class DesktopStatusClient {
     const result = desktopSnapshotSchema.safeParse(payload)
     if (!result.success) {
       throw new Error(`Invalid runtime toggle payload: ${result.error.message}`)
+    }
+    return result.data
+  }
+
+  async updateRuntimeSettings(
+    input: UpdateRuntimeSettingsInput,
+  ): Promise<DesktopSnapshot> {
+    const parsed = updateRuntimeSettingsInputSchema.parse(input)
+    const payload = await invoke('update_runtime_settings', { payload: parsed })
+    const result = desktopSnapshotSchema.safeParse(payload)
+    if (!result.success) {
+      throw new Error(`Invalid runtime settings payload: ${result.error.message}`)
     }
     return result.data
   }

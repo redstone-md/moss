@@ -3,15 +3,18 @@ use std::sync::Mutex;
 use crate::{
     callback_state::shared_callback_state,
     ffi::{MeshInfo, MossLibrary},
-    models::{Artifact, DesktopSnapshot, Message, Milestone, PeerSummary, RoomSummary, RuntimeStatus},
+    models::DesktopSnapshot,
+    runtime_settings::{DesktopRuntimeConfig, RuntimeSettingsInput},
+    snapshot_view,
 };
+
+const DEV_BRANCH: &str = "dev";
 
 pub struct DesktopShellState {
     library: Option<MossLibrary>,
     library_error: Option<String>,
     handle: Option<i64>,
-    mesh_id: String,
-    config_json: String,
+    settings: DesktopRuntimeConfig,
 }
 
 impl DesktopShellState {
@@ -20,8 +23,7 @@ impl DesktopShellState {
             library: None,
             library_error: None,
             handle: None,
-            mesh_id: "moss-chat-dev".to_string(),
-            config_json: "{\"listen_port\":0}".to_string(),
+            settings: DesktopRuntimeConfig::default(),
         };
         state.reload_library();
         if let Ok(mut callbacks) = shared_callback_state().lock() {
@@ -36,23 +38,25 @@ impl DesktopShellState {
             self.reload_library();
         }
 
-        let (runtime, rooms, messages, peers, stage) = match self.live_mesh_info() {
-            Ok(Some(mesh)) => self.online_shell(mesh),
-            Ok(None) => self.offline_shell(),
-            Err(err) => self.failed_shell(err),
-        };
+        let live_mesh = self.live_mesh_info();
+        let settings = self.settings.summary();
+        let diagnostics = self.settings.diagnostics(live_mesh.as_ref().ok().and_then(|mesh| mesh.as_ref()));
 
-        DesktopSnapshot {
-            app_name: "Moss Chat Dev".to_string(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
-            branch: "dev".to_string(),
-            stage,
-            runtime,
-            rooms,
-            messages,
-            peers,
-            artifacts: artifact_rows(),
-            milestones: milestone_rows(),
+        match live_mesh {
+            Ok(Some(mesh)) => snapshot_view::online_snapshot(
+                &mesh,
+                settings,
+                diagnostics,
+                self.library_path(),
+                DEV_BRANCH,
+            ),
+            Ok(None) => snapshot_view::offline_snapshot(
+                settings,
+                diagnostics,
+                self.shared_bridge_summary(),
+                DEV_BRANCH,
+            ),
+            Err(err) => snapshot_view::failed_snapshot(settings, diagnostics, err, DEV_BRANCH),
         }
     }
 
@@ -76,19 +80,48 @@ impl DesktopShellState {
         let library = self
             .library
             .as_ref()
-            .ok_or_else(|| self.library_status())?;
+            .ok_or_else(|| self.shared_bridge_summary())?;
+        let config_json = self.settings.config_json()?;
+
         if let Ok(mut callbacks) = shared_callback_state().lock() {
             callbacks.reset();
             callbacks.note_runtime(format!(
                 "Starting live runtime for mesh {}.",
-                self.mesh_id
+                self.settings.mesh_id()
             ));
         }
-        let handle = library.init_handle(&self.mesh_id, &self.config_json)?;
+
+        let handle = library.init_handle(self.settings.mesh_id(), &config_json)?;
         library.set_callbacks(handle)?;
         library.start(handle)?;
-        library.subscribe(handle, "lobby")?;
+        library.subscribe(handle, self.settings.initial_room())?;
+        if let Some(startup_peer) = self.settings.startup_peer() {
+            if let Err(err) = library.connect(handle, startup_peer) {
+                if let Ok(mut callbacks) = shared_callback_state().lock() {
+                    callbacks.note_runtime(format!(
+                        "Startup peer {startup_peer} did not connect immediately: {err}"
+                    ));
+                }
+            }
+        }
         self.handle = Some(handle);
+        Ok(self.snapshot())
+    }
+
+    pub fn update_runtime_settings(
+        &mut self,
+        input: RuntimeSettingsInput,
+    ) -> Result<DesktopSnapshot, String> {
+        self.settings.apply(input)?;
+        if let Ok(mut callbacks) = shared_callback_state().lock() {
+            if self.handle.is_some() {
+                callbacks.note_runtime(
+                    "Updated desktop runtime settings. Restart the runtime to apply them.",
+                );
+            } else {
+                callbacks.note_runtime("Updated desktop runtime settings.");
+            }
+        }
         Ok(self.snapshot())
     }
 
@@ -137,87 +170,7 @@ impl DesktopShellState {
         Ok(self.snapshot())
     }
 
-    fn online_shell(
-        &self,
-        mesh: MeshInfo,
-    ) -> (RuntimeStatus, Vec<RoomSummary>, Vec<Message>, Vec<PeerSummary>, String) {
-        let (rooms, messages, peers) = live_callback_rows(&mesh);
-
-        (
-            RuntimeStatus {
-                state: "Runtime online".to_string(),
-                summary: format!(
-                    "Live Moss runtime is active on mesh {} port {} with {} connected peers.",
-                    mesh.mesh_id, mesh.listen_port, mesh.peer_count
-                ),
-                route: if mesh.peer_count > 0 {
-                    format!("Active mesh with {}", mesh.peers.join(", "))
-                } else {
-                    "Waiting for peer connections".to_string()
-                },
-                nat_hint: mesh.nat_type,
-                shared_bridge: format!(
-                    "Loaded from {} as {}",
-                    self.library_path(),
-                    shorten_public_key(&mesh.public_key)
-                ),
-            },
-            rooms,
-            messages,
-            peers,
-            "Live bridge".to_string(),
-        )
-    }
-
-    fn offline_shell(
-        &self,
-    ) -> (RuntimeStatus, Vec<RoomSummary>, Vec<Message>, Vec<PeerSummary>, String) {
-        let shared_bridge = match self.library.as_ref() {
-            Some(_) => format!("Loaded from {}", self.library_path()),
-            None => self.library_status(),
-        };
-        (
-            RuntimeStatus {
-                state: "Runtime offline".to_string(),
-                summary: "The desktop backend can already load libmoss, but the node is not started. Use the runtime action to start a live handle.".to_string(),
-                route: "No active transport".to_string(),
-                nat_hint: "Unknown until runtime starts".to_string(),
-                shared_bridge,
-            },
-            base_rooms(),
-            base_messages(),
-            base_peers(),
-            "Bridge ready".to_string(),
-        )
-    }
-
-    fn failed_shell(
-        &self,
-        error: String,
-    ) -> (RuntimeStatus, Vec<RoomSummary>, Vec<Message>, Vec<PeerSummary>, String) {
-        (
-            RuntimeStatus {
-                state: "Runtime unavailable".to_string(),
-                summary: "Desktop backend could not load or query libmoss. Place the shared library next to the executable or set MOSS_SHARED_PATH.".to_string(),
-                route: "No active transport".to_string(),
-                nat_hint: "Unknown".to_string(),
-                shared_bridge: error.clone(),
-            },
-            base_rooms(),
-            vec![Message {
-                id: "m-failed-1".to_string(),
-                room_id: "system".to_string(),
-                author: "System".to_string(),
-                body: error,
-                timestamp: "now".to_string(),
-                emphasis: "system".to_string(),
-            }],
-            base_peers(),
-            "Bridge unavailable".to_string(),
-        )
-    }
-
-    fn live_mesh_info(&mut self) -> Result<Option<MeshInfo>, String> {
+    fn live_mesh_info(&self) -> Result<Option<MeshInfo>, String> {
         let Some(handle) = self.handle else {
             return Ok(None);
         };
@@ -245,10 +198,15 @@ impl DesktopShellState {
         }
     }
 
-    fn library_status(&self) -> String {
-        self.library_error
-            .clone()
-            .unwrap_or_else(|| "shared library not loaded".to_string())
+    fn shared_bridge_summary(&self) -> String {
+        self.library
+            .as_ref()
+            .map(|library| format!("Loaded from {}", library.path_display()))
+            .unwrap_or_else(|| {
+                self.library_error
+                    .clone()
+                    .unwrap_or_else(|| "shared library not loaded".to_string())
+            })
     }
 
     fn library_path(&self) -> String {
@@ -266,235 +224,6 @@ impl Drop for DesktopShellState {
             let _ = library.stop(handle);
         }
     }
-}
-
-fn base_rooms() -> Vec<RoomSummary> {
-    vec![
-        RoomSummary {
-            id: "system".to_string(),
-            label: "System".to_string(),
-            unread: 1,
-            participants: 1,
-            kind: "system".to_string(),
-        },
-        RoomSummary {
-            id: "lobby".to_string(),
-            label: "#lobby".to_string(),
-            unread: 0,
-            participants: 1,
-            kind: "channel".to_string(),
-        },
-    ]
-}
-
-fn base_peers() -> Vec<PeerSummary> {
-    vec![PeerSummary {
-        id: "peer-self".to_string(),
-        display_name: "Desktop operator".to_string(),
-        route: "local shell".to_string(),
-        latency: "--".to_string(),
-        status: "self".to_string(),
-        rooms: vec!["#lobby".to_string()],
-    }]
-}
-
-fn base_messages() -> Vec<Message> {
-    vec![
-        Message {
-            id: "m-offline-1".to_string(),
-            room_id: "system".to_string(),
-            author: "System".to_string(),
-            body: "The desktop shell is ready to start a real Moss node via the shared library.".to_string(),
-            timestamp: "now".to_string(),
-            emphasis: "system".to_string(),
-        },
-        Message {
-            id: "m-offline-2".to_string(),
-            room_id: "lobby".to_string(),
-            author: "Andrii".to_string(),
-            body: "Rooms, peers, and runtime state are now driven by the desktop backend instead of a static landing page.".to_string(),
-            timestamp: "now".to_string(),
-            emphasis: "normal".to_string(),
-        },
-    ]
-}
-
-fn live_room_rows(mesh: &MeshInfo) -> Vec<RoomSummary> {
-    let mut rooms = vec![RoomSummary {
-        id: "system".to_string(),
-        label: "System".to_string(),
-        unread: 1,
-        participants: 1,
-        kind: "system".to_string(),
-    }];
-    if mesh.channels.is_empty() {
-        rooms.push(RoomSummary {
-            id: "lobby".to_string(),
-            label: "#lobby".to_string(),
-            unread: 0,
-            participants: (mesh.peer_count + 1) as u32,
-            kind: "channel".to_string(),
-        });
-        return rooms;
-    }
-    for channel in &mesh.channels {
-        rooms.push(RoomSummary {
-            id: channel.clone(),
-            label: format!("#{channel}"),
-            unread: 0,
-            participants: (mesh.peer_count + 1) as u32,
-            kind: "channel".to_string(),
-        });
-    }
-    rooms
-}
-
-fn live_peer_rows(mesh: &MeshInfo) -> Vec<PeerSummary> {
-    let mut peers = vec![PeerSummary {
-        id: "peer-self".to_string(),
-        display_name: "Desktop operator".to_string(),
-        route: format!("listen {}", mesh.listen_port),
-        latency: "--".to_string(),
-        status: "self".to_string(),
-        rooms: mesh.channels.iter().map(|channel| format!("#{channel}")).collect(),
-    }];
-    for (index, peer) in mesh.peers.iter().enumerate() {
-        peers.push(PeerSummary {
-            id: format!("peer-{index}"),
-            display_name: peer.clone(),
-            route: if mesh.supernode_ready {
-                "direct or relay candidate".to_string()
-            } else {
-                "connected peer".to_string()
-            },
-            latency: "runtime pending".to_string(),
-            status: "connected".to_string(),
-            rooms: mesh.channels.iter().map(|channel| format!("#{channel}")).collect(),
-        });
-    }
-    peers
-}
-
-fn live_callback_rows(mesh: &MeshInfo) -> (Vec<RoomSummary>, Vec<Message>, Vec<PeerSummary>) {
-    let callback_state = shared_callback_state();
-    if let Ok(state) = callback_state.lock() {
-        let mut rooms = state.rooms();
-        let mut messages = state.messages();
-        let mut peers = state.peers();
-
-        if rooms.is_empty() {
-            rooms = live_room_rows(mesh);
-        } else {
-            merge_room_rows(&mut rooms, mesh);
-        }
-
-        if messages.is_empty() {
-            messages = base_messages();
-        }
-
-        merge_peer_rows(&mut peers, mesh);
-        return (rooms, messages, peers);
-    }
-    (live_room_rows(mesh), base_messages(), live_peer_rows(mesh))
-}
-
-fn merge_room_rows(rooms: &mut Vec<RoomSummary>, mesh: &MeshInfo) {
-    for channel in &mesh.channels {
-        let id = channel.to_lowercase();
-        if rooms.iter().any(|room| room.id == id) {
-            continue;
-        }
-        rooms.push(RoomSummary {
-            id: id.clone(),
-            label: format!("#{channel}"),
-            unread: 0,
-            participants: (mesh.peer_count + 1) as u32,
-            kind: "channel".to_string(),
-        });
-    }
-}
-
-fn merge_peer_rows(peers: &mut Vec<PeerSummary>, mesh: &MeshInfo) {
-    if !peers.iter().any(|peer| peer.status == "self") {
-        peers.insert(
-            0,
-            PeerSummary {
-                id: "peer-self".to_string(),
-                display_name: "Desktop operator".to_string(),
-                route: format!("listen {}", mesh.listen_port),
-                latency: "--".to_string(),
-                status: "self".to_string(),
-                rooms: mesh.channels.iter().map(|channel| format!("#{channel}")).collect(),
-            },
-        );
-    }
-    for (index, peer_addr) in mesh.peers.iter().enumerate() {
-        if peers.iter().any(|peer| peer.route == *peer_addr || peer.display_name == *peer_addr) {
-            continue;
-        }
-        peers.push(PeerSummary {
-            id: format!("peer-live-{index}"),
-            display_name: peer_addr.clone(),
-            route: "connected peer".to_string(),
-            latency: "runtime pending".to_string(),
-            status: "connected".to_string(),
-            rooms: mesh.channels.iter().map(|channel| format!("#{channel}")).collect(),
-        });
-    }
-}
-
-fn shorten_public_key(value: &str) -> String {
-    if value.len() <= 12 {
-        value.to_string()
-    } else {
-        format!("{}..{}", &value[..8], &value[value.len() - 6..])
-    }
-}
-
-fn artifact_rows() -> Vec<Artifact> {
-    vec![
-        Artifact {
-            name: "moss-chat-tauri-dev-linux-amd64".to_string(),
-            platform: "Linux x86_64".to_string(),
-            notes: "Desktop binary uploaded by the dev-only Tauri workflow.".to_string(),
-        },
-        Artifact {
-            name: "moss-chat-tauri-dev-windows-amd64".to_string(),
-            platform: "Windows x86_64".to_string(),
-            notes: "Desktop binary paired with the shared Moss runtime for dev testing."
-                .to_string(),
-        },
-        Artifact {
-            name: "moss-chat-tauri-dev-macos-amd64".to_string(),
-            platform: "macOS Intel".to_string(),
-            notes: "Dedicated Intel artifact from the dev branch.".to_string(),
-        },
-        Artifact {
-            name: "moss-chat-tauri-dev-macos-arm64".to_string(),
-            platform: "macOS Apple Silicon".to_string(),
-            notes: "Dedicated Apple Silicon artifact from the dev branch.".to_string(),
-        },
-    ]
-}
-
-fn milestone_rows() -> Vec<Milestone> {
-    vec![
-        Milestone {
-            title: "Desktop shell scaffold".to_string(),
-            detail: "Separate Tauri project, frontend build, Rust entrypoint, and branch-specific workflows are ready.".to_string(),
-            status: "ready".to_string(),
-        },
-        Milestone {
-            title: "Live runtime lifecycle".to_string(),
-            detail: "Start, stop, subscribe, and diagnostics now come from libmoss instead of a fake backend state.".to_string(),
-            status: "ready".to_string(),
-        },
-        Milestone {
-            title: "Message and event bridge".to_string(),
-            detail: "The next slice is wiring message callbacks and event callbacks into desktop subscriptions and live room updates.".to_string(),
-            status: "next".to_string(),
-        },
-    ]
 }
 
 pub type SharedDesktopState = Mutex<DesktopShellState>;

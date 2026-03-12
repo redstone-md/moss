@@ -1,6 +1,6 @@
 # Moss Chat Tauri
 
-`apps/moss-chat-tauri` is the separate desktop shell for the `dev` branch migration away from the legacy terminal chat.
+`apps/moss-chat-tauri` is the desktop chat client used on the `dev` branch while the project migrates away from the legacy terminal chat.
 
 ## Purpose
 
@@ -36,10 +36,13 @@ Current scope:
 
 - React + Vite frontend
 - TanStack Query desktop shell state
-- Zod validation for the invoke payload coming from the desktop backend
-- Rust/Tauri backend with live `libmoss` lifecycle and diagnostics bridge
+- Zod validation for invoke payloads and runtime setup fields
+- Rust/Tauri backend with live `libmoss` lifecycle, runtime settings, and diagnostics
+- live callback-driven rooms, peers, and message history
 
-Next scope:
+Desktop workflow:
 
-- bind message callbacks and event callbacks into live room updates
-- replace the legacy TUI feature set with desktop-native rooms, peers, transfers, and diagnostics
+- configure mesh ID, listen port, startup room, and bootstrap mode in the runtime setup panel
+- start or stop the runtime from the top runtime card
+- join additional rooms, connect peers, and publish messages from the action deck
+- inspect peer count, active channels, listen port, and relay readiness in the diagnostics panel

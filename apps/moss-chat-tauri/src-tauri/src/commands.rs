@@ -1,6 +1,10 @@
 use tauri::State;
 
-use crate::{models::DesktopSnapshot, state::SharedDesktopState};
+use crate::{
+    models::DesktopSnapshot,
+    runtime_settings::RuntimeSettingsInput,
+    state::SharedDesktopState,
+};
 
 #[tauri::command]
 pub fn desktop_snapshot(state: State<'_, SharedDesktopState>) -> Result<DesktopSnapshot, String> {
@@ -16,6 +20,17 @@ pub fn toggle_runtime(state: State<'_, SharedDesktopState>) -> Result<DesktopSna
         .lock()
         .map_err(|_| "desktop state lock poisoned".to_string())?;
     Ok(state.toggle_runtime()?)
+}
+
+#[tauri::command]
+pub fn update_runtime_settings(
+    state: State<'_, SharedDesktopState>,
+    payload: RuntimeSettingsInput,
+) -> Result<DesktopSnapshot, String> {
+    let mut state = state
+        .lock()
+        .map_err(|_| "desktop state lock poisoned".to_string())?;
+    Ok(state.update_runtime_settings(payload)?)
 }
 
 #[tauri::command]

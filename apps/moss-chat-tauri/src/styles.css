@@ -67,18 +67,15 @@ button {
 .runtime-panel h2,
 .panel h2,
 .error-panel h1,
-.artifact-card h3,
-.milestone-card h3,
 .peer-card strong,
-.message-topline strong {
+.message-topline strong,
+.diagnostic-card strong {
   margin: 0;
   color: #f7fff8;
 }
 
 .eyebrow,
 .runtime-summary,
-.artifact-card p,
-.milestone-card p,
 .peer-card p,
 .peer-footline,
 .message-card p,
@@ -87,7 +84,8 @@ button {
 .hero-meta span,
 .room-item span,
 .composer-shell p,
-.error-panel p {
+.error-panel p,
+.diagnostic-card p {
   color: rgba(237, 244, 238, 0.78);
 }
 
@@ -109,13 +107,13 @@ button {
 }
 
 .runtime-chip,
-.artifact-card,
-.milestone-card,
 .peer-card,
 .message-card,
 .composer-shell,
 .action-tile,
-.room-item {
+.room-item,
+.diagnostic-card,
+.preview-card {
   border: 1px solid rgba(208, 230, 213, 0.14);
   background: rgba(237, 244, 238, 0.04);
 }
@@ -228,10 +226,10 @@ button {
 }
 
 .message-card,
-.artifact-card,
-.milestone-card,
 .peer-card,
-.composer-shell {
+.composer-shell,
+.diagnostic-card,
+.preview-card {
   border-radius: 18px;
   padding: 16px;
 }
@@ -247,8 +245,7 @@ button {
 
 .message-topline,
 .peer-topline,
-.artifact-card > div,
-.milestone-topline {
+.diagnostic-card > div {
   display: flex;
   justify-content: space-between;
   gap: 12px;
@@ -297,6 +294,10 @@ button {
   grid-template-columns: 0.85fr 1.15fr;
 }
 
+.content-grid-actions {
+  grid-template-columns: 1.1fr 0.9fr;
+}
+
 .action-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -327,6 +328,7 @@ button {
 }
 
 .inline-form input,
+.inline-form select,
 .composer-form textarea {
   width: 100%;
   padding: 12px 14px;
@@ -343,6 +345,78 @@ button {
 .composer-form textarea {
   min-height: 88px;
   resize: vertical;
+}
+
+.setup-panel,
+.diagnostics-panel,
+.action-context {
+  display: grid;
+  gap: 16px;
+}
+
+.setup-grid,
+.diagnostics-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.field-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.field-grid span,
+.toggle-field span {
+  color: rgba(237, 244, 238, 0.78);
+  font-size: 0.86rem;
+}
+
+.field-grid input,
+.field-grid select {
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(208, 230, 213, 0.18);
+  background: rgba(237, 244, 238, 0.06);
+  color: #edf4ee;
+}
+
+.toggle-field {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  min-height: 48px;
+}
+
+.toggle-field input {
+  width: 18px;
+  height: 18px;
+}
+
+.preview-card {
+  display: grid;
+  gap: 10px;
+}
+
+.preview-card pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #cde4d0;
+  font-size: 0.85rem;
+}
+
+.diagnostic-card {
+  display: grid;
+  gap: 10px;
+}
+
+.diagnostic-card span {
+  color: rgba(237, 244, 238, 0.68);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 0.72rem;
 }
 
 .action-tile {
