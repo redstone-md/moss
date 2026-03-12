@@ -1,3 +1,4 @@
+mod callback_state;
 mod commands;
 mod ffi;
 mod models;
