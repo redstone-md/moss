@@ -36,6 +36,7 @@ type incomingAttachment struct {
 	Saved      bool
 	LineID     string
 	SentAt     string
+	StartedAt  time.Time
 }
 
 type outgoingAttachment struct {
@@ -49,6 +50,7 @@ type outgoingAttachment struct {
 	LineID      string
 	SentAt      string
 	LastTarget  string
+	StartedAt   time.Time
 }
 
 type preparedAttachment struct {
@@ -367,6 +369,7 @@ func (c *chatApp) acceptIncomingAttachment(transferID string) error {
 	state.Accepted = true
 	state.SavePath = savePath
 	state.SentAt = time.Now().Format("15:04:05")
+	state.StartedAt = time.Now()
 	c.updateRoomLineLocked(state.Room, state.LineID, incomingAttachmentWaitingLine(state))
 	c.mu.Unlock()
 	c.queueRefresh()
@@ -430,6 +433,7 @@ func (c *chatApp) streamAttachmentToTarget(transferID, targetPeerID string) erro
 	if state != nil {
 		state.LastTarget = targetPeerID
 		state.SentAt = time.Now().Format("15:04:05")
+		state.StartedAt = time.Now()
 		c.updateRoomLineLocked(state.Room, state.LineID, outgoingAttachmentProgressLine(state, 0, c.displayNameForPeer(targetPeerID)))
 	}
 	c.mu.Unlock()
@@ -599,11 +603,12 @@ func incomingAttachmentLine(state *incomingAttachment) string {
 		return ""
 	}
 	progress := attachmentProgressBar(state.Received, state.ChunkCount)
+	speed := attachmentTransferRate(int64(state.Received)*attachmentChunkSize, state.FileSize, state.StartedAt)
 	switch {
 	case state.Saved:
 		return fmt.Sprintf("[%s] attachment from %s saved: %s", time.Now().Format("15:04:05"), state.SenderName, state.FileName)
 	case state.Accepted && state.Received < state.ChunkCount:
-		return fmt.Sprintf("[%s] downloading from %s: %s %s %d/%d", state.SentAt, state.SenderName, state.FileName, progress, state.Received, state.ChunkCount)
+		return fmt.Sprintf("[%s] downloading from %s: %s %s %d/%d %s", state.SentAt, state.SenderName, state.FileName, progress, state.Received, state.ChunkCount, speed)
 	case state.Accepted:
 		return fmt.Sprintf("[%s] waiting for download data from %s: %s", state.SentAt, state.SenderName, state.FileName)
 	default:
@@ -626,7 +631,8 @@ func outgoingAttachmentProgressLine(state *outgoingAttachment, sentChunks int, t
 		targetLabel = "peer"
 	}
 	progress := attachmentProgressBar(sentChunks, state.ChunkCount)
-	return fmt.Sprintf("[%s] sending %s to %s %s %d/%d", state.SentAt, state.FileName, targetLabel, progress, sentChunks, state.ChunkCount)
+	speed := attachmentTransferRate(int64(sentChunks)*attachmentChunkSize, state.FileSize, state.StartedAt)
+	return fmt.Sprintf("[%s] sending %s to %s %s %d/%d %s", state.SentAt, state.FileName, targetLabel, progress, sentChunks, state.ChunkCount, speed)
 }
 
 func outgoingAttachmentDoneLine(state *outgoingAttachment, targetLabel string) string {
@@ -652,6 +658,34 @@ func attachmentProgressBar(done, total int) string {
 	}
 	filled := done * width / total
 	return "[" + strings.Repeat("=", filled) + strings.Repeat("-", width-filled) + "]"
+}
+
+func attachmentTransferRate(transferred, total int64, startedAt time.Time) string {
+	if total > 0 && transferred > total {
+		transferred = total
+	}
+	if startedAt.IsZero() || transferred <= 0 {
+		return "@ 0 B/s"
+	}
+	elapsed := time.Since(startedAt)
+	if elapsed <= 0 {
+		return "@ 0 B/s"
+	}
+	bytesPerSecond := float64(transferred) / elapsed.Seconds()
+	return "@ " + formatRate(bytesPerSecond)
+}
+
+func formatRate(bytesPerSecond float64) string {
+	switch {
+	case bytesPerSecond >= 1024*1024*1024:
+		return fmt.Sprintf("%.1f GB/s", bytesPerSecond/(1024*1024*1024))
+	case bytesPerSecond >= 1024*1024:
+		return fmt.Sprintf("%.1f MB/s", bytesPerSecond/(1024*1024))
+	case bytesPerSecond >= 1024:
+		return fmt.Sprintf("%.1f KB/s", bytesPerSecond/1024)
+	default:
+		return fmt.Sprintf("%.0f B/s", bytesPerSecond)
+	}
 }
 
 func attachmentFileSHA256(path string) (string, error) {
