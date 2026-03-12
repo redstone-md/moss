@@ -127,6 +127,11 @@ button {
   gap: 8px;
 }
 
+.runtime-error {
+  margin: 0;
+  color: #ff8677;
+}
+
 .primary-action,
 .secondary-action,
 .action-tile,

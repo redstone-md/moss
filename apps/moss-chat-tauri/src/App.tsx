@@ -59,6 +59,7 @@ export function App() {
         route={data.runtime.route}
         natHint={data.runtime.natHint}
         sharedBridge={data.runtime.sharedBridge}
+        errorNote={toggleRuntime.isError ? toggleRuntime.error.message : undefined}
         onToggle={() => toggleRuntime.mutate()}
         isBusy={toggleRuntime.isPending}
       />

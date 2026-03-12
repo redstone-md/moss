@@ -4,6 +4,7 @@ type RuntimePanelProps = {
   route: string
   natHint: string
   sharedBridge: string
+  errorNote?: string
   onToggle: () => void
   isBusy: boolean
 }
@@ -14,6 +15,7 @@ export function RuntimePanel({
   route,
   natHint,
   sharedBridge,
+  errorNote,
   onToggle,
   isBusy,
 }: RuntimePanelProps) {
@@ -38,6 +40,7 @@ export function RuntimePanel({
           <strong>{sharedBridge}</strong>
         </div>
       </div>
+      {errorNote ? <p className="runtime-error">{errorNote}</p> : null}
       <button className="primary-action" onClick={onToggle} disabled={isBusy}>
         {isBusy ? 'Updating...' : 'Toggle runtime state'}
       </button>

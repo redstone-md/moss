@@ -24,16 +24,22 @@ npm install
 npm run tauri:dev
 ```
 
+The desktop backend now loads the Moss shared runtime dynamically.
+
+- set `MOSS_SHARED_PATH` to an explicit `moss.dll`, `libmoss.so`, or `libmoss.dylib`
+- or place the shared library next to the desktop executable
+- the dev artifact workflow now publishes the desktop binary and the matching shared library together
+
 ## Desktop contract
 
 Current scope:
 
 - React + Vite frontend
-- TanStack Query app bootstrap state
+- TanStack Query desktop shell state
 - Zod validation for the invoke payload coming from the desktop backend
-- Rust/Tauri backend stub with a typed `bootstrap_snapshot` command
+- Rust/Tauri backend with live `libmoss` lifecycle and diagnostics bridge
 
 Next scope:
 
-- bind the Moss shared runtime into the desktop backend
-- replace the legacy TUI lifecycle with desktop-native rooms, peers, transfers, and diagnostics
+- bind message callbacks and event callbacks into live room updates
+- replace the legacy TUI feature set with desktop-native rooms, peers, transfers, and diagnostics

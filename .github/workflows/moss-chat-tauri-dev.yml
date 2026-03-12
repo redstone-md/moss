@@ -35,21 +35,37 @@ jobs:
             rust-target: x86_64-unknown-linux-gnu
             artifact: moss-chat-tauri-dev-linux-amd64
             binary: apps/moss-chat-tauri/src-tauri/target/x86_64-unknown-linux-gnu/release/moss-chat-dev
+            shared-output: libmoss.so
+            shared-header: libmoss.h
+            goos: linux
+            goarch: amd64
           - os: windows-latest
             label: windows-amd64
             rust-target: x86_64-pc-windows-msvc
             artifact: moss-chat-tauri-dev-windows-amd64
             binary: apps/moss-chat-tauri/src-tauri/target/x86_64-pc-windows-msvc/release/moss-chat-dev.exe
+            shared-output: moss.dll
+            shared-header: moss.h
+            goos: windows
+            goarch: amd64
           - os: macos-15-intel
             label: macos-amd64
             rust-target: x86_64-apple-darwin
             artifact: moss-chat-tauri-dev-macos-amd64
             binary: apps/moss-chat-tauri/src-tauri/target/x86_64-apple-darwin/release/moss-chat-dev
+            shared-output: libmoss.dylib
+            shared-header: libmoss.h
+            goos: darwin
+            goarch: amd64
           - os: macos-latest
             label: macos-arm64
             rust-target: aarch64-apple-darwin
             artifact: moss-chat-tauri-dev-macos-arm64
             binary: apps/moss-chat-tauri/src-tauri/target/aarch64-apple-darwin/release/moss-chat-dev
+            shared-output: libmoss.dylib
+            shared-header: libmoss.h
+            goos: darwin
+            goarch: arm64
     defaults:
       run:
         working-directory: apps/moss-chat-tauri
@@ -63,6 +79,21 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: apps/moss-chat-tauri/package-lock.json
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Setup MinGW
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -78,6 +109,14 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Build shared runtime
+        working-directory: .
+        env:
+          CGO_ENABLED: "1"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go build -buildmode=c-shared -o ${{ matrix.shared-output }} ./cmd/moss-ffi
+
       - name: Build Tauri binary
         run: npx tauri build --no-bundle --target ${{ matrix.rust-target }}
 
@@ -87,5 +126,7 @@ jobs:
           name: ${{ matrix.artifact }}
           path: |
             ${{ matrix.binary }}
+            ${{ matrix.shared-output }}
+            ${{ matrix.shared-header }}
             apps/moss-chat-tauri/README.md
           if-no-files-found: error
