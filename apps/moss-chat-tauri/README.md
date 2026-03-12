@@ -28,7 +28,7 @@ The desktop backend now loads the Moss shared runtime dynamically.
 
 - set `MOSS_SHARED_PATH` to an explicit `moss.dll`, `libmoss.so`, or `libmoss.dylib`
 - or place the shared library next to the desktop executable
-- the dev artifact workflow now publishes the desktop binary and the matching shared library together
+- the dev tag workflow (`dev-*`) publishes the desktop binary and the matching shared library together
 
 ## Desktop contract
 
