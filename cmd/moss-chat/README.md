@@ -26,6 +26,12 @@ Or just run it without flags and answer the startup prompts:
 ./moss-chat
 ```
 
+Optional flags:
+
+- `--debug` to show tracker/protocol debug events in the `System` room
+- `--no-sound` to disable desktop and beep notifications
+- `--downloads-dir PATH` to override where attachments are stored
+
 Second peer:
 
 ```bash
@@ -39,6 +45,12 @@ Second peer:
 - `/goto ROOM`
 - `/nick NAME`
 - `/msg TARGET [TEXT]`
+- `/attach PATH`
+- `/call TARGET`
+- `/answer`
+- `/decline`
+- `/hangup`
+- `/debug`
 - `/peers`
 - `/rooms`
 - `/status`
@@ -53,6 +65,9 @@ Second peer:
 - `F4` create or join room
 - `F5` open direct chat
 - `F6` rename
+- `F7` send attachment
 - `F8` connect to peer
+- `F9` toggle debug
+- `F10` call peer
 - `Tab` / `Shift-Tab` cycle focus
 - `Ctrl-L` focus composer
