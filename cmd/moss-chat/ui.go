@@ -42,6 +42,8 @@ type chatPayload struct {
 	Nick   string `json:"nick,omitempty"`
 	Text   string `json:"text,omitempty"`
 	SentAt string `json:"sent_at,omitempty"`
+	Room   string `json:"room,omitempty"`
+	Target string `json:"target,omitempty"`
 }
 
 type eventDetail struct {
@@ -78,6 +80,7 @@ type chatApp struct {
 	localPeerID  string
 
 	ui       *tview.Application
+	pages    *tview.Pages
 	root     *tview.Flex
 	header   *tview.TextView
 	rooms    *tview.List
@@ -92,11 +95,14 @@ type chatApp struct {
 
 	running      bool
 	syncingRooms bool
+	focusIndex   int
 	visibleRooms []string
 	roomOrder    []string
 	roomByName   map[string]*roomState
+	peerNames    map[string]string
 	currentRoom  string
 	info         runtimeInfo
+	refreshCh    chan struct{}
 }
 
 func newChatApp(cfg chatConfig) *chatApp {
@@ -118,7 +124,10 @@ func newChatApp(cfg chatConfig) *chatApp {
 		},
 		roomOrder:   []string{systemRoom},
 		currentRoom: defaultRoom,
+		peerNames:   make(map[string]string),
+		refreshCh:   make(chan struct{}, 1),
 	}
+	app.peerNames[cfg.localPeerID] = cfg.nickname
 	for _, room := range cfg.rooms {
 		app.ensureRoom(room, true)
 	}
@@ -135,8 +144,12 @@ func (c *chatApp) run() error {
 	if code := c.node.Start(); code != mesh.MOSS_OK {
 		return fmt.Errorf("node start failed: %d", code)
 	}
+	if code := c.node.Subscribe(controlRoom); code != mesh.MOSS_OK {
+		_ = c.node.Stop()
+		return fmt.Errorf("subscribe %s failed: %d", controlRoom, code)
+	}
 	for _, room := range c.subscribedRooms() {
-		if room == systemRoom {
+		if room == systemRoom || room == controlRoom {
 			continue
 		}
 		if code := c.node.Subscribe(room); code != mesh.MOSS_OK {
@@ -165,11 +178,12 @@ func (c *chatApp) run() error {
 	c.systemMessage("Identity file: " + c.identityPath)
 	go c.statusLoop()
 	defer c.shutdown()
-	c.ui.SetRoot(c.root, true)
-	c.ui.SetFocus(c.input)
+	c.ui.SetRoot(c.pages, true)
+	c.setFocus(2)
 	c.mu.Lock()
 	c.running = true
 	c.mu.Unlock()
+	go c.refreshLoop()
 	c.refresh()
 	return c.ui.Run()
 }
@@ -184,8 +198,22 @@ func (c *chatApp) shutdown() {
 	})
 }
 
+func (c *chatApp) refreshLoop() {
+	for {
+		select {
+		case <-c.stopCh:
+			return
+		case <-c.refreshCh:
+			if c.ui == nil {
+				continue
+			}
+			c.ui.QueueUpdateDraw(c.refresh)
+		}
+	}
+}
+
 func (c *chatApp) buildUI() {
-	c.ui = tview.NewApplication()
+	c.ui = tview.NewApplication().EnableMouse(true)
 
 	c.header = tview.NewTextView().
 		SetDynamicColors(true).
@@ -210,12 +238,43 @@ func (c *chatApp) buildUI() {
 		c.mu.Unlock()
 		c.refresh()
 	})
+	c.rooms.SetSelectedFunc(func(index int, _, _ string, _ rune) {
+		c.mu.Lock()
+		if index >= 0 && index < len(c.visibleRooms) {
+			c.currentRoom = c.visibleRooms[index]
+			if room := c.roomByName[c.currentRoom]; room != nil {
+				room.unread = 0
+			}
+		}
+		c.mu.Unlock()
+		c.setFocus(2)
+		c.refresh()
+	})
 
 	c.messages = tview.NewTextView().
 		SetDynamicColors(false).
 		SetScrollable(true).
 		SetWrap(true)
 	c.messages.SetBorder(true).SetTitle(" Messages ")
+	c.messages.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		switch event.Key() {
+		case tcell.KeyPgUp:
+			row, col := c.messages.GetScrollOffset()
+			if row >= 10 {
+				row -= 10
+			} else {
+				row = 0
+			}
+			c.messages.ScrollTo(row, col)
+			return nil
+		case tcell.KeyPgDn:
+			row, col := c.messages.GetScrollOffset()
+			c.messages.ScrollTo(row+10, col)
+			return nil
+		default:
+			return event
+		}
+	})
 
 	c.input = tview.NewInputField().
 		SetLabel("> ")
@@ -232,7 +291,7 @@ func (c *chatApp) buildUI() {
 	})
 
 	c.help = tview.NewTextView().SetDynamicColors(true)
-	c.help.SetText("Enter send | /join room | /leave | /goto room | /nick NAME | /status | /net | F2/F3 | Ctrl-C")
+	c.help.SetText("F1 help | F2/F3 rooms | F4 new room | F5 DM | F6 nick | F8 connect | Tab focus | Enter send")
 	c.status = tview.NewTextView().SetDynamicColors(true)
 
 	body := tview.NewFlex().
@@ -248,16 +307,42 @@ func (c *chatApp) buildUI() {
 		AddItem(body, 0, 1, false).
 		AddItem(footer, 5, 0, true)
 
-	c.root.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+	c.pages = tview.NewPages().AddPage("main", c.root, true, true)
+
+	c.ui.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		switch event.Key() {
+		case tcell.KeyF1:
+			c.showHelpModal()
+			return nil
 		case tcell.KeyF2:
 			c.cycleRoom(-1)
 			return nil
 		case tcell.KeyF3:
 			c.cycleRoom(1)
 			return nil
+		case tcell.KeyF4:
+			c.showJoinRoomModal()
+			return nil
+		case tcell.KeyF5:
+			c.showDirectMessageModal()
+			return nil
+		case tcell.KeyF6:
+			c.showNickModal()
+			return nil
+		case tcell.KeyF8:
+			c.showConnectModal()
+			return nil
+		case tcell.KeyTAB:
+			c.cycleFocus(1)
+			return nil
+		case tcell.KeyBacktab:
+			c.cycleFocus(-1)
+			return nil
 		case tcell.KeyCtrlC:
 			c.ui.Stop()
+			return nil
+		case tcell.KeyCtrlL:
+			c.setFocus(2)
 			return nil
 		default:
 			return event
@@ -285,6 +370,148 @@ func (c *chatApp) statusLoop() {
 	}
 }
 
+func (c *chatApp) focusables() []tview.Primitive {
+	return []tview.Primitive{c.rooms, c.messages, c.input}
+}
+
+func (c *chatApp) setFocus(index int) {
+	items := c.focusables()
+	if len(items) == 0 {
+		return
+	}
+	if index < 0 {
+		index = len(items) - 1
+	}
+	index %= len(items)
+	c.mu.Lock()
+	c.focusIndex = index
+	c.mu.Unlock()
+	c.ui.SetFocus(items[index])
+}
+
+func (c *chatApp) cycleFocus(step int) {
+	c.mu.Lock()
+	next := c.focusIndex + step
+	c.mu.Unlock()
+	c.setFocus(next)
+}
+
+func (c *chatApp) showHelpModal() {
+	body := strings.Join([]string{
+		"F2/F3: switch rooms",
+		"F4: create or join room",
+		"F5: open direct chat",
+		"F6: rename yourself",
+		"F8: connect to HOST:PORT",
+		"Tab / Shift-Tab: switch focus",
+		"Ctrl-L: jump to composer",
+		"/join ROOM, /leave, /goto ROOM, /msg TARGET [TEXT], /peers, /net, /status",
+	}, "\n")
+	c.showTextModal("Shortcuts", body)
+}
+
+func (c *chatApp) showTextModal(title, body string) {
+	modal := tview.NewModal().
+		SetText(body).
+		AddButtons([]string{"Close"}).
+		SetDoneFunc(func(buttonIndex int, buttonLabel string) {
+			c.closeModal("overlay")
+		})
+	modal.SetTitle(" " + title + " ").SetBorder(true)
+	c.showModal("overlay", modal)
+}
+
+func (c *chatApp) showJoinRoomModal() {
+	c.showInputModal("Join Room", "Room", "", func(value string) {
+		c.handleCommand("join " + value)
+	})
+}
+
+func (c *chatApp) showNickModal() {
+	c.mu.RLock()
+	current := c.nickname
+	c.mu.RUnlock()
+	c.showInputModal("Change Nickname", "Nickname", current, func(value string) {
+		c.handleCommand("nick " + value)
+	})
+}
+
+func (c *chatApp) showConnectModal() {
+	c.showInputModal("Connect Peer", "HOST:PORT", "", func(value string) {
+		c.handleCommand("connect " + value)
+	})
+}
+
+func (c *chatApp) showDirectMessageModal() {
+	c.showInputModal("Open Direct Chat", "Nickname or peer id", "", func(value string) {
+		if value == "" {
+			return
+		}
+		if _, err := c.openDirectRoom(value); err != nil {
+			c.systemMessage(err.Error())
+		}
+	})
+}
+
+func (c *chatApp) showInputModal(title, label, initial string, submit func(string)) {
+	input := tview.NewInputField().
+		SetLabel(label + ": ").
+		SetText(initial)
+	form := tview.NewForm().
+		AddFormItem(input).
+		AddButton("OK", func() {
+			value := strings.TrimSpace(input.GetText())
+			c.closeModal("overlay")
+			if value != "" {
+				submit(value)
+			}
+		}).
+		AddButton("Cancel", func() {
+			c.closeModal("overlay")
+		})
+	form.SetBorder(true).SetTitle(" " + title + " ")
+	form.SetButtonsAlign(tview.AlignRight)
+	input.SetDoneFunc(func(key tcell.Key) {
+		switch key {
+		case tcell.KeyEnter:
+			value := strings.TrimSpace(input.GetText())
+			c.closeModal("overlay")
+			if value != "" {
+				submit(value)
+			}
+		case tcell.KeyEscape:
+			c.closeModal("overlay")
+		}
+	})
+	modal := centered(62, 9, form)
+	c.showModal("overlay", modal)
+	c.ui.SetFocus(input)
+}
+
+func centered(width, height int, primitive tview.Primitive) tview.Primitive {
+	return tview.NewFlex().
+		AddItem(nil, 0, 1, false).
+		AddItem(
+			tview.NewFlex().SetDirection(tview.FlexRow).
+				AddItem(nil, 0, 1, false).
+				AddItem(primitive, height, 1, true).
+				AddItem(nil, 0, 1, false),
+			width,
+			1,
+			true,
+		).
+		AddItem(nil, 0, 1, false)
+}
+
+func (c *chatApp) showModal(name string, primitive tview.Primitive) {
+	c.pages.AddPage(name, primitive, true, true)
+}
+
+func (c *chatApp) closeModal(name string) {
+	c.pages.RemovePage(name)
+	c.setFocus(2)
+}
+
 func (c *chatApp) handleInput(text string) {
 	if strings.HasPrefix(text, "/") {
 		c.handleCommand(strings.TrimPrefix(text, "/"))
@@ -294,8 +521,16 @@ func (c *chatApp) handleInput(text string) {
 	c.mu.RLock()
 	room := c.currentRoom
 	c.mu.RUnlock()
+	c.sendCurrentRoomMessage(room, text)
+}
+
+func (c *chatApp) sendCurrentRoomMessage(room, text string) {
 	if room == systemRoom {
 		c.systemMessage("Switch to a chat room before sending messages.")
+		return
+	}
+	if room == controlRoom {
+		c.systemMessage("Control room is internal and cannot be used directly.")
 		return
 	}
 
@@ -329,7 +564,7 @@ func (c *chatApp) handleCommand(raw string) {
 
 	switch command {
 	case "help":
-		c.systemMessage("Commands: /join ROOM, /leave [ROOM], /goto ROOM, /nick NAME, /rooms, /status, /net, /connect HOST:PORT, /quit")
+		c.systemMessage("Commands: /join ROOM, /leave [ROOM], /goto ROOM, /nick NAME, /msg TARGET [TEXT], /peers, /rooms, /status, /net, /connect HOST:PORT, /quit")
 	case "quit", "exit":
 		c.ui.Stop()
 	case "join":
@@ -424,6 +659,26 @@ func (c *chatApp) handleCommand(raw string) {
 			return
 		}
 		c.systemMessage("Joined rooms: " + strings.Join(joined, ", "))
+	case "msg":
+		if arg == "" {
+			c.systemMessage("Usage: /msg TARGET [TEXT]")
+			return
+		}
+		target, text := splitTargetAndText(arg)
+		if target == "" {
+			c.systemMessage("Usage: /msg TARGET [TEXT]")
+			return
+		}
+		room, err := c.openDirectRoom(target)
+		if err != nil {
+			c.systemMessage(err.Error())
+			return
+		}
+		if text != "" {
+			c.sendCurrentRoomMessage(room, text)
+		}
+	case "peers":
+		c.showPeerSummary()
 	case "status":
 		c.mu.RLock()
 		info := c.info
@@ -450,6 +705,17 @@ func (c *chatApp) handleCommand(raw string) {
 	}
 }
 
+func splitTargetAndText(raw string) (string, string) {
+	parts := strings.Fields(strings.TrimSpace(raw))
+	if len(parts) == 0 {
+		return "", ""
+	}
+	if len(parts) == 1 {
+		return parts[0], ""
+	}
+	return parts[0], strings.TrimSpace(strings.TrimPrefix(raw, parts[0]))
+}
+
 func (c *chatApp) showNetworkStatus() {
 	c.mu.RLock()
 	info := c.info
@@ -469,7 +735,34 @@ func (c *chatApp) showNetworkStatus() {
 	c.systemMessage("net: binary=" + filepath.Base(binaryPath))
 }
 
+func (c *chatApp) showPeerSummary() {
+	c.mu.RLock()
+	if len(c.peerNames) == 0 {
+		c.mu.RUnlock()
+		c.systemMessage("Peers: no known nicknames yet.")
+		return
+	}
+	parts := make([]string, 0, len(c.peerNames))
+	for peerID, name := range c.peerNames {
+		if peerID == c.localPeerID {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s (%s)", name, formatPeer(peerID)))
+	}
+	c.mu.RUnlock()
+	if len(parts) == 0 {
+		c.systemMessage("Peers: no known nicknames yet.")
+		return
+	}
+	c.systemMessage("Peers: " + strings.Join(parts, ", "))
+}
+
 func (c *chatApp) onMessage(channel string, sender [32]byte, data []byte) {
+	senderID := hex.EncodeToString(sender[:])
+	if channel == controlRoom {
+		c.handleControlMessage(senderID, data)
+		return
+	}
 	room, err := normalizeRoom(channel)
 	if err != nil {
 		return
@@ -479,11 +772,12 @@ func (c *chatApp) onMessage(channel string, sender [32]byte, data []byte) {
 	line := string(data)
 	var payload chatPayload
 	if json.Unmarshal(data, &payload) == nil && payload.Text != "" {
+		c.rememberPeerName(senderID, payload.Nick)
 		nick := payload.Nick
 		if nick == "" {
-			nick = formatPeer(hex.EncodeToString(sender[:]))
+			nick = c.displayNameForPeer(senderID)
 		}
-		if hex.EncodeToString(sender[:]) == c.localPeerID {
+		if senderID == c.localPeerID {
 			nick = "you"
 		}
 		sentAt := payload.SentAt
@@ -495,12 +789,36 @@ func (c *chatApp) onMessage(channel string, sender [32]byte, data []byte) {
 	c.appendLine(room, line)
 }
 
+func (c *chatApp) handleControlMessage(senderID string, data []byte) {
+	var payload chatPayload
+	if json.Unmarshal(data, &payload) != nil {
+		return
+	}
+	c.rememberPeerName(senderID, payload.Nick)
+	if payload.Target != "" && payload.Target != c.localPeerID {
+		return
+	}
+	switch payload.Kind {
+	case "dm_invite":
+		room, err := normalizeRoom(payload.Room)
+		if err != nil {
+			return
+		}
+		if !c.ensureSubscribedRoom(room) {
+			return
+		}
+		c.setRoomTitle(room, "@"+emptyFallback(payload.Nick, c.displayNameForPeer(senderID)))
+		c.systemMessage("Direct chat ready with " + c.displayNameForPeer(senderID))
+	}
+}
+
 func (c *chatApp) onEvent(eventType int32, detailJSON string) {
 	var detail eventDetail
 	_ = json.Unmarshal([]byte(detailJSON), &detail)
 
 	switch eventType {
 	case mesh.EventPeerJoined:
+		c.rememberPeerName(detail.Peer, "")
 		c.systemMessage(fmt.Sprintf("Peer joined: %s @ %s", formatPeer(detail.Peer), detail.Addr))
 	case mesh.EventPeerLeft:
 		c.systemMessage("Peer left: " + formatPeer(detail.Peer))
@@ -532,8 +850,8 @@ func (c *chatApp) appendLine(room, line string) {
 		c.roomOrder = append(c.roomOrder, room)
 	}
 	state.lines = append(state.lines, line)
-	if len(state.lines) > 500 {
-		state.lines = state.lines[len(state.lines)-500:]
+	if len(state.lines) > maxRoomLines {
+		state.lines = state.lines[len(state.lines)-maxRoomLines:]
 	}
 	if c.currentRoom != room {
 		state.unread++
@@ -544,6 +862,30 @@ func (c *chatApp) appendLine(room, line string) {
 
 func (c *chatApp) systemMessage(line string) {
 	c.appendLine(systemRoom, fmt.Sprintf("[%s] system: %s", time.Now().Format("15:04:05"), line))
+}
+
+func (c *chatApp) rememberPeerName(peerID, name string) {
+	if peerID == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if strings.TrimSpace(name) == "" {
+		if _, ok := c.peerNames[peerID]; !ok {
+			c.peerNames[peerID] = formatPeer(peerID)
+		}
+		return
+	}
+	c.peerNames[peerID] = name
+}
+
+func (c *chatApp) displayNameForPeer(peerID string) string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if name := strings.TrimSpace(c.peerNames[peerID]); name != "" {
+		return name
+	}
+	return formatPeer(peerID)
 }
 
 func (c *chatApp) ensureRoom(room string, subscribed bool) {
@@ -565,6 +907,75 @@ func (c *chatApp) ensureRoom(room string, subscribed bool) {
 		subscribed: subscribed,
 	}
 	c.roomOrder = append(c.roomOrder, room)
+}
+
+func (c *chatApp) setRoomTitle(room, title string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if state, ok := c.roomByName[room]; ok && strings.TrimSpace(title) != "" {
+		state.title = title
+	}
+}
+
+func (c *chatApp) ensureSubscribedRoom(room string) bool {
+	c.mu.RLock()
+	state, ok := c.roomByName[room]
+	alreadySubscribed := ok && state.subscribed
+	c.mu.RUnlock()
+	if alreadySubscribed {
+		c.ensureRoom(room, true)
+		return true
+	}
+	if code := c.node.Subscribe(room); code != mesh.MOSS_OK {
+		c.systemMessage(fmt.Sprintf("Subscribe failed for #%s: %d", room, code))
+		return false
+	}
+	c.ensureRoom(room, true)
+	return true
+}
+
+func (c *chatApp) openDirectRoom(target string) (string, error) {
+	peerID, label, err := c.resolvePeerTarget(target)
+	if err != nil {
+		return "", err
+	}
+	room := directRoomName(c.localPeerID, peerID)
+	if !c.ensureSubscribedRoom(room) {
+		return "", fmt.Errorf("failed to join direct room with %s", label)
+	}
+	c.setRoomTitle(room, "@"+label)
+	c.selectRoom(room)
+	payload, _ := json.Marshal(chatPayload{
+		Kind:   "dm_invite",
+		Nick:   c.nickname,
+		Room:   room,
+		Target: peerID,
+		SentAt: time.Now().Format("15:04:05"),
+	})
+	code := c.node.Publish(controlRoom, payload)
+	if code != mesh.MOSS_OK && code != mesh.MOSS_ERR_NO_PEERS {
+		return "", fmt.Errorf("direct chat invite failed: %d", code)
+	}
+	c.systemMessage("Direct chat opened with " + label)
+	return room, nil
+}
+
+func (c *chatApp) resolvePeerTarget(target string) (string, string, error) {
+	needle := strings.ToLower(strings.TrimSpace(target))
+	if needle == "" {
+		return "", "", fmt.Errorf("target is required")
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	for peerID, name := range c.peerNames {
+		if peerID == c.localPeerID {
+			continue
+		}
+		if strings.EqualFold(name, target) || strings.HasPrefix(strings.ToLower(peerID), needle) || strings.HasPrefix(strings.ToLower(formatPeer(peerID)), needle) {
+			return peerID, name, nil
+		}
+	}
+	return "", "", fmt.Errorf("peer %q not found; use /peers first", target)
 }
 
 func (c *chatApp) selectRoom(room string) {
@@ -654,7 +1065,10 @@ func (c *chatApp) queueRefresh() {
 		c.refresh()
 		return
 	}
-	c.ui.QueueUpdateDraw(c.refresh)
+	select {
+	case c.refreshCh <- struct{}{}:
+	default:
+	}
 }
 
 func (c *chatApp) refresh() {
@@ -680,6 +1094,9 @@ func (c *chatApp) refresh() {
 	visibleRooms := make([]string, 0, len(roomOrder))
 	selectedIndex := 0
 	for _, room := range roomOrder {
+		if room == controlRoom {
+			continue
+		}
 		state := roomByName[room]
 		if room != systemRoom && !state.subscribed {
 			continue
@@ -735,4 +1152,18 @@ func emptyFallback(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func directRoomName(localPeerID, remotePeerID string) string {
+	a := strings.ToLower(strings.TrimSpace(localPeerID))
+	b := strings.ToLower(strings.TrimSpace(remotePeerID))
+	if a == "" || b == "" {
+		return "dm"
+	}
+	if a > b {
+		a, b = b, a
+	}
+	a = a[:min(16, len(a))]
+	b = b[:min(16, len(b))]
+	return "dm-" + a + "-" + b
 }

@@ -38,8 +38,21 @@ Second peer:
 - `/leave [ROOM]`
 - `/goto ROOM`
 - `/nick NAME`
+- `/msg TARGET [TEXT]`
+- `/peers`
 - `/rooms`
 - `/status`
 - `/net`
 - `/connect HOST:PORT`
 - `/quit`
+
+## Shortcuts
+
+- `F1` help
+- `F2` / `F3` switch rooms
+- `F4` create or join room
+- `F5` open direct chat
+- `F6` rename
+- `F8` connect to peer
+- `Tab` / `Shift-Tab` cycle focus
+- `Ctrl-L` focus composer
