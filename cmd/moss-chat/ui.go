@@ -90,6 +90,7 @@ type chatApp struct {
 	once   sync.Once
 	mu     sync.RWMutex
 
+	running      bool
 	syncingRooms bool
 	visibleRooms []string
 	roomOrder    []string
@@ -164,12 +165,21 @@ func (c *chatApp) run() error {
 	c.systemMessage("Identity file: " + c.identityPath)
 	go c.statusLoop()
 	defer c.shutdown()
-	return c.ui.SetRoot(c.root, true).Run()
+	c.ui.SetRoot(c.root, true)
+	c.ui.SetFocus(c.input)
+	c.mu.Lock()
+	c.running = true
+	c.mu.Unlock()
+	c.refresh()
+	return c.ui.Run()
 }
 
 func (c *chatApp) shutdown() {
 	c.once.Do(func() {
 		close(c.stopCh)
+		c.mu.Lock()
+		c.running = false
+		c.mu.Unlock()
 		_ = c.node.Stop()
 	})
 }
@@ -635,6 +645,13 @@ func (c *chatApp) infoOrMeshID() string {
 
 func (c *chatApp) queueRefresh() {
 	if c.ui == nil {
+		return
+	}
+	c.mu.RLock()
+	running := c.running
+	c.mu.RUnlock()
+	if !running {
+		c.refresh()
 		return
 	}
 	c.ui.QueueUpdateDraw(c.refresh)
