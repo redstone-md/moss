@@ -52,6 +52,7 @@ type chatPayload struct {
 	Text         string `json:"text,omitempty"`
 	SentAt       string `json:"sent_at,omitempty"`
 	Room         string `json:"room,omitempty"`
+	Rooms        []string `json:"rooms,omitempty"`
 	Target       string `json:"target,omitempty"`
 	TransferID   string `json:"transfer_id,omitempty"`
 	FileName     string `json:"file_name,omitempty"`
@@ -126,6 +127,7 @@ type chatApp struct {
 	roomByName   map[string]*roomState
 	peerNames    map[string]string
 	presenceSeen map[string]bool
+	peerRooms    map[string]map[string]bool
 	callState    callState
 	incoming     map[string]*incomingAttachment
 	outgoing     map[string]*outgoingAttachment
@@ -158,6 +160,7 @@ func newChatApp(cfg chatConfig) *chatApp {
 		currentRoom: defaultRoom,
 		peerNames:   make(map[string]string),
 		presenceSeen: make(map[string]bool),
+		peerRooms:   make(map[string]map[string]bool),
 		incoming:    make(map[string]*incomingAttachment),
 		outgoing:    make(map[string]*outgoingAttachment),
 		refreshCh:   make(chan struct{}, 1),
@@ -702,6 +705,7 @@ func (c *chatApp) handleCommand(raw string) {
 		c.ensureRoom(room, true)
 		c.selectRoom(room)
 		c.systemMessage("Joined room #" + room)
+		go c.broadcastPresence()
 	case "goto":
 		if arg == "" {
 			c.systemMessage("Usage: /goto ROOM")
@@ -747,6 +751,7 @@ func (c *chatApp) handleCommand(raw string) {
 		c.mu.Unlock()
 		c.systemMessage("Left room #" + room)
 		c.selectFallbackRoom(room)
+		go c.broadcastPresence()
 	case "nick":
 		if arg == "" {
 			c.systemMessage("Usage: /nick NAME")
@@ -757,6 +762,7 @@ func (c *chatApp) handleCommand(raw string) {
 		c.mu.Unlock()
 		c.systemMessage("Nickname changed to " + arg)
 		c.queueRefresh()
+		go c.broadcastPresence()
 	case "rooms":
 		c.mu.RLock()
 		joined := make([]string, 0, len(c.roomOrder))
@@ -960,6 +966,7 @@ func (c *chatApp) handleControlMessage(senderID string, data []byte) {
 	case "presence":
 		name := emptyFallback(payload.Nick, c.displayNameForPeer(senderID))
 		c.rememberPeerName(senderID, payload.Nick)
+		c.setPeerRooms(senderID, payload.Rooms)
 		c.mu.Lock()
 		firstSeen := !c.presenceSeen[senderID]
 		c.presenceSeen[senderID] = true
@@ -967,6 +974,12 @@ func (c *chatApp) handleControlMessage(senderID string, data []byte) {
 		if firstSeen {
 			c.lobbyMessage(name + " joined the chat.")
 		}
+	case "attachment-request":
+		go func() {
+			if err := c.resendAttachment(payload.TransferID); err != nil {
+				c.showAlert("Attachment", err.Error())
+			}
+		}()
 	case "dm_invite":
 		room, err := normalizeRoom(payload.Room)
 		if err != nil {
@@ -997,6 +1010,7 @@ func (c *chatApp) onEvent(eventType int32, detailJSON string) {
 		name := c.displayNameForPeer(detail.Peer)
 		c.mu.Lock()
 		delete(c.presenceSeen, detail.Peer)
+		delete(c.peerRooms, detail.Peer)
 		c.mu.Unlock()
 		c.lobbyMessage(name + " left the chat.")
 	case mesh.EventSupernodePromoted:
@@ -1105,11 +1119,27 @@ func (c *chatApp) displayNameForPeer(peerID string) string {
 	return formatPeer(peerID)
 }
 
+func (c *chatApp) setPeerRooms(peerID string, rooms []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if peerID == "" {
+		return
+	}
+	set := make(map[string]bool, len(rooms))
+	for _, room := range rooms {
+		if normalized, err := normalizeRoom(room); err == nil {
+			set[normalized] = true
+		}
+	}
+	c.peerRooms[peerID] = set
+}
+
 func (c *chatApp) broadcastPresence() {
 	payload, _ := json.Marshal(chatPayload{
 		Kind:   "presence",
 		Nick:   c.nickname,
 		SentAt: time.Now().Format("15:04:05"),
+		Rooms:  c.subscribedRooms(),
 	})
 	code := c.node.Publish(controlRoom, payload)
 	if code == mesh.MOSS_OK || code == mesh.MOSS_ERR_NO_PEERS {
@@ -1411,8 +1441,25 @@ func (c *chatApp) currentRoomMembers(room string) []string {
 	if containsString(c.subscribedRooms(), room) {
 		members = append(members, c.nickname+" (you)")
 	}
-	for _, peerID := range c.node.ChannelSubscribers(room) {
-		members = append(members, c.displayNameForPeer(peerID))
+	c.mu.RLock()
+	peerNames := make(map[string]string, len(c.peerNames))
+	for peerID, name := range c.peerNames {
+		peerNames[peerID] = name
+	}
+	peerRooms := make(map[string]map[string]bool, len(c.peerRooms))
+	for peerID, rooms := range c.peerRooms {
+		copied := make(map[string]bool, len(rooms))
+		for subscribedRoom, ok := range rooms {
+			copied[subscribedRoom] = ok
+		}
+		peerRooms[peerID] = copied
+	}
+	c.mu.RUnlock()
+	for peerID, rooms := range peerRooms {
+		if peerID == c.localPeerID || !rooms[room] {
+			continue
+		}
+		members = append(members, emptyFallback(peerNames[peerID], formatPeer(peerID)))
 	}
 	if len(members) == 0 {
 		return []string{"No members"}

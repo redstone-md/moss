@@ -41,12 +41,15 @@ type incomingAttachment struct {
 }
 
 type outgoingAttachment struct {
+	TransferID  string
 	Room       string
 	FileName   string
 	FileSize   int64
 	ChunkCount int
 	LineID     string
 	SentAt     string
+	Data       []byte
+	FileSHA256 string
 }
 
 type preparedAttachment struct {
@@ -149,12 +152,15 @@ func (c *chatApp) sendPreparedAttachment(prepared *preparedAttachment) error {
 	transferID := fmt.Sprintf("%d-%s", time.Now().UnixNano(), c.localPeerID[:8])
 	lineID := "out-" + transferID
 	state := &outgoingAttachment{
+		TransferID:  transferID,
 		Room:       prepared.Room,
 		FileName:   prepared.FileName,
 		FileSize:   prepared.FileSize,
 		ChunkCount: prepared.ChunkCount,
 		LineID:     lineID,
 		SentAt:     time.Now().Format("15:04:05"),
+		Data:       append([]byte(nil), prepared.Data...),
+		FileSHA256: prepared.FileSHA256,
 	}
 	c.mu.Lock()
 	c.outgoing[transferID] = state
@@ -355,10 +361,9 @@ func (c *chatApp) updateOutgoingProgress(transferID string, sentChunks int) {
 }
 
 func (c *chatApp) finishOutgoingTransfer(transferID string) {
-	c.mu.Lock()
+	c.mu.RLock()
 	state := c.outgoing[transferID]
-	delete(c.outgoing, transferID)
-	c.mu.Unlock()
+	c.mu.RUnlock()
 	if state == nil {
 		return
 	}
@@ -444,12 +449,66 @@ func (c *chatApp) acceptIncomingAttachment(transferID string) error {
 	}
 	c.mu.Unlock()
 	c.queueRefresh()
+	if !complete {
+		c.requestAttachmentRetry(transferID)
+	}
 	if err != nil {
 		return err
 	}
 	if complete {
 		c.notifyTransferComplete(state.SenderName, state.FileName)
 		c.showAlert("Attachment", "Saved to "+targetPath)
+	}
+	return nil
+}
+
+func (c *chatApp) requestAttachmentRetry(transferID string) {
+	c.mu.RLock()
+	state := c.incoming[transferID]
+	c.mu.RUnlock()
+	if state == nil {
+		return
+	}
+	payload, _ := json.Marshal(chatPayload{
+		Kind:       "attachment-request",
+		Nick:       c.nickname,
+		SentAt:     time.Now().Format("15:04:05"),
+		Target:     state.SenderID,
+		TransferID: transferID,
+		Room:       state.Room,
+	})
+	code := c.node.Publish(controlRoom, payload)
+	if code != mesh.MOSS_OK && code != mesh.MOSS_ERR_NO_PEERS {
+		c.showAlert("Attachment", fmt.Sprintf("Attachment retry request failed: %d", code))
+	}
+}
+
+func (c *chatApp) resendAttachment(transferID string) error {
+	c.mu.RLock()
+	state := c.outgoing[transferID]
+	c.mu.RUnlock()
+	if state == nil {
+		return fmt.Errorf("attachment %s is no longer available", transferID)
+	}
+	for index := 0; index < state.ChunkCount; index++ {
+		start := index * attachmentChunkSize
+		end := min(len(state.Data), start+attachmentChunkSize)
+		chunk, _ := json.Marshal(chatPayload{
+			Kind:       "attachment-chunk",
+			Nick:       c.nickname,
+			SentAt:     time.Now().Format("15:04:05"),
+			TransferID: transferID,
+			FileName:   state.FileName,
+			FileSize:   state.FileSize,
+			FileSHA256: state.FileSHA256,
+			ChunkIndex: index,
+			ChunkCount: state.ChunkCount,
+			ChunkData:  base64.StdEncoding.EncodeToString(state.Data[start:end]),
+			Attachment: true,
+		})
+		if code := c.node.Publish(state.Room, chunk); code != mesh.MOSS_OK {
+			return publishError(state.Room, code)
+		}
 	}
 	return nil
 }
