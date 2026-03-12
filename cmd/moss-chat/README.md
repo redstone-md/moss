@@ -14,6 +14,8 @@ On Windows:
 go build -o moss-chat.exe .\cmd\moss-chat
 ```
 
+GitHub Actions publishes separate chat artifacts for `macos-amd64` and `macos-arm64`.
+
 ## Run
 
 ```bash

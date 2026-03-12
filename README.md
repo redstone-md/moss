@@ -45,6 +45,13 @@ CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
 
 The generated header is emitted next to the shared library as `moss.h` or `libmoss.h`, depending on the output name.
 
+GitHub Actions publishes separate macOS artifacts for both architectures:
+
+- `moss-macos-amd64-shared`
+- `moss-macos-arm64-shared`
+- `moss-chat-macos-amd64`
+- `moss-chat-macos-arm64`
+
 ## Test
 
 ```bash
