@@ -1,5 +1,7 @@
 # Moss
 
+[![CI](https://github.com/redstone-md/moss/actions/workflows/ci.yml/badge.svg)](https://github.com/redstone-md/moss/actions/workflows/ci.yml)
+
 Moss is an embeddable P2P mesh core written in Go and exported through CGO as a C-shared library. The project in this repository follows the `PRD.md` scope with a pragmatic v1 implementation:
 
 - tracker-based bootstrapping via BEP 15 UDP and BEP 3 HTTP announces
