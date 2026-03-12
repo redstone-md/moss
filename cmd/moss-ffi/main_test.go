@@ -106,6 +106,11 @@ func TestFFIExamplesRun(t *testing.T) {
 		if !hasActiveRustToolchain() {
 			t.Skip("rust toolchain is not configured")
 		}
+		if runtime.GOOS == "windows" {
+			if _, err := os.Stat(filepath.Join(root, "moss.lib")); err != nil {
+				t.Skip("windows rust example requires moss.lib import library")
+			}
+		}
 		runExampleCommand(t, filepath.Join(root, "examples", "rust_example"), []string{"cargo", "run"})
 	})
 }
