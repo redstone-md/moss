@@ -77,3 +77,18 @@ func TestPromptMissingOptionsUsesDefaults(t *testing.T) {
 		t.Fatal("expected trackers to remain enabled")
 	}
 }
+
+func TestSplitTargetAndText(t *testing.T) {
+	target, text := splitTargetAndText("alice hello there")
+	if target != "alice" || text != "hello there" {
+		t.Fatalf("unexpected split result target=%q text=%q", target, text)
+	}
+}
+
+func TestDirectRoomNameStableOrdering(t *testing.T) {
+	a := directRoomName("bbbb2222", "aaaa1111")
+	b := directRoomName("aaaa1111", "bbbb2222")
+	if a != b {
+		t.Fatalf("expected stable room ordering, got %q and %q", a, b)
+	}
+}

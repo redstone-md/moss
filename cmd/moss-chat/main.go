@@ -18,9 +18,11 @@ import (
 )
 
 const (
-	systemRoom  = "system"
-	defaultRoom = "lobby"
-	defaultMesh = "moss-chat-demo"
+	systemRoom   = "system"
+	controlRoom  = "__moss_chat_control__"
+	defaultRoom  = "lobby"
+	defaultMesh  = "moss-chat-demo"
+	maxRoomLines = 500
 )
 
 type stringListFlag []string
