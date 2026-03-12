@@ -10,6 +10,7 @@ import { RuntimeSetupPanel } from './components/RuntimeSetupPanel'
 import { useDesktopErrorDialogs } from './hooks/useDesktopErrorDialogs'
 import { useDesktopNotifications } from './hooks/useDesktopNotifications'
 import { desktopStatusClient } from './lib/desktopStatusClient'
+import { getFallbackRoom } from './lib/fallbacks'
 
 export function App() {
   const [selectedRoomId, setSelectedRoomId] = useState('lobby')
@@ -124,6 +125,7 @@ export function App() {
 
   const data = snapshot.data
   const settings = data.settings
+  const rooms = data.rooms.length > 0 ? data.rooms : [getFallbackRoom()]
   const nicknameValue = nicknameDraft ?? settings.nickname
   const meshValue = meshDraft ?? settings.meshId
   const listenPortValue = listenPortDraft ?? `${settings.listenPort}`
@@ -132,7 +134,9 @@ export function App() {
   const trackerModeValue = trackerModeDraft ?? settings.trackerMode
   const lanDiscoveryValue = lanDiscoveryDraft ?? settings.lanDiscoveryEnabled
   const activeRoom =
-    data.rooms.find((room) => room.id === selectedRoomId) ?? data.rooms[0]
+    rooms.find((room) => room.id === selectedRoomId) ??
+    rooms.find((room) => room.id === settings.initialRoom) ??
+    rooms[0]
   const visibleMessages = data.messages.filter(
     (message) => message.roomId === activeRoom.id,
   )
@@ -173,7 +177,7 @@ export function App() {
 
       <section className="chat-grid">
         <RoomList
-          rooms={data.rooms}
+          rooms={rooms}
           selectedRoomId={activeRoom.id}
           onSelect={setSelectedRoomId}
         />
