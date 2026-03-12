@@ -200,7 +200,7 @@ func promptMissingOptions(opts options, in io.Reader, out io.Writer) (options, e
 		}
 	}
 
-	disableTrackers, err := promptDefault(reader, out, "Disable tracker bootstrap? [y/N]", "n")
+	disableTrackers, err := promptDefault(reader, out, "Disable tracker bootstrap?", "n")
 	if err != nil {
 		return options{}, err
 	}
