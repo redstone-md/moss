@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -31,6 +32,8 @@ type chatConfig struct {
 	identityPath string
 	downloadsDir string
 	localPeerID  string
+	logFile      io.WriteCloser
+	logPath      string
 }
 
 type roomState struct {
@@ -110,6 +113,8 @@ type chatApp struct {
 	sounds       bool
 	localPeerID  string
 	downloadsDir string
+	logFile      io.WriteCloser
+	logPath      string
 
 	ui       *tview.Application
 	pages    *tview.Pages
@@ -142,6 +147,7 @@ type chatApp struct {
 	info         runtimeInfo
 	refreshCh    chan struct{}
 	activeChoice *choicePrompt
+	logMu        sync.Mutex
 }
 
 func newChatApp(cfg chatConfig) *chatApp {
@@ -156,6 +162,8 @@ func newChatApp(cfg chatConfig) *chatApp {
 		sounds:       cfg.sounds,
 		localPeerID:  cfg.localPeerID,
 		downloadsDir: cfg.downloadsDir,
+		logFile:      cfg.logFile,
+		logPath:      cfg.logPath,
 		stopCh:       make(chan struct{}),
 		roomByName: map[string]*roomState{
 			systemRoom: {
@@ -185,6 +193,7 @@ func newChatApp(cfg chatConfig) *chatApp {
 }
 
 func (c *chatApp) run() error {
+	c.tracef("startup: mesh=%s nick=%s rooms=%v peers=%v trackers=%s downloads=%s identity=%s", c.meshID, c.nickname, c.subscribedRooms(), c.bootstrap, c.trackers, c.downloadsDir, c.identityPath)
 	c.node.SetMessageCallback(c.onMessage)
 	c.node.SetEventCallback(c.onEvent)
 	if code := c.node.Start(); code != mesh.MOSS_OK {
@@ -222,6 +231,7 @@ func (c *chatApp) run() error {
 		c.systemMessage("Static peers: " + strings.Join(c.bootstrap, ", "))
 	}
 	c.systemMessage("Identity file: " + c.identityPath)
+	c.systemMessage("Trace log: " + c.logPath)
 	go c.broadcastPresence()
 	go c.statusLoop()
 	defer c.shutdown()
@@ -237,11 +247,15 @@ func (c *chatApp) run() error {
 
 func (c *chatApp) shutdown() {
 	c.once.Do(func() {
+		c.tracef("shutdown")
 		close(c.stopCh)
 		c.mu.Lock()
 		c.running = false
 		c.mu.Unlock()
 		_ = c.node.Stop()
+		if c.logFile != nil {
+			_ = c.logFile.Close()
+		}
 	})
 }
 
@@ -505,6 +519,7 @@ func (c *chatApp) showTextModal(title, body string) {
 }
 
 func (c *chatApp) showAlert(title, body string) {
+	c.tracef("alert: title=%q body=%q", title, body)
 	modal := tview.NewModal().
 		SetText(body).
 		AddButtons([]string{"OK"}).
@@ -611,6 +626,7 @@ func (c *chatApp) showInputModal(title, label, initial string, submit func(strin
 }
 
 func (c *chatApp) showChoiceModal(title, body string, buttons []string, onSelect func(label string)) {
+	c.tracef("choice-prompt: show title=%q buttons=%v body=%q", title, buttons, body)
 	c.queueUI(func() {
 		c.activeChoice = &choicePrompt{
 			Title:    title,
@@ -656,15 +672,19 @@ func (c *chatApp) handleChoicePromptInput(event *tcell.EventKey) bool {
 	switch event.Key() {
 	case tcell.KeyEnter:
 		if len(prompt.Buttons) > 0 {
+			c.tracef("choice-prompt: enter -> %q", prompt.Buttons[0])
 			c.resolveChoicePrompt(prompt.Buttons[0])
 		} else {
+			c.tracef("choice-prompt: enter -> dismiss")
 			c.dismissChoicePrompt()
 		}
 		return true
 	case tcell.KeyEscape:
 		if len(prompt.Buttons) > 1 {
+			c.tracef("choice-prompt: escape -> %q", prompt.Buttons[1])
 			c.resolveChoicePrompt(prompt.Buttons[1])
 		} else {
+			c.tracef("choice-prompt: escape -> dismiss")
 			c.dismissChoicePrompt()
 		}
 		return true
@@ -672,14 +692,17 @@ func (c *chatApp) handleChoicePromptInput(event *tcell.EventKey) bool {
 		switch strings.ToLower(string(event.Rune())) {
 		case "y":
 			if len(prompt.Buttons) > 0 {
+				c.tracef("choice-prompt: y -> %q", prompt.Buttons[0])
 				c.resolveChoicePrompt(prompt.Buttons[0])
 				return true
 			}
 		case "n":
 			if len(prompt.Buttons) > 1 {
+				c.tracef("choice-prompt: n -> %q", prompt.Buttons[1])
 				c.resolveChoicePrompt(prompt.Buttons[1])
 				return true
 			}
+			c.tracef("choice-prompt: n -> dismiss")
 			c.dismissChoicePrompt()
 			return true
 		}
@@ -695,6 +718,7 @@ func (c *chatApp) resolveChoicePrompt(label string) {
 	}
 	c.activeChoice = nil
 	c.mu.Unlock()
+	c.tracef("choice-prompt: resolve %q", label)
 	c.queueUI(func() {
 		c.pages.RemovePage("choice")
 		c.setFocus(2)
@@ -708,6 +732,7 @@ func (c *chatApp) dismissChoicePrompt() {
 	c.mu.Lock()
 	c.activeChoice = nil
 	c.mu.Unlock()
+	c.tracef("choice-prompt: dismiss")
 	c.queueUI(func() {
 		c.pages.RemovePage("choice")
 		c.setFocus(2)
@@ -802,6 +827,8 @@ func (c *chatApp) handleCommand(raw string) {
 	switch command {
 	case "help":
 		c.systemMessage("Commands: /join ROOM, /leave [ROOM], /goto ROOM, /nick NAME, /msg TARGET [TEXT], /attach PATH, /call TARGET, /answer, /decline, /hangup, /debug, /peers, /rooms, /status, /net, /connect HOST:PORT, /quit")
+	case "log", "logs":
+		c.systemMessage("Trace log: " + c.logPath)
 	case "quit", "exit":
 		c.ui.Stop()
 	case "join":
@@ -1032,6 +1059,7 @@ func (c *chatApp) showPeerSummary() {
 
 func (c *chatApp) onMessage(channel string, sender [32]byte, data []byte) {
 	senderID := hex.EncodeToString(sender[:])
+	c.tracef("message: channel=%s sender=%s size=%d", channel, formatPeer(senderID), len(data))
 	var payload chatPayload
 	if json.Unmarshal(data, &payload) == nil && payload.Attachment {
 		targetRoom := channel
@@ -1078,8 +1106,10 @@ func (c *chatApp) onMessage(channel string, sender [32]byte, data []byte) {
 func (c *chatApp) handleControlMessage(senderID string, data []byte) {
 	var payload chatPayload
 	if json.Unmarshal(data, &payload) != nil {
+		c.tracef("control: invalid-json sender=%s size=%d", formatPeer(senderID), len(data))
 		return
 	}
+	c.tracef("control: kind=%s sender=%s target=%s room=%s transfer=%s call=%s", payload.Kind, formatPeer(senderID), formatPeer(payload.Target), payload.Room, payload.TransferID, payload.CallID)
 	c.rememberPeerName(senderID, payload.Nick)
 	if payload.Target != "" && payload.Target != c.localPeerID {
 		return
@@ -1125,12 +1155,14 @@ func (c *chatApp) onEvent(eventType int32, detailJSON string) {
 
 	switch eventType {
 	case mesh.EventPeerJoined:
+		c.tracef("event: peer-joined peer=%s addr=%s", formatPeer(detail.Peer), detail.Addr)
 		c.rememberPeerName(detail.Peer, "")
 		go func() {
 			time.Sleep(200 * time.Millisecond)
 			c.broadcastPresence()
 		}()
 	case mesh.EventPeerLeft:
+		c.tracef("event: peer-left peer=%s addr=%s", formatPeer(detail.Peer), detail.Addr)
 		name := c.displayNameForPeer(detail.Peer)
 		c.mu.Lock()
 		delete(c.presenceSeen, detail.Peer)
@@ -1142,6 +1174,7 @@ func (c *chatApp) onEvent(eventType int32, detailJSON string) {
 	case mesh.EventSupernodeRevoked:
 		c.systemMessage("Local node is no longer relay-capable (" + detail.NATType + ").")
 	case mesh.EventTrackerAnnounce:
+		c.tracef("event: tracker-announce candidates=%d connected=%d", detail.CandidatePeers, detail.ConnectedPeers)
 		c.mu.RLock()
 		debug := c.debug
 		c.mu.RUnlock()
@@ -1154,10 +1187,12 @@ func (c *chatApp) onEvent(eventType int32, detailJSON string) {
 			detail.ConnectedPeers,
 		))
 	case mesh.EventTrackerFailure:
+		c.tracef("event: tracker-failure error=%s", detail.Error)
 		c.systemMessage("Tracker error: " + detail.Error)
 	case mesh.EventRelayMigrated:
 		c.systemMessage(fmt.Sprintf("Relay session %s migrated to direct peer %s.", detail.Session, formatPeer(detail.Peer)))
 	default:
+		c.tracef("event: type=%d detail=%s", eventType, detailJSON)
 		c.systemMessage(fmt.Sprintf("event %d: %s", eventType, detailJSON))
 	}
 }
@@ -1210,6 +1245,7 @@ func (c *chatApp) updateRoomLineLocked(room, regionID, text string) {
 }
 
 func (c *chatApp) systemMessage(line string) {
+	c.tracef("system: %s", line)
 	c.appendLine(systemRoom, fmt.Sprintf("[%s] system: %s", time.Now().Format("15:04:05"), line))
 }
 
@@ -1259,6 +1295,7 @@ func (c *chatApp) setPeerRooms(peerID string, rooms []string) {
 }
 
 func (c *chatApp) broadcastPresence() {
+	c.tracef("presence: publish rooms=%v", c.subscribedRooms())
 	payload, _ := json.Marshal(chatPayload{
 		Kind:   "presence",
 		Nick:   c.nickname,
@@ -1270,6 +1307,16 @@ func (c *chatApp) broadcastPresence() {
 		return
 	}
 	c.systemMessage(fmt.Sprintf("Presence publish failed with code %d.", code))
+}
+
+func (c *chatApp) tracef(format string, args ...any) {
+	if c.logFile == nil {
+		return
+	}
+	line := fmt.Sprintf("[%s] %s\n", time.Now().Format("2006-01-02 15:04:05.000"), fmt.Sprintf(format, args...))
+	c.logMu.Lock()
+	defer c.logMu.Unlock()
+	_, _ = io.WriteString(c.logFile, line)
 }
 
 func (c *chatApp) ensureRoom(room string, subscribed bool) {
