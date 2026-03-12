@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rivo/tview"
 	"moss/internal/mesh"
 )
 
@@ -162,18 +161,12 @@ func (c *chatApp) ensureDirectCallRoom(room, peerName string) error {
 }
 
 func (c *chatApp) showIncomingCallModal(peerName string) {
-	modal := tview.NewModal().
-		SetText("Incoming call from " + peerName).
-		AddButtons([]string{"Answer", "Decline"}).
-		SetDoneFunc(func(buttonIndex int, buttonLabel string) {
-			c.closeModal("incoming-call")
-			switch buttonLabel {
-			case "Answer":
-				_ = c.answerCall()
-			case "Decline":
-				_ = c.declineCall()
-			}
-		})
-	modal.SetTitle(" Call ").SetBorder(true)
-	c.showModal("incoming-call", modal)
+	c.showChoiceModal("incoming-call", "Incoming call from "+peerName, []string{"Answer", "Decline"}, func(buttonLabel string) {
+		switch buttonLabel {
+		case "Answer":
+			_ = c.answerCall()
+		case "Decline":
+			_ = c.declineCall()
+		}
+	})
 }
