@@ -602,21 +602,49 @@ func (c *chatApp) showInputModal(title, label, initial string, submit func(strin
 
 func (c *chatApp) showChoiceModal(title, body string, buttons []string, onSelect func(label string)) {
 	form := tview.NewForm()
+	form.AddTextView("body", body, 0, 0, false, false)
+	runChoice := func(label string) {
+		c.closeModal(title)
+		if onSelect != nil {
+			onSelect(label)
+		}
+	}
 	for _, label := range buttons {
 		buttonLabel := label
 		form.AddButton(buttonLabel, func() {
-			c.closeModal(title)
-			if onSelect != nil {
-				onSelect(buttonLabel)
-			}
+			runChoice(buttonLabel)
 		})
 	}
-	form.AddTextView("body", body, 0, 0, false, false)
 	form.SetBorder(true).SetTitle(" " + title + " ")
 	form.SetButtonsAlign(tview.AlignCenter)
 	form.SetCancelFunc(func() {
 		c.closeModal(title)
 	})
+	form.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		switch event.Key() {
+		case tcell.KeyEscape:
+			c.closeModal(title)
+			return nil
+		}
+		switch strings.ToLower(string(event.Rune())) {
+		case "y":
+			if len(buttons) > 0 {
+				runChoice(buttons[0])
+				return nil
+			}
+		case "n":
+			if len(buttons) > 1 {
+				runChoice(buttons[1])
+				return nil
+			}
+			c.closeModal(title)
+			return nil
+		}
+		return event
+	})
+	if len(buttons) > 0 {
+		form.SetFocus(1)
+	}
 	modal := centered(68, 11, form)
 	c.showModal(title, modal)
 	c.ui.SetFocus(form)
