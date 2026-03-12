@@ -164,6 +164,10 @@ impl MossLibrary {
         Ok(())
     }
 
+    pub fn is_no_peers_error(message: &str) -> bool {
+        message.contains("no peers")
+    }
+
     pub fn set_callbacks(&self, handle: MossHandle) -> Result<(), String> {
         let code = unsafe { (self.set_callback)(handle, Some(moss_message_callback)) };
         if code != 0 {
@@ -359,10 +363,11 @@ fn error_message(code: i32) -> &'static str {
         -3 => "not started",
         -4 => "invalid channel",
         -5 => "message too large",
-        -6 => "publish failed",
-        -7 => "subscribe failed",
+        -6 => "no peers",
+        -7 => "tracker failure",
         -8 => "config invalid",
-        -9 => "connect failed",
+        -9 => "out of memory",
+        -10 => "connect failed",
         _ => "unknown error",
     }
 }
