@@ -65,7 +65,21 @@ func TestSelectAdvertiseHostForInterfacesSkipsVirtualOverlays(t *testing.T) {
 }
 
 func TestVirtualOverlayInterfaceNames(t *testing.T) {
-	for _, name := range []string{"ZeroTier One", "Tailscale", "WireGuard Tunnel", "Wintun Userspace Tunnel", "utun7", "wg0", "tun0", "tap1"} {
+	for _, name := range []string{
+		"ZeroTier One",
+		"Tailscale",
+		"WireGuard Tunnel",
+		"Wintun Userspace Tunnel",
+		"Radmin VPN",
+		"OpenVPN Connect",
+		"vEthernet (WSL)",
+		"VirtualBox Host-Only Ethernet Adapter",
+		"VMware Network Adapter",
+		"utun7",
+		"wg0",
+		"tun0",
+		"tap1",
+	} {
 		if !isVirtualOverlayInterfaceName(name) {
 			t.Fatalf("expected %q to be treated as virtual overlay interface", name)
 		}
