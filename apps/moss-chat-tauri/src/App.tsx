@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ActionDeck } from './components/ActionDeck'
 import { ChatHeader } from './components/ChatHeader'
@@ -163,32 +163,25 @@ export function App() {
   const trackerModeValue = trackerModeDraft ?? settings.trackerMode
   const lanDiscoveryValue = lanDiscoveryDraft ?? settings.lanDiscoveryEnabled
 
-  const filteredRooms = useMemo(() => {
+  const filteredRooms = (() => {
     const needle = roomSearch.trim().toLowerCase()
     if (!needle) {
       return rooms
     }
     return rooms.filter((room) => room.label.toLowerCase().includes(needle))
-  }, [roomSearch, rooms])
+  })()
 
   const activeRoom =
     rooms.find((room) => room.id === selectedRoomId) ??
     rooms.find((room) => room.id === settings.initialRoom) ??
     rooms[0]
 
-  const visibleMessages = useMemo(
-    () => data.messages.filter((message) => message.roomId === activeRoom.id),
-    [activeRoom.id, data.messages],
-  )
+  const visibleMessages = data.messages.filter((message) => message.roomId === activeRoom.id)
 
-  const visiblePeers = useMemo(
-    () =>
-      data.peers.filter((peer) =>
-        activeRoom.kind === 'system'
-          ? true
-          : peer.rooms.includes(activeRoom.label) || peer.rooms.includes(`#${activeRoom.id}`),
-      ),
-    [activeRoom.id, activeRoom.kind, activeRoom.label, data.peers],
+  const visiblePeers = data.peers.filter((peer) =>
+    activeRoom.kind === 'system'
+      ? true
+      : peer.rooms.includes(activeRoom.label) || peer.rooms.includes(`#${activeRoom.id}`),
   )
 
   async function applyAndStartRuntime() {
