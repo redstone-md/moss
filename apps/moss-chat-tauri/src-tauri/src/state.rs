@@ -92,6 +92,51 @@ impl DesktopShellState {
         Ok(self.snapshot())
     }
 
+    pub fn subscribe_room(&mut self, room: &str) -> Result<DesktopSnapshot, String> {
+        let handle = self
+            .handle
+            .ok_or_else(|| "runtime is offline; start it first".to_string())?;
+        let library = self
+            .library
+            .as_ref()
+            .ok_or_else(|| "shared library is not loaded".to_string())?;
+        library.subscribe(handle, room)?;
+        if let Ok(mut callbacks) = shared_callback_state().lock() {
+            callbacks.note_runtime(format!("Subscribed desktop runtime to #{room}."));
+        }
+        Ok(self.snapshot())
+    }
+
+    pub fn connect_peer(&mut self, addr: &str) -> Result<DesktopSnapshot, String> {
+        let handle = self
+            .handle
+            .ok_or_else(|| "runtime is offline; start it first".to_string())?;
+        let library = self
+            .library
+            .as_ref()
+            .ok_or_else(|| "shared library is not loaded".to_string())?;
+        library.connect(handle, addr)?;
+        if let Ok(mut callbacks) = shared_callback_state().lock() {
+            callbacks.note_runtime(format!("Attempting direct connect to {addr}."));
+        }
+        Ok(self.snapshot())
+    }
+
+    pub fn publish_message(&mut self, room: &str, body: &str) -> Result<DesktopSnapshot, String> {
+        let handle = self
+            .handle
+            .ok_or_else(|| "runtime is offline; start it first".to_string())?;
+        let library = self
+            .library
+            .as_ref()
+            .ok_or_else(|| "shared library is not loaded".to_string())?;
+        library.publish(handle, room, body.as_bytes())?;
+        if let Ok(mut callbacks) = shared_callback_state().lock() {
+            callbacks.note_runtime(format!("Published desktop message to #{room}."));
+        }
+        Ok(self.snapshot())
+    }
+
     fn online_shell(
         &self,
         mesh: MeshInfo,

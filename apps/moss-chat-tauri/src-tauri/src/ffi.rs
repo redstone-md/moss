@@ -17,6 +17,8 @@ type MossInit = unsafe extern "C" fn(*const c_char, *const u8, *const c_char) ->
 type MossStart = unsafe extern "C" fn(MossHandle) -> i32;
 type MossStop = unsafe extern "C" fn(MossHandle) -> i32;
 type MossSubscribe = unsafe extern "C" fn(MossHandle, *const c_char) -> i32;
+type MossConnect = unsafe extern "C" fn(MossHandle, *const c_char) -> i32;
+type MossPublish = unsafe extern "C" fn(MossHandle, *const c_char, *const u8, u32) -> i32;
 type MossSetCallback = unsafe extern "C" fn(MossHandle, Option<MossMessageCallback>) -> i32;
 type MossSetEventCallback = unsafe extern "C" fn(MossHandle, Option<MossEventCallback>) -> i32;
 type MossGetMeshInfo = unsafe extern "C" fn(MossHandle) -> *mut c_char;
@@ -43,6 +45,8 @@ pub struct MossLibrary {
     start: MossStart,
     stop: MossStop,
     subscribe: MossSubscribe,
+    connect: MossConnect,
+    publish: MossPublish,
     set_callback: MossSetCallback,
     set_event_callback: MossSetEventCallback,
     get_mesh_info: MossGetMeshInfo,
@@ -108,6 +112,32 @@ impl MossLibrary {
         Ok(())
     }
 
+    pub fn connect(&self, handle: MossHandle, addr: &str) -> Result<(), String> {
+        let addr = CString::new(addr).map_err(|_| "peer address contains NUL byte".to_string())?;
+        let code = unsafe { (self.connect)(handle, addr.as_ptr()) };
+        if code != 0 {
+            return Err(format!("Moss_Connect failed: {}", error_message(code)));
+        }
+        Ok(())
+    }
+
+    pub fn publish(&self, handle: MossHandle, channel: &str, payload: &[u8]) -> Result<(), String> {
+        let channel =
+            CString::new(channel).map_err(|_| "channel contains NUL byte".to_string())?;
+        let code = unsafe {
+            (self.publish)(
+                handle,
+                channel.as_ptr(),
+                payload.as_ptr(),
+                payload.len() as u32,
+            )
+        };
+        if code != 0 {
+            return Err(format!("Moss_Publish failed: {}", error_message(code)));
+        }
+        Ok(())
+    }
+
     pub fn set_callbacks(&self, handle: MossHandle) -> Result<(), String> {
         let code = unsafe { (self.set_callback)(handle, Some(moss_message_callback)) };
         if code != 0 {
@@ -167,6 +197,12 @@ impl MossLibrary {
         let subscribe = *lib
             .get::<MossSubscribe>(b"Moss_Subscribe\0")
             .map_err(|err| format!("missing Moss_Subscribe: {err}"))?;
+        let connect = *lib
+            .get::<MossConnect>(b"Moss_Connect\0")
+            .map_err(|err| format!("missing Moss_Connect: {err}"))?;
+        let publish = *lib
+            .get::<MossPublish>(b"Moss_Publish\0")
+            .map_err(|err| format!("missing Moss_Publish: {err}"))?;
         let set_callback = *lib
             .get::<MossSetCallback>(b"Moss_SetCallback\0")
             .map_err(|err| format!("missing Moss_SetCallback: {err}"))?;
@@ -189,6 +225,8 @@ impl MossLibrary {
             start,
             stop,
             subscribe,
+            connect,
+            publish,
             set_callback,
             set_event_callback,
             get_mesh_info,

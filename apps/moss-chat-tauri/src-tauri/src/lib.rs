@@ -9,7 +9,10 @@ pub fn run() {
         .manage(state::SharedDesktopState::new(state::DesktopShellState::new()))
         .invoke_handler(tauri::generate_handler![
             commands::desktop_snapshot,
-            commands::toggle_runtime
+            commands::toggle_runtime,
+            commands::subscribe_room,
+            commands::connect_peer,
+            commands::publish_message
         ])
         .run(tauri::generate_context!())
         .expect("failed to run moss chat dev app");

@@ -3,9 +3,22 @@ import type { Message, RoomSummary } from '../lib/schemas'
 type MessagePanelProps = {
   room: RoomSummary | undefined
   messages: Message[]
+  draft: string
+  onDraftChange: (value: string) => void
+  onSend: () => void
+  isSending: boolean
+  errorNote?: string
 }
 
-export function MessagePanel({ room, messages }: MessagePanelProps) {
+export function MessagePanel({
+  room,
+  messages,
+  draft,
+  onDraftChange,
+  onSend,
+  isSending,
+  errorNote,
+}: MessagePanelProps) {
   return (
     <section className="panel message-panel">
       <div className="panel-header">
@@ -28,16 +41,21 @@ export function MessagePanel({ room, messages }: MessagePanelProps) {
       <div className="composer-shell">
         <div>
           <p className="eyebrow">Composer</p>
-          <h3>Desktop input path is next</h3>
-          <p>
-            This shell already has room and peer context. The next iteration wires
-            the shared runtime so compose, subscribe, and publish become live.
-          </p>
+          <h3>Live publish path</h3>
+          <p>Compose into the selected room and publish through the shared runtime.</p>
         </div>
-        <button className="secondary-action" type="button">
-          Draft composer disabled
-        </button>
+        <div className="composer-form">
+          <textarea
+            value={draft}
+            onChange={(event) => onDraftChange(event.target.value)}
+            placeholder={`Write to ${room?.label ?? '#room'}`}
+          />
+          <button className="secondary-action" onClick={onSend} type="button">
+            {isSending ? 'Sending...' : 'Send'}
+          </button>
+        </div>
       </div>
+      {errorNote ? <p className="runtime-error">{errorNote}</p> : null}
     </section>
   )
 }
