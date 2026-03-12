@@ -1734,11 +1734,25 @@ func (n *Node) supernodeReady(profile nat.Profile) bool {
 	if n.config.NAT.RelayMaxSessions > 0 && n.relaySessions.Count() >= n.config.NAT.RelayMaxSessions {
 		return false
 	}
+	switch profile.Type {
+	case nat.TypePublic, nat.TypeFullCone:
+	default:
+		return false
+	}
 	return nat.ShouldPromote(profile, time.Since(n.startedAt), n.config.NAT.RelayMaxBandwidthKBPS, 1.0, nat.PromotionPolicy{
 		MinUptime:          time.Duration(n.config.NAT.SuperNodeMinUptimeSec) * time.Second,
 		MinBandwidthKBytes: n.config.NAT.RelayMaxBandwidthKBPS,
 		MinScore:           1.0,
 	})
+}
+
+func (n *Node) ChannelSubscribers(channel string) []string {
+	if !validChannel(channel) {
+		return nil
+	}
+	subscribers := n.pubsub.Subscribers(channel)
+	sort.Strings(subscribers)
+	return subscribers
 }
 
 func (n *Node) refreshSupernodeStatus() {

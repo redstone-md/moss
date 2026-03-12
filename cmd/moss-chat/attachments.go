@@ -18,7 +18,8 @@ import (
 )
 
 const (
-	attachmentChunkSize = 24 * 1024
+	// Keep chunks small enough to survive the UDP transport path without relying on IP fragmentation.
+	attachmentChunkSize = 512
 	maxAttachmentBytes  = 8 * 1024 * 1024
 )
 
