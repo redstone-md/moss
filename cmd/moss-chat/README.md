@@ -32,6 +32,12 @@ Optional flags:
 - `--no-sound` to disable desktop and beep notifications
 - `--downloads-dir PATH` to override where attachments are stored
 
+Attachments are interactive:
+
+- `F7` or `/attach PATH` asks for confirmation before broadcasting a file
+- receivers click the attachment line in the chat and confirm the download before choosing where to save it
+- transfer progress is shown inline in the room
+
 Second peer:
 
 ```bash

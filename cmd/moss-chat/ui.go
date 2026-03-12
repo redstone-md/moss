@@ -36,8 +36,13 @@ type roomState struct {
 	name       string
 	title      string
 	subscribed bool
-	lines      []string
+	lines      []chatLine
 	unread     int
+}
+
+type chatLine struct {
+	Text     string
+	RegionID string
 }
 
 type chatPayload struct {
@@ -120,6 +125,7 @@ type chatApp struct {
 	peerNames    map[string]string
 	callState    callState
 	incoming     map[string]*incomingAttachment
+	outgoing     map[string]*outgoingAttachment
 	currentRoom  string
 	info         runtimeInfo
 	refreshCh    chan struct{}
@@ -149,6 +155,7 @@ func newChatApp(cfg chatConfig) *chatApp {
 		currentRoom: defaultRoom,
 		peerNames:   make(map[string]string),
 		incoming:    make(map[string]*incomingAttachment),
+		outgoing:    make(map[string]*outgoingAttachment),
 		refreshCh:   make(chan struct{}, 1),
 	}
 	app.peerNames[cfg.localPeerID] = cfg.nickname
@@ -277,11 +284,25 @@ func (c *chatApp) buildUI() {
 
 	c.messages = tview.NewTextView().
 		SetDynamicColors(false).
+		SetRegions(true).
 		SetScrollable(true).
 		SetWrap(true)
+	c.messages.SetHighlightedFunc(func(added, removed, remaining []string) {
+		if len(added) == 0 {
+			return
+		}
+		c.handleMessageRegion(added[0])
+	})
 	c.messages.SetBorder(true).SetTitle(" Messages ")
 	c.messages.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		switch event.Key() {
+		case tcell.KeyEnter:
+			highlights := c.messages.GetHighlights()
+			if len(highlights) == 0 {
+				return event
+			}
+			c.handleMessageRegion(highlights[0])
+			return nil
 		case tcell.KeyPgUp:
 			row, col := c.messages.GetScrollOffset()
 			if row >= 10 {
@@ -439,6 +460,7 @@ func (c *chatApp) showHelpModal() {
 		"F8: connect to HOST:PORT",
 		"F9: toggle debug events",
 		"F10: place a call",
+		"Click attachment lines (or focus them and press Enter) to confirm downloads",
 		"Tab / Shift-Tab: switch focus",
 		"Ctrl-L: jump to composer",
 		"/join ROOM, /leave, /goto ROOM, /msg TARGET [TEXT], /attach PATH, /call TARGET, /answer, /decline, /hangup, /peers, /net, /status",
@@ -946,9 +968,9 @@ func (c *chatApp) onEvent(eventType int32, detailJSON string) {
 	switch eventType {
 	case mesh.EventPeerJoined:
 		c.rememberPeerName(detail.Peer, "")
-		c.systemMessage(fmt.Sprintf("Peer joined: %s @ %s", formatPeer(detail.Peer), detail.Addr))
+		c.lobbyMessage(fmt.Sprintf("Peer joined: %s @ %s", formatPeer(detail.Peer), detail.Addr))
 	case mesh.EventPeerLeft:
-		c.systemMessage("Peer left: " + formatPeer(detail.Peer))
+		c.lobbyMessage("Peer left: " + formatPeer(detail.Peer))
 	case mesh.EventSupernodePromoted:
 		c.systemMessage("Local node became relay-capable (" + detail.NATType + ").")
 	case mesh.EventSupernodeRevoked:
@@ -975,6 +997,14 @@ func (c *chatApp) onEvent(eventType int32, detailJSON string) {
 }
 
 func (c *chatApp) appendLine(room, line string) {
+	c.appendRoomLine(room, chatLine{Text: line})
+}
+
+func (c *chatApp) appendActionLine(room, regionID, line string) {
+	c.appendRoomLine(room, chatLine{Text: line, RegionID: regionID})
+}
+
+func (c *chatApp) appendRoomLine(room string, line chatLine) {
 	c.mu.Lock()
 	state, ok := c.roomByName[room]
 	if !ok {
@@ -993,8 +1023,34 @@ func (c *chatApp) appendLine(room, line string) {
 	c.queueRefresh()
 }
 
+func (c *chatApp) updateRoomLine(room, regionID, text string) {
+	c.mu.Lock()
+	c.updateRoomLineLocked(room, regionID, text)
+	c.mu.Unlock()
+	c.queueRefresh()
+}
+
+func (c *chatApp) updateRoomLineLocked(room, regionID, text string) {
+	state, ok := c.roomByName[room]
+	if !ok {
+		return
+	}
+	for index := range state.lines {
+		if state.lines[index].RegionID == regionID {
+			state.lines[index].Text = text
+			return
+		}
+	}
+}
+
 func (c *chatApp) systemMessage(line string) {
 	c.appendLine(systemRoom, fmt.Sprintf("[%s] system: %s", time.Now().Format("15:04:05"), line))
+}
+
+func (c *chatApp) lobbyMessage(line string) {
+	c.ensureRoom(defaultRoom, true)
+	formatted := fmt.Sprintf("[%s] system: %s", time.Now().Format("15:04:05"), line)
+	c.appendLine(defaultRoom, formatted)
 }
 
 func (c *chatApp) rememberPeerName(peerID, name string) {
@@ -1273,7 +1329,7 @@ func (c *chatApp) refresh() {
 
 	lines := "No messages yet."
 	if currentState != nil && len(currentState.lines) > 0 {
-		lines = strings.Join(currentState.lines, "\n")
+		lines = renderRoomLines(currentState.lines)
 	}
 	c.messages.SetText(lines)
 	c.messages.ScrollToEnd()
@@ -1290,6 +1346,35 @@ func (c *chatApp) refresh() {
 		callLabel,
 		emptyFallback(info.AdvertisedAddr, net.JoinHostPort("127.0.0.1", strconv.Itoa(info.ListenPort))),
 	))
+}
+
+func (c *chatApp) handleMessageRegion(regionID string) {
+	if strings.HasPrefix(regionID, "in-") {
+		c.showIncomingAttachmentModal(strings.TrimPrefix(regionID, "in-"))
+	}
+}
+
+func renderRoomLines(lines []chatLine) string {
+	if len(lines) == 0 {
+		return "No messages yet."
+	}
+	var builder strings.Builder
+	for index, line := range lines {
+		text := tview.Escape(line.Text)
+		if line.RegionID != "" {
+			builder.WriteString(`["`)
+			builder.WriteString(line.RegionID)
+			builder.WriteString(`"]`)
+			builder.WriteString(text)
+			builder.WriteString(`[""]`)
+		} else {
+			builder.WriteString(text)
+		}
+		if index != len(lines)-1 {
+			builder.WriteByte('\n')
+		}
+	}
+	return builder.String()
 }
 
 func formatPeer(peerID string) string {
