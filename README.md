@@ -9,6 +9,7 @@ Moss is an embeddable P2P mesh core written in Go and exported through CGO as a 
 - topic-based pub/sub routing with GRAFT/PRUNE control messages, BLAKE2s message IDs, and peer scoring
 - NAT profiling, relay rate limiting primitives, and supernode eligibility checks
 - C FFI surface with examples for C, C++, Python (`ctypes`), and Rust
+- native single-binary terminal chat in `cmd/moss-chat`
 - unit, integration, and shared-library smoke tests
 
 API reference: [docs/API.md](docs/API.md)
@@ -17,6 +18,7 @@ API reference: [docs/API.md](docs/API.md)
 
 ```text
 cmd/moss-ffi/              CGO shared library entrypoint
+cmd/moss-chat/             Native single-binary TUI chat
 internal/bootstrap/        tracker clients and infohash generation
 internal/transport/        encrypted sessions and handshake
 internal/gossip/           pubsub cache, scoring, envelopes
