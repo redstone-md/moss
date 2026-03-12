@@ -1,13 +1,28 @@
-import { useQuery } from '@tanstack/react-query'
+import { useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { ActionDeck } from './components/ActionDeck'
 import { ArtifactList } from './components/ArtifactList'
+import { MessagePanel } from './components/MessagePanel'
 import { MilestoneList } from './components/MilestoneList'
-import { StatusCard } from './components/StatusCard'
+import { PeerPanel } from './components/PeerPanel'
+import { RoomList } from './components/RoomList'
+import { RuntimePanel } from './components/RuntimePanel'
 import { desktopStatusClient } from './lib/desktopStatusClient'
 
 export function App() {
+  const [selectedRoomId, setSelectedRoomId] = useState('lobby')
+  const queryClient = useQueryClient()
+
   const snapshot = useQuery({
     queryKey: ['desktop-snapshot'],
     queryFn: () => desktopStatusClient.getSnapshot(),
+  })
+
+  const toggleRuntime = useMutation({
+    mutationFn: () => desktopStatusClient.toggleRuntime(),
+    onSuccess: (data) => {
+      queryClient.setQueryData(['desktop-snapshot'], data)
+    },
   })
 
   if (snapshot.isPending) {
@@ -27,52 +42,48 @@ export function App() {
   }
 
   const data = snapshot.data
+  const activeRoom =
+    data.rooms.find((room) => room.id === selectedRoomId) ?? data.rooms[0]
+  const visibleMessages = data.messages.filter(
+    (message) => message.roomId === activeRoom.id,
+  )
+  const visiblePeers = data.peers.filter((peer) =>
+    peer.rooms.includes(activeRoom.label),
+  )
 
   return (
-    <main className="shell">
-      <section className="hero">
-        <div>
-          <p className="eyebrow">Moss Chat Tauri</p>
-          <h1>Desktop shell on the dev branch</h1>
-          <p className="hero-copy">{data.summary}</p>
-        </div>
-        <div className="hero-actions">
-          <button className="primary-action" onClick={() => snapshot.refetch()}>
-            Refresh snapshot
-          </button>
-          <div className="hero-meta">
-            <span>{data.appName}</span>
-            <span>{data.version}</span>
-            <span>{data.branch}</span>
-          </div>
-        </div>
+    <main className="shell shell-chat">
+      <RuntimePanel
+        state={data.runtime.state}
+        summary={data.runtime.summary}
+        route={data.runtime.route}
+        natHint={data.runtime.natHint}
+        sharedBridge={data.runtime.sharedBridge}
+        onToggle={() => toggleRuntime.mutate()}
+        isBusy={toggleRuntime.isPending}
+      />
+
+      <section className="chat-grid">
+        <RoomList
+          rooms={data.rooms}
+          selectedRoomId={activeRoom.id}
+          onSelect={setSelectedRoomId}
+        />
+        <MessagePanel room={activeRoom} messages={visibleMessages} />
+        <PeerPanel peers={visiblePeers} />
       </section>
 
-      <section className="status-grid">
-        <StatusCard
-          eyebrow="Stage"
-          title="Migration state"
-          value={data.stage}
-          detail="Desktop app scaffold is separate from the current terminal chat and ready for iterative integration."
+      <section className="content-grid">
+        <ActionDeck
+          appName={data.appName}
+          version={data.version}
+          branch={data.branch}
+          stage={data.stage}
         />
-        <StatusCard
-          eyebrow="Shared integration"
-          title="Bridge strategy"
-          value="Embedded backend bridge"
-          detail={data.sharedStrategy}
-        />
-        <StatusCard
-          eyebrow="Branch policy"
-          title="Release track"
-          value="dev-only"
-          detail="This app builds on dev workflows first, without destabilizing main branch binaries."
-        />
-      </section>
-
-      <div className="content-grid">
         <ArtifactList artifacts={data.artifacts} />
-        <MilestoneList milestones={data.milestones} />
-      </div>
+      </section>
+
+      <MilestoneList milestones={data.milestones} />
     </main>
   )
 }
