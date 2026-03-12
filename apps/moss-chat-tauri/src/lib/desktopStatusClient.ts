@@ -2,11 +2,13 @@ import { invoke } from '@tauri-apps/api/core'
 import {
   connectPeerInputSchema,
   desktopSnapshotSchema,
+  openDirectRoomInputSchema,
   publishMessageInputSchema,
   subscribeRoomInputSchema,
   updateRuntimeSettingsInputSchema,
   type ConnectPeerInput,
   type DesktopSnapshot,
+  type OpenDirectRoomInput,
   type PublishMessageInput,
   type SubscribeRoomInput,
   type UpdateRuntimeSettingsInput,
@@ -59,6 +61,16 @@ export class DesktopStatusClient {
     const result = desktopSnapshotSchema.safeParse(payload)
     if (!result.success) {
       throw new Error(`Invalid connect payload: ${result.error.message}`)
+    }
+    return result.data
+  }
+
+  async openDirectRoom(input: OpenDirectRoomInput): Promise<DesktopSnapshot> {
+    const parsed = openDirectRoomInputSchema.parse(input)
+    const payload = await invoke('open_direct_room', parsed)
+    const result = desktopSnapshotSchema.safeParse(payload)
+    if (!result.success) {
+      throw new Error(`Invalid direct-room payload: ${result.error.message}`)
     }
     return result.data
   }

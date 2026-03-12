@@ -2,6 +2,7 @@ use std::sync::Mutex;
 
 use crate::{
     callback_state::shared_callback_state,
+    chat_protocol::{direct_room_name, ChatPayload, CONTROL_ROOM},
     ffi::{MeshInfo, MossLibrary},
     models::DesktopSnapshot,
     runtime_settings::{DesktopRuntimeConfig, RuntimeSettingsInput},
@@ -94,7 +95,10 @@ impl DesktopShellState {
         let handle = library.init_handle(self.settings.mesh_id(), &config_json)?;
         library.set_callbacks(handle)?;
         library.start(handle)?;
+        library.subscribe(handle, CONTROL_ROOM)?;
         library.subscribe(handle, self.settings.initial_room())?;
+        self.configure_live_chat_identity(library, handle)?;
+        self.publish_presence(library, handle)?;
         if let Some(startup_peer) = self.settings.startup_peer() {
             if let Err(err) = library.connect(handle, startup_peer) {
                 if let Ok(mut callbacks) = shared_callback_state().lock() {
@@ -112,6 +116,7 @@ impl DesktopShellState {
         &mut self,
         input: RuntimeSettingsInput,
     ) -> Result<DesktopSnapshot, String> {
+        let previous_nickname = self.settings.nickname().to_string();
         self.settings.apply(input)?;
         if let Ok(mut callbacks) = shared_callback_state().lock() {
             if self.handle.is_some() {
@@ -120,6 +125,14 @@ impl DesktopShellState {
                 );
             } else {
                 callbacks.note_runtime("Updated desktop runtime settings.");
+            }
+        }
+        if self.handle.is_some() && previous_nickname != self.settings.nickname() {
+            if let Some(handle) = self.handle {
+                if let Some(library) = self.library.as_ref() {
+                    let _ = self.configure_live_chat_identity(library, handle);
+                    let _ = self.publish_presence(library, handle);
+                }
             }
         }
         Ok(self.snapshot())
@@ -134,6 +147,10 @@ impl DesktopShellState {
             .as_ref()
             .ok_or_else(|| "shared library is not loaded".to_string())?;
         library.subscribe(handle, room)?;
+        if let Ok(mut callbacks) = shared_callback_state().lock() {
+            callbacks.record_subscribed_room(room);
+        }
+        self.publish_presence(library, handle)?;
         if let Ok(mut callbacks) = shared_callback_state().lock() {
             callbacks.note_runtime(format!("Subscribed desktop runtime to #{room}."));
         }
@@ -163,9 +180,53 @@ impl DesktopShellState {
             .library
             .as_ref()
             .ok_or_else(|| "shared library is not loaded".to_string())?;
-        library.publish(handle, room, body.as_bytes())?;
+        let payload = serde_json::to_vec(&ChatPayload::room_message(self.settings.nickname(), body))
+            .map_err(|err| format!("failed to encode room message: {err}"))?;
+        library.publish(handle, room, &payload)?;
         if let Ok(mut callbacks) = shared_callback_state().lock() {
             callbacks.note_runtime(format!("Published desktop message to #{room}."));
+        }
+        Ok(self.snapshot())
+    }
+
+    pub fn open_direct_room(&mut self, target: &str) -> Result<DesktopSnapshot, String> {
+        let handle = self
+            .handle
+            .ok_or_else(|| "runtime is offline; start it first".to_string())?;
+        let library = self
+            .library
+            .as_ref()
+            .ok_or_else(|| "shared library is not loaded".to_string())?;
+
+        let (target_peer, target_label) = {
+            let callback_state = shared_callback_state();
+            let state = callback_state
+                .lock()
+                .map_err(|_| "callback state lock poisoned".to_string())?;
+            state
+                .resolve_peer_target(target)
+                .ok_or_else(|| format!("peer {target:?} not found; wait for presence or use connect"))?
+        };
+
+        let mesh = self
+            .live_mesh_info()?
+            .ok_or_else(|| "runtime mesh info unavailable".to_string())?;
+        let room = direct_room_name(&mesh.public_key, &target_peer);
+        library.subscribe(handle, &room)?;
+        if let Ok(mut callbacks) = shared_callback_state().lock() {
+            callbacks.record_subscribed_room(&room);
+        }
+
+        let invite = serde_json::to_vec(&ChatPayload::dm_invite(
+            self.settings.nickname(),
+            &room,
+            &target_peer,
+        ))
+        .map_err(|err| format!("failed to encode direct chat invite: {err}"))?;
+        library.publish(handle, CONTROL_ROOM, &invite)?;
+        self.publish_presence(library, handle)?;
+        if let Ok(mut callbacks) = shared_callback_state().lock() {
+            callbacks.note_runtime(format!("Direct chat opened with {target_label}."));
         }
         Ok(self.snapshot())
     }
@@ -214,6 +275,38 @@ impl DesktopShellState {
             .as_ref()
             .map(|library| library.path_display())
             .unwrap_or_else(|| "not loaded".to_string())
+    }
+
+    fn configure_live_chat_identity(
+        &self,
+        library: &MossLibrary,
+        handle: i64,
+    ) -> Result<(), String> {
+        let mesh = library.mesh_info(handle)?;
+        let callback_state = shared_callback_state();
+        let mut callbacks = callback_state
+            .lock()
+            .map_err(|_| "callback state lock poisoned".to_string())?;
+        callbacks.configure_local_profile(
+            mesh.public_key,
+            self.settings.nickname().to_string(),
+            &[self.settings.initial_room().to_string()],
+        );
+        Ok(())
+    }
+
+    fn publish_presence(&self, library: &MossLibrary, handle: i64) -> Result<(), String> {
+        let rooms = {
+            let callback_state = shared_callback_state();
+            let callbacks = callback_state
+                .lock()
+                .map_err(|_| "callback state lock poisoned".to_string())?;
+            callbacks.subscribed_rooms()
+        };
+        let payload = serde_json::to_vec(&ChatPayload::presence(self.settings.nickname(), &rooms))
+            .map_err(|err| format!("failed to encode presence payload: {err}"))?;
+        library.publish(handle, CONTROL_ROOM, &payload)?;
+        Ok(())
     }
 }
 

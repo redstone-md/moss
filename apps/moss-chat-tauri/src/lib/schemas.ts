@@ -41,6 +41,7 @@ export const peerSummarySchema = z.object({
 })
 
 export const runtimeSettingsSchema = z.object({
+  nickname: z.string().min(1),
   meshId: z.string().min(1),
   listenPort: z.number().int().min(0).max(65535),
   initialRoom: z.string().min(1),
@@ -51,6 +52,7 @@ export const runtimeSettingsSchema = z.object({
 })
 
 export const runtimeDiagnosticsSchema = z.object({
+  configuredNickname: z.string().min(1),
   configuredMeshId: z.string().min(1),
   configuredListenPort: z.string().min(1),
   initialRoom: z.string().min(1),
@@ -66,6 +68,13 @@ export const runtimeDiagnosticsSchema = z.object({
 })
 
 export const updateRuntimeSettingsInputSchema = z.object({
+  nickname: z
+    .string()
+    .trim()
+    .min(1)
+    .max(64)
+    .regex(/^[a-zA-Z0-9._-]+$/, 'Use letters, numbers, dot, dash, or underscore')
+    .transform((value) => value.toLowerCase()),
   meshId: z
     .string()
     .trim()
@@ -103,6 +112,10 @@ export const connectPeerInputSchema = z.object({
     .trim()
     .min(3)
     .regex(/^[^:\s]+:\d+$/, 'Use HOST:PORT'),
+})
+
+export const openDirectRoomInputSchema = z.object({
+  target: z.string().trim().min(1).max(128),
 })
 
 export const publishMessageInputSchema = z.object({
@@ -145,4 +158,5 @@ export type DesktopSnapshot = z.infer<typeof desktopSnapshotSchema>
 export type UpdateRuntimeSettingsInput = z.infer<typeof updateRuntimeSettingsInputSchema>
 export type SubscribeRoomInput = z.infer<typeof subscribeRoomInputSchema>
 export type ConnectPeerInput = z.infer<typeof connectPeerInputSchema>
+export type OpenDirectRoomInput = z.infer<typeof openDirectRoomInputSchema>
 export type PublishMessageInput = z.infer<typeof publishMessageInputSchema>

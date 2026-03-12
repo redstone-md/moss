@@ -1,4 +1,5 @@
 type RuntimeSetupPanelProps = {
+  nickname: string
   meshId: string
   listenPort: string
   initialRoom: string
@@ -8,6 +9,7 @@ type RuntimeSetupPanelProps = {
   configPreview: string
   errorNote?: string
   isSaving: boolean
+  onNicknameChange: (value: string) => void
   onMeshIdChange: (value: string) => void
   onListenPortChange: (value: string) => void
   onInitialRoomChange: (value: string) => void
@@ -18,6 +20,7 @@ type RuntimeSetupPanelProps = {
 }
 
 export function RuntimeSetupPanel({
+  nickname,
   meshId,
   listenPort,
   initialRoom,
@@ -27,6 +30,7 @@ export function RuntimeSetupPanel({
   configPreview,
   errorNote,
   isSaving,
+  onNicknameChange,
   onMeshIdChange,
   onListenPortChange,
   onInitialRoomChange,
@@ -44,6 +48,14 @@ export function RuntimeSetupPanel({
         </div>
       </div>
       <div className="setup-grid">
+        <label className="field-grid">
+          <span>Nickname</span>
+          <input
+            value={nickname}
+            onChange={(event) => onNicknameChange(event.target.value)}
+            placeholder="operator"
+          />
+        </label>
         <label className="field-grid">
           <span>Mesh ID</span>
           <input

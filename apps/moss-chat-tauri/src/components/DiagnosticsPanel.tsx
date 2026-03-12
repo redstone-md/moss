@@ -15,6 +15,11 @@ export function DiagnosticsPanel({ diagnostics }: DiagnosticsPanelProps) {
       </div>
       <div className="diagnostics-grid">
         <div className="diagnostic-card">
+          <span>Nickname</span>
+          <strong>{diagnostics.configuredNickname}</strong>
+          <p>identity shown in chat presence</p>
+        </div>
+        <div className="diagnostic-card">
           <span>Configured mesh</span>
           <strong>{diagnostics.configuredMeshId}</strong>
           <p>
