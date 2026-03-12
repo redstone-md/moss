@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -29,6 +30,8 @@ type incomingAttachment struct {
 	ChunkCount int
 	Chunks     [][]byte
 	Received   int
+	SavePath   string
+	Rejected   bool
 }
 
 func (c *chatApp) sendAttachment(room, rawPath string) error {
@@ -37,7 +40,14 @@ func (c *chatApp) sendAttachment(room, rawPath string) error {
 	}
 	path := strings.TrimSpace(rawPath)
 	if path == "" {
-		return fmt.Errorf("attachment path is required")
+		selected, err := c.selectAttachmentSource()
+		if err != nil {
+			if errors.Is(err, errDialogCancelled) {
+				return nil
+			}
+			return err
+		}
+		path = selected
 	}
 	absPath, err := filepath.Abs(path)
 	if err != nil {
@@ -105,6 +115,15 @@ func (c *chatApp) handleAttachmentPayload(room, senderID string, payload chatPay
 	}
 	switch payload.Kind {
 	case "attachment-meta":
+		savePath, err := c.selectAttachmentSavePath(payload.FileName)
+		if err != nil {
+			if errors.Is(err, errDialogCancelled) {
+				c.appendLine(room, fmt.Sprintf("[%s] attachment from %s was declined", payload.SentAt, senderName))
+				return
+			}
+			c.appendLine(room, fmt.Sprintf("[%s] attachment from %s was skipped: %v", payload.SentAt, senderName, err))
+			return
+		}
 		c.mu.Lock()
 		c.incoming[payload.TransferID] = &incomingAttachment{
 			Room:       room,
@@ -115,18 +134,19 @@ func (c *chatApp) handleAttachmentPayload(room, senderID string, payload chatPay
 			FileSHA256: payload.FileSHA256,
 			ChunkCount: payload.ChunkCount,
 			Chunks:     make([][]byte, payload.ChunkCount),
+			SavePath:   savePath,
 		}
 		c.mu.Unlock()
-		c.appendLine(room, fmt.Sprintf("[%s] %s is sending attachment: %s (%s)", payload.SentAt, senderName, payload.FileName, formatBytes(payload.FileSize)))
+		c.appendLine(room, fmt.Sprintf("[%s] %s is sending attachment: %s (%s) -> %s", payload.SentAt, senderName, payload.FileName, formatBytes(payload.FileSize), savePath))
 	case "attachment-chunk":
 		raw, err := base64.StdEncoding.DecodeString(payload.ChunkData)
 		if err != nil {
-			c.systemMessage("Attachment chunk decode failed for " + payload.FileName)
+			c.showAlert("Attachment error", "Attachment chunk decode failed for "+payload.FileName)
 			return
 		}
 		savedPath, complete, err := c.storeAttachmentChunk(payload.TransferID, payload.ChunkIndex, raw)
 		if err != nil {
-			c.systemMessage("Attachment write failed: " + err.Error())
+			c.showAlert("Attachment error", "Attachment write failed: "+err.Error())
 			return
 		}
 		if complete {
@@ -141,6 +161,10 @@ func (c *chatApp) storeAttachmentChunk(transferID string, index int, raw []byte)
 	defer c.mu.Unlock()
 	state := c.incoming[transferID]
 	if state == nil {
+		return "", false, nil
+	}
+	if state.Rejected {
+		delete(c.incoming, transferID)
 		return "", false, nil
 	}
 	if index < 0 || index >= len(state.Chunks) {
@@ -162,12 +186,19 @@ func (c *chatApp) storeAttachmentChunk(transferID string, index int, raw []byte)
 		delete(c.incoming, transferID)
 		return "", false, fmt.Errorf("attachment checksum mismatch")
 	}
-	targetDir := filepath.Join(c.downloadsDir, sanitizeName(c.meshID), sanitizeName(state.Room))
-	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+	targetPath := state.SavePath
+	if targetPath == "" {
+		targetDir := filepath.Join(c.downloadsDir, sanitizeName(c.meshID), sanitizeName(state.Room))
+		if err := os.MkdirAll(targetDir, 0o755); err != nil {
+			delete(c.incoming, transferID)
+			return "", false, err
+		}
+		targetPath = uniqueAttachmentPath(targetDir, state.FileName)
+	}
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 		delete(c.incoming, transferID)
 		return "", false, err
 	}
-	targetPath := uniqueAttachmentPath(targetDir, state.FileName)
 	if err := os.WriteFile(targetPath, data, 0o644); err != nil {
 		delete(c.incoming, transferID)
 		return "", false, err
