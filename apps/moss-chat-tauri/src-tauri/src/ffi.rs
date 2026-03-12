@@ -5,7 +5,7 @@ use std::{
 };
 
 use libloading::Library;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 use crate::callback_state::shared_callback_state;
 
@@ -28,14 +28,40 @@ type MossFree = unsafe extern "C" fn(*mut c_void);
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct MeshInfo {
+    #[serde(default)]
     pub mesh_id: String,
+    #[serde(default)]
     pub listen_port: u16,
+    #[serde(default)]
     pub peer_count: usize,
+    #[serde(default, deserialize_with = "deserialize_null_vec")]
     pub peers: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_null_vec")]
     pub channels: Vec<String>,
+    #[serde(default)]
     pub nat_type: String,
+    #[serde(default)]
     pub public_key: String,
+    #[serde(default)]
     pub supernode_ready: bool,
+}
+
+fn deserialize_null_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum NullableStringVec {
+        Values(Vec<String>),
+        Null(()),
+    }
+
+    let value = NullableStringVec::deserialize(deserializer)?;
+    Ok(match value {
+        NullableStringVec::Values(values) => values,
+        NullableStringVec::Null(()) => Vec::new(),
+    })
 }
 
 pub struct MossLibrary {
@@ -338,5 +364,29 @@ fn error_message(code: i32) -> &'static str {
         -8 => "config invalid",
         -9 => "connect failed",
         _ => "unknown error",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MeshInfo;
+
+    #[test]
+    fn mesh_info_allows_null_collections() {
+        let payload = r#"{
+            "mesh_id":"moss-chat-dev",
+            "listen_port":41030,
+            "peer_count":0,
+            "peers":null,
+            "channels":null,
+            "nat_type":"unknown",
+            "public_key":"abcd",
+            "supernode_ready":false
+        }"#;
+
+        let parsed: MeshInfo = serde_json::from_str(payload).expect("mesh info should parse");
+        assert!(parsed.peers.is_empty());
+        assert!(parsed.channels.is_empty());
+        assert_eq!(parsed.mesh_id, "moss-chat-dev");
     }
 }
