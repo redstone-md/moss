@@ -1,6 +1,7 @@
 # Moss
 
-[![CI](https://github.com/redstone-md/moss/actions/workflows/ci.yml/badge.svg)](https://github.com/redstone-md/moss/actions/workflows/ci.yml)
+[![CI Main](https://github.com/redstone-md/moss/actions/workflows/ci-main.yml/badge.svg)](https://github.com/redstone-md/moss/actions/workflows/ci-main.yml)
+[![CI Dev](https://github.com/redstone-md/moss/actions/workflows/ci-dev.yml/badge.svg)](https://github.com/redstone-md/moss/actions/workflows/ci-dev.yml)
 
 Moss is an embeddable P2P mesh core written in Go and exported through CGO as a C-shared library. The project in this repository follows the `PRD.md` scope with a pragmatic v1 implementation:
 
@@ -10,6 +11,7 @@ Moss is an embeddable P2P mesh core written in Go and exported through CGO as a 
 - NAT profiling, relay rate limiting primitives, and supernode eligibility checks
 - C FFI surface with examples for C, C++, Python (`ctypes`), and Rust
 - native single-binary terminal chat in `cmd/moss-chat`
+- separate Tauri desktop migration shell in `apps/moss-chat-tauri`
 - unit, integration, and shared-library smoke tests
 
 FFI docs:
@@ -22,6 +24,7 @@ FFI docs:
 ```text
 cmd/moss-ffi/              CGO shared library entrypoint
 cmd/moss-chat/             Native single-binary TUI chat
+apps/moss-chat-tauri/      Dev-branch Tauri desktop shell
 internal/bootstrap/        tracker clients and infohash generation
 internal/transport/        encrypted sessions and handshake
 internal/gossip/           pubsub cache, scoring, envelopes
@@ -54,6 +57,13 @@ GitHub Actions publishes separate macOS artifacts for both architectures:
 - `moss-macos-arm64-shared`
 - `moss-chat-macos-amd64`
 - `moss-chat-macos-arm64`
+
+The `dev` branch also publishes dedicated Tauri desktop artifacts:
+
+- `moss-chat-tauri-dev-linux-amd64`
+- `moss-chat-tauri-dev-windows-amd64`
+- `moss-chat-tauri-dev-macos-amd64`
+- `moss-chat-tauri-dev-macos-arm64`
 
 ## Test
 
