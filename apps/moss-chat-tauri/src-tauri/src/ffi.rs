@@ -7,11 +7,18 @@ use std::{
 use libloading::Library;
 use serde::Deserialize;
 
+use crate::callback_state::shared_callback_state;
+
 type MossHandle = i64;
+type MossMessageCallback =
+    unsafe extern "C" fn(*const c_char, *const u8, *const u8, u32);
+type MossEventCallback = unsafe extern "C" fn(i32, *const c_char);
 type MossInit = unsafe extern "C" fn(*const c_char, *const u8, *const c_char) -> MossHandle;
 type MossStart = unsafe extern "C" fn(MossHandle) -> i32;
 type MossStop = unsafe extern "C" fn(MossHandle) -> i32;
 type MossSubscribe = unsafe extern "C" fn(MossHandle, *const c_char) -> i32;
+type MossSetCallback = unsafe extern "C" fn(MossHandle, Option<MossMessageCallback>) -> i32;
+type MossSetEventCallback = unsafe extern "C" fn(MossHandle, Option<MossEventCallback>) -> i32;
 type MossGetMeshInfo = unsafe extern "C" fn(MossHandle) -> *mut c_char;
 type MossGetNatType = unsafe extern "C" fn(MossHandle) -> *mut c_char;
 type MossFree = unsafe extern "C" fn(*mut c_void);
@@ -36,6 +43,8 @@ pub struct MossLibrary {
     start: MossStart,
     stop: MossStop,
     subscribe: MossSubscribe,
+    set_callback: MossSetCallback,
+    set_event_callback: MossSetEventCallback,
     get_mesh_info: MossGetMeshInfo,
     get_nat_type: MossGetNatType,
     free: MossFree,
@@ -99,6 +108,26 @@ impl MossLibrary {
         Ok(())
     }
 
+    pub fn set_callbacks(&self, handle: MossHandle) -> Result<(), String> {
+        let code = unsafe { (self.set_callback)(handle, Some(moss_message_callback)) };
+        if code != 0 {
+            return Err(format!("Moss_SetCallback failed: {}", error_message(code)));
+        }
+        let code = unsafe { (self.set_event_callback)(handle, Some(moss_event_callback)) };
+        if code != 0 {
+            return Err(format!(
+                "Moss_SetEventCallback failed: {}",
+                error_message(code)
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn clear_callbacks(&self, handle: MossHandle) {
+        let _ = unsafe { (self.set_callback)(handle, None) };
+        let _ = unsafe { (self.set_event_callback)(handle, None) };
+    }
+
     pub fn mesh_info(&self, handle: MossHandle) -> Result<MeshInfo, String> {
         let raw = unsafe { (self.get_mesh_info)(handle) };
         if raw.is_null() {
@@ -138,6 +167,12 @@ impl MossLibrary {
         let subscribe = *lib
             .get::<MossSubscribe>(b"Moss_Subscribe\0")
             .map_err(|err| format!("missing Moss_Subscribe: {err}"))?;
+        let set_callback = *lib
+            .get::<MossSetCallback>(b"Moss_SetCallback\0")
+            .map_err(|err| format!("missing Moss_SetCallback: {err}"))?;
+        let set_event_callback = *lib
+            .get::<MossSetEventCallback>(b"Moss_SetEventCallback\0")
+            .map_err(|err| format!("missing Moss_SetEventCallback: {err}"))?;
         let get_mesh_info = *lib
             .get::<MossGetMeshInfo>(b"Moss_GetMeshInfo\0")
             .map_err(|err| format!("missing Moss_GetMeshInfo: {err}"))?;
@@ -154,11 +189,60 @@ impl MossLibrary {
             start,
             stop,
             subscribe,
+            set_callback,
+            set_event_callback,
             get_mesh_info,
             get_nat_type,
             free,
         })
     }
+}
+
+unsafe extern "C" fn moss_message_callback(
+    channel: *const c_char,
+    sender_id: *const u8,
+    data: *const u8,
+    len: u32,
+) {
+    if channel.is_null() || sender_id.is_null() {
+        return;
+    }
+    let channel = unsafe { CStr::from_ptr(channel) }
+        .to_string_lossy()
+        .into_owned();
+    let sender = unsafe { std::slice::from_raw_parts(sender_id, 32) };
+    let payload = if data.is_null() || len == 0 {
+        Vec::new()
+    } else {
+        unsafe { std::slice::from_raw_parts(data, len as usize) }.to_vec()
+    };
+    let state = shared_callback_state();
+    if let Ok(mut callback_state) = state.lock() {
+        callback_state.on_channel_message(channel, hex_string(sender), payload);
+    };
+}
+
+unsafe extern "C" fn moss_event_callback(event_type: i32, detail_json: *const c_char) {
+    let detail = if detail_json.is_null() {
+        String::new()
+    } else {
+        unsafe { CStr::from_ptr(detail_json) }
+            .to_string_lossy()
+            .into_owned()
+    };
+    let state = shared_callback_state();
+    if let Ok(mut callback_state) = state.lock() {
+        callback_state.on_event(event_type, detail);
+    };
+}
+
+fn hex_string(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(&mut out, "{byte:02x}");
+    }
+    out
 }
 
 fn library_file_name() -> &'static str {
