@@ -2541,6 +2541,12 @@ func isVirtualOverlayInterfaceName(name string) bool {
 	switch {
 	case normalized == "":
 		return false
+	case strings.Contains(normalized, "radmin"):
+		return true
+	case strings.Contains(normalized, "openvpn"):
+		return true
+	case strings.Contains(normalized, "vpn"):
+		return true
 	case strings.Contains(normalized, "zerotier"):
 		return true
 	case strings.Contains(normalized, "tailscale"):
@@ -2550,6 +2556,18 @@ func isVirtualOverlayInterfaceName(name string) bool {
 	case strings.Contains(normalized, "wintun"):
 		return true
 	case strings.Contains(normalized, "hamachi"):
+		return true
+	case strings.Contains(normalized, "virtualbox"):
+		return true
+	case strings.Contains(normalized, "vmware"):
+		return true
+	case strings.Contains(normalized, "hyper-v"):
+		return true
+	case strings.Contains(normalized, "vethernet"):
+		return true
+	case strings.Contains(normalized, "docker"):
+		return true
+	case strings.Contains(normalized, "wsl"):
 		return true
 	case strings.HasPrefix(normalized, "utun"):
 		return true

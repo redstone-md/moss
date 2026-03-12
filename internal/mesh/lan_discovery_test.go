@@ -183,6 +183,8 @@ func TestLANDiscoveryInterfacesSkipVirtualOverlays(t *testing.T) {
 	ifaces := []net.Interface{
 		{Name: "ZeroTier One", Flags: net.FlagUp | net.FlagMulticast},
 		{Name: "Wintun", Flags: net.FlagUp | net.FlagMulticast},
+		{Name: "Radmin VPN", Flags: net.FlagUp | net.FlagMulticast},
+		{Name: "vEthernet (WSL)", Flags: net.FlagUp | net.FlagMulticast},
 		{Name: "Wi-Fi", Flags: net.FlagUp | net.FlagMulticast},
 		{Name: "Ethernet", Flags: net.FlagUp},
 		{Name: "Loopback", Flags: net.FlagUp | net.FlagLoopback | net.FlagMulticast},
