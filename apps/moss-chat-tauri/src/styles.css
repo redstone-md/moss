@@ -1,0 +1,221 @@
+:root {
+  color: #edf4ee;
+  background:
+    radial-gradient(circle at top, rgba(138, 189, 145, 0.25), transparent 38%),
+    linear-gradient(160deg, #0f1711 0%, #16241b 48%, #0d140f 100%);
+  font-family:
+    'Segoe UI Variable Display',
+    'Aptos',
+    'Segoe UI',
+    sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+button {
+  font: inherit;
+}
+
+#app {
+  min-height: 100vh;
+}
+
+.shell {
+  width: min(1320px, calc(100vw - 48px));
+  margin: 0 auto;
+  padding: 40px 0 56px;
+}
+
+.loading {
+  display: grid;
+  place-items: center;
+}
+
+.hero,
+.panel,
+.status-card,
+.error-panel {
+  border: 1px solid rgba(208, 230, 213, 0.16);
+  background: rgba(11, 17, 13, 0.72);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(16px);
+}
+
+.hero {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 28px;
+  border-radius: 28px;
+}
+
+.hero h1,
+.panel h2,
+.status-card h3,
+.artifact-card h3,
+.milestone-card h3,
+.error-panel h1 {
+  margin: 0;
+  color: #f7fff8;
+}
+
+.hero-copy,
+.status-detail,
+.artifact-card p,
+.milestone-card p,
+.error-panel p,
+.hero-meta,
+.panel-header p,
+.eyebrow {
+  color: rgba(237, 244, 238, 0.76);
+}
+
+.hero-copy {
+  max-width: 720px;
+  margin-top: 16px;
+  font-size: 1.05rem;
+}
+
+.hero-actions {
+  min-width: 280px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 18px;
+}
+
+.primary-action {
+  padding: 12px 18px;
+  border: 0;
+  border-radius: 999px;
+  background: linear-gradient(120deg, #9edb72 0%, #47c17e 100%);
+  color: #10210f;
+  cursor: pointer;
+}
+
+.hero-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.hero-meta span,
+.pill {
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(208, 230, 213, 0.18);
+  background: rgba(237, 244, 238, 0.06);
+  font-size: 0.86rem;
+}
+
+.eyebrow {
+  margin: 0 0 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 0.78rem;
+}
+
+.status-grid,
+.content-grid {
+  display: grid;
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.status-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.content-grid {
+  grid-template-columns: 1.1fr 0.9fr;
+}
+
+.status-card,
+.panel,
+.error-panel {
+  border-radius: 24px;
+  padding: 24px;
+}
+
+.status-value {
+  margin: 18px 0 10px;
+  font-size: 1.3rem;
+  color: #9edb72;
+}
+
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.artifact-list,
+.milestone-list {
+  display: grid;
+  gap: 14px;
+}
+
+.artifact-card,
+.milestone-card {
+  padding: 18px;
+  border-radius: 18px;
+  border: 1px solid rgba(208, 230, 213, 0.14);
+  background: rgba(237, 244, 238, 0.04);
+}
+
+.artifact-card > div,
+.milestone-topline {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: baseline;
+}
+
+.pill-ready {
+  color: #9edb72;
+}
+
+.pill-next {
+  color: #f3cb5f;
+}
+
+.pill-blocked {
+  color: #ff8677;
+}
+
+@media (max-width: 980px) {
+  .shell {
+    width: min(100vw, calc(100vw - 24px));
+    padding-top: 20px;
+  }
+
+  .hero,
+  .status-grid,
+  .content-grid {
+    grid-template-columns: 1fr;
+    display: grid;
+  }
+
+  .hero-actions {
+    align-items: flex-start;
+    min-width: 0;
+  }
+
+  .hero-meta {
+    justify-content: flex-start;
+  }
+}

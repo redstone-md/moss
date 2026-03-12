@@ -1,0 +1,16 @@
+[package]
+name = "moss-chat-dev"
+version = "0.1.0"
+description = "Moss desktop chat shell for the dev branch"
+edition = "2021"
+
+[lib]
+name = "moss_chat_dev_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.5.6", features = [] }
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+tauri = { version = "2.10.3", features = [] }

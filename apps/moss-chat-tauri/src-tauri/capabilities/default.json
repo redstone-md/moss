@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default capability for the Moss desktop dev shell.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}
