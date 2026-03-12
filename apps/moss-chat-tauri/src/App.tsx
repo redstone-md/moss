@@ -1,21 +1,28 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ActionDeck } from './components/ActionDeck'
+import { ChatHeader } from './components/ChatHeader'
 import { DiagnosticsPanel } from './components/DiagnosticsPanel'
 import { MessagePanel } from './components/MessagePanel'
 import { OnboardingScreen } from './components/OnboardingScreen'
 import { PeerPanel } from './components/PeerPanel'
-import { RoomList } from './components/RoomList'
+import { ProfileEditorPanel } from './components/ProfileEditorPanel'
 import { RuntimePanel } from './components/RuntimePanel'
-import { RuntimeSetupPanel } from './components/RuntimeSetupPanel'
+import { Sidebar } from './components/Sidebar'
 import { useDesktopErrorDialogs } from './hooks/useDesktopErrorDialogs'
 import { useDesktopNotifications } from './hooks/useDesktopNotifications'
 import { desktopStatusClient } from './lib/desktopStatusClient'
 import { getFallbackRoom } from './lib/fallbacks'
 
+type ShellView = 'chat' | 'profile'
+
 export function App() {
   const [selectedRoomId, setSelectedRoomId] = useState('lobby')
+  const [selectedView, setSelectedView] = useState<ShellView>('chat')
+  const [sidebarOpen, setSidebarOpen] = useState(false)
   const [onboardingDismissed, setOnboardingDismissed] = useState(false)
+  const [createMode, setCreateMode] = useState(false)
+  const [roomSearch, setRoomSearch] = useState('')
   const [nicknameDraft, setNicknameDraft] = useState<string | null>(null)
   const [meshDraft, setMeshDraft] = useState<string | null>(null)
   const [listenPortDraft, setListenPortDraft] = useState<string | null>(null)
@@ -25,7 +32,7 @@ export function App() {
     null,
   )
   const [lanDiscoveryDraft, setLanDiscoveryDraft] = useState<boolean | null>(null)
-  const [roomDraft, setRoomDraft] = useState('release-war-room')
+  const [roomDraft, setRoomDraft] = useState('design-reviews')
   const [peerDraft, setPeerDraft] = useState('')
   const [directDraft, setDirectDraft] = useState('')
   const [messageDraft, setMessageDraft] = useState('')
@@ -55,12 +62,9 @@ export function App() {
         nickname: nicknameDraft ?? snapshot.data?.settings.nickname ?? 'operator',
         meshId: meshDraft ?? snapshot.data?.settings.meshId ?? 'moss-chat-dev',
         listenPort: Number(listenPortDraft ?? snapshot.data?.settings.listenPort ?? 0),
-        initialRoom:
-          initialRoomDraft ?? snapshot.data?.settings.initialRoom ?? 'lobby',
-        startupPeer:
-          startupPeerDraft ?? snapshot.data?.settings.startupPeer ?? '',
-        trackerMode:
-          trackerModeDraft ?? snapshot.data?.settings.trackerMode ?? 'default',
+        initialRoom: initialRoomDraft ?? snapshot.data?.settings.initialRoom ?? 'lobby',
+        startupPeer: startupPeerDraft ?? snapshot.data?.settings.startupPeer ?? '',
+        trackerMode: trackerModeDraft ?? snapshot.data?.settings.trackerMode ?? 'default',
         lanDiscoveryEnabled:
           lanDiscoveryDraft ?? snapshot.data?.settings.lanDiscoveryEnabled ?? true,
       }),
@@ -74,7 +78,10 @@ export function App() {
     mutationFn: () => desktopStatusClient.subscribeRoom({ room: roomDraft }),
     onSuccess: (data) => {
       queryClient.setQueryData(['desktop-snapshot'], data)
-      setSelectedRoomId(roomDraft.replace(/^#/, '').toLowerCase())
+      const normalizedRoom = roomDraft.replace(/^#/, '').toLowerCase()
+      setSelectedRoomId(normalizedRoom)
+      setCreateMode(false)
+      setSidebarOpen(false)
     },
   })
 
@@ -99,6 +106,7 @@ export function App() {
         setSelectedRoomId(directRoom.id)
       }
       setDirectDraft('')
+      setSelectedView('chat')
     },
   })
 
@@ -154,18 +162,33 @@ export function App() {
   const startupPeerValue = startupPeerDraft ?? settings.startupPeer
   const trackerModeValue = trackerModeDraft ?? settings.trackerMode
   const lanDiscoveryValue = lanDiscoveryDraft ?? settings.lanDiscoveryEnabled
+
+  const filteredRooms = useMemo(() => {
+    const needle = roomSearch.trim().toLowerCase()
+    if (!needle) {
+      return rooms
+    }
+    return rooms.filter((room) => room.label.toLowerCase().includes(needle))
+  }, [roomSearch, rooms])
+
   const activeRoom =
     rooms.find((room) => room.id === selectedRoomId) ??
     rooms.find((room) => room.id === settings.initialRoom) ??
     rooms[0]
-  const visibleMessages = data.messages.filter(
-    (message) => message.roomId === activeRoom.id,
+
+  const visibleMessages = useMemo(
+    () => data.messages.filter((message) => message.roomId === activeRoom.id),
+    [activeRoom.id, data.messages],
   )
-  const visiblePeers = data.peers.filter((peer) =>
-    activeRoom.kind === 'system'
-      ? true
-      : peer.rooms.includes(activeRoom.label) ||
-        peer.rooms.includes(`#${activeRoom.id}`),
+
+  const visiblePeers = useMemo(
+    () =>
+      data.peers.filter((peer) =>
+        activeRoom.kind === 'system'
+          ? true
+          : peer.rooms.includes(activeRoom.label) || peer.rooms.includes(`#${activeRoom.id}`),
+      ),
+    [activeRoom.id, activeRoom.kind, activeRoom.label, data.peers],
   )
 
   async function applyAndStartRuntime() {
@@ -178,8 +201,7 @@ export function App() {
     setOnboardingDismissed(true)
   }
 
-  const showOnboarding =
-    data.runtime.state !== 'Runtime online' && !onboardingDismissed
+  const showOnboarding = data.runtime.state !== 'Runtime online' && !onboardingDismissed
 
   if (showOnboarding) {
     return (
@@ -208,7 +230,7 @@ export function App() {
   }
 
   return (
-    <main className="shell shell-chat">
+    <main className="shell shell-chat shell-app">
       <RuntimePanel
         state={data.runtime.state}
         summary={data.runtime.summary}
@@ -221,55 +243,86 @@ export function App() {
         isBusy={toggleRuntime.isPending}
       />
 
-      <section className="chat-grid">
-        <RoomList
-          rooms={rooms}
-          selectedRoomId={activeRoom.id}
-          onSelect={setSelectedRoomId}
-        />
-        <MessagePanel
-          room={activeRoom}
-          messages={visibleMessages}
-          draft={messageDraft}
-          onDraftChange={setMessageDraft}
-          onSend={() => publishMessage.mutate()}
-          isSending={publishMessage.isPending}
-          errorNote={sendError}
-        />
-        <PeerPanel
-          peers={visiblePeers}
-          onOpenDirectRoom={(target) => {
-            setDirectDraft(target)
-            openDirectRoom.mutate(target)
-          }}
-        />
+      <section className="workspace-shell">
+        <div className={`sidebar-drawer${sidebarOpen ? ' sidebar-drawer-open' : ''}`}>
+          <Sidebar
+            rooms={filteredRooms}
+            selectedRoomId={activeRoom.id}
+            roomSearch={roomSearch}
+            roomDraft={roomDraft}
+            createMode={createMode}
+            onRoomSearchChange={setRoomSearch}
+            onRoomDraftChange={setRoomDraft}
+            onToggleCreateMode={() => setCreateMode((current) => !current)}
+            onCreateRoom={() => subscribeRoom.mutate()}
+            onSelectRoom={(roomId) => {
+              setSelectedRoomId(roomId)
+              setSelectedView('chat')
+              setSidebarOpen(false)
+            }}
+            onOpenProfile={() => {
+              setSelectedView('profile')
+              setSidebarOpen(false)
+            }}
+          />
+        </div>
+
+        <section className="chat-pane">
+          <ChatHeader
+            room={activeRoom}
+            peers={visiblePeers}
+            runtime={data.runtime}
+            onToggleSidebar={() => setSidebarOpen((current) => !current)}
+          />
+
+          {selectedView === 'profile' ? (
+            <div className="chat-content profile-content">
+              <ProfileEditorPanel
+                nickname={nicknameValue}
+                meshId={meshValue}
+                initialRoom={initialRoomValue}
+                startupPeer={startupPeerValue}
+                listenPort={listenPortValue}
+                trackerMode={trackerModeValue}
+                lanDiscoveryEnabled={lanDiscoveryValue}
+                configPreview={settings.configPreview}
+                errorNote={settingsError}
+                isSaving={updateRuntimeSettings.isPending}
+                onNicknameChange={setNicknameDraft}
+                onMeshIdChange={setMeshDraft}
+                onInitialRoomChange={setInitialRoomDraft}
+                onStartupPeerChange={setStartupPeerDraft}
+                onListenPortChange={setListenPortDraft}
+                onTrackerModeChange={setTrackerModeDraft}
+                onLanDiscoveryChange={setLanDiscoveryDraft}
+                onSave={() => updateRuntimeSettings.mutate()}
+              />
+              <DiagnosticsPanel diagnostics={data.diagnostics} />
+            </div>
+          ) : (
+            <div className="chat-content">
+              <MessagePanel
+                room={activeRoom}
+                messages={visibleMessages}
+                draft={messageDraft}
+                onDraftChange={setMessageDraft}
+                onSend={() => publishMessage.mutate()}
+                isSending={publishMessage.isPending}
+                errorNote={sendError}
+              />
+              <PeerPanel
+                peers={visiblePeers}
+                onOpenDirectRoom={(target) => {
+                  setDirectDraft(target)
+                  openDirectRoom.mutate(target)
+                }}
+              />
+            </div>
+          )}
+        </section>
       </section>
 
-      <section className="content-grid">
-        <RuntimeSetupPanel
-          nickname={nicknameValue}
-          meshId={meshValue}
-          listenPort={listenPortValue}
-          initialRoom={initialRoomValue}
-          startupPeer={startupPeerValue}
-          trackerMode={trackerModeValue}
-          lanDiscoveryEnabled={lanDiscoveryValue}
-          configPreview={settings.configPreview}
-          errorNote={settingsError}
-          isSaving={updateRuntimeSettings.isPending}
-          onNicknameChange={setNicknameDraft}
-          onMeshIdChange={setMeshDraft}
-          onListenPortChange={setListenPortDraft}
-          onInitialRoomChange={setInitialRoomDraft}
-          onStartupPeerChange={setStartupPeerDraft}
-          onTrackerModeChange={setTrackerModeDraft}
-          onLanDiscoveryChange={setLanDiscoveryDraft}
-          onSave={() => updateRuntimeSettings.mutate()}
-        />
-        <DiagnosticsPanel diagnostics={data.diagnostics} />
-      </section>
-
-      <section className="content-grid content-grid-actions">
+      <section className="bottom-dock">
         <ActionDeck
           appName={data.appName}
           version={data.version}
@@ -295,23 +348,6 @@ export function App() {
           }
           errorNote={actionError}
         />
-        <div className="panel action-context">
-          <div className="panel-header">
-            <div>
-              <p className="eyebrow">Channel context</p>
-              <h2>{activeRoom.label}</h2>
-            </div>
-          </div>
-          <div className="hero-meta hero-meta-left">
-            <span>{data.branch}</span>
-            <span>{data.stage}</span>
-            <span>{visiblePeers.length} visible peers</span>
-          </div>
-          <p className="runtime-summary">
-            Publish, room subscribe, and direct connect are already going through the
-            shared Moss runtime. Runtime settings above apply on the next start.
-          </p>
-        </div>
       </section>
     </main>
   )
