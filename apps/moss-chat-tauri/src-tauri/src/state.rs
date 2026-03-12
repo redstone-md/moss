@@ -182,7 +182,13 @@ impl DesktopShellState {
             .ok_or_else(|| "shared library is not loaded".to_string())?;
         let payload = serde_json::to_vec(&ChatPayload::room_message(self.settings.nickname(), body))
             .map_err(|err| format!("failed to encode room message: {err}"))?;
-        library.publish(handle, room, &payload)?;
+        library.publish(handle, room, &payload).map_err(|err| {
+            if MossLibrary::is_no_peers_error(&err) {
+                "No connected peers yet. Message stayed local until another peer joins.".to_string()
+            } else {
+                err
+            }
+        })?;
         if let Ok(mut callbacks) = shared_callback_state().lock() {
             callbacks.note_runtime(format!("Published desktop message to #{room}."));
         }
@@ -223,7 +229,12 @@ impl DesktopShellState {
             &target_peer,
         ))
         .map_err(|err| format!("failed to encode direct chat invite: {err}"))?;
-        library.publish(handle, CONTROL_ROOM, &invite)?;
+        self.publish_control_payload(
+            library,
+            handle,
+            &invite,
+            format!("Queued direct-chat invite for {target_label} until a peer path is ready."),
+        )?;
         self.publish_presence(library, handle)?;
         if let Ok(mut callbacks) = shared_callback_state().lock() {
             callbacks.note_runtime(format!("Direct chat opened with {target_label}."));
@@ -305,8 +316,32 @@ impl DesktopShellState {
         };
         let payload = serde_json::to_vec(&ChatPayload::presence(self.settings.nickname(), &rooms))
             .map_err(|err| format!("failed to encode presence payload: {err}"))?;
-        library.publish(handle, CONTROL_ROOM, &payload)?;
+        self.publish_control_payload(
+            library,
+            handle,
+            &payload,
+            "No peers connected yet. Presence will fan out once a peer joins.".to_string(),
+        )?;
         Ok(())
+    }
+
+    fn publish_control_payload(
+        &self,
+        library: &MossLibrary,
+        handle: i64,
+        payload: &[u8],
+        no_peer_note: String,
+    ) -> Result<(), String> {
+        match library.publish(handle, CONTROL_ROOM, payload) {
+            Ok(()) => Ok(()),
+            Err(err) if MossLibrary::is_no_peers_error(&err) => {
+                if let Ok(mut callbacks) = shared_callback_state().lock() {
+                    callbacks.note_runtime(no_peer_note);
+                }
+                Ok(())
+            }
+            Err(err) => Err(err),
+        }
     }
 }
 
