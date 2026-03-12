@@ -64,23 +64,40 @@ jobs:
         run: go test ./... -count=1 -timeout 1800s
 
   build-shared:
-    name: Build Shared (${{ matrix.os }})
+    name: Build Shared (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
+            label: linux-amd64
             output: libmoss.so
             header: libmoss.h
+            goos: linux
+            goarch: amd64
           - os: windows-latest
+            label: windows-amd64
             output: moss.dll
             header: moss.h
-          - os: macos-latest
+            goos: windows
+            goarch: amd64
+          - os: macos-13
+            label: macos-amd64
             output: libmoss.dylib
             header: libmoss.h
+            goos: darwin
+            goarch: amd64
+          - os: macos-14
+            label: macos-arm64
+            output: libmoss.dylib
+            header: libmoss.h
+            goos: darwin
+            goarch: arm64
     env:
       CGO_ENABLED: "1"
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -106,25 +123,42 @@ jobs:
       - name: Upload shared artifact
         uses: actions/upload-artifact@v4
         with:
-          name: moss-${{ runner.os }}-shared
+          name: moss-${{ matrix.label }}-shared
           path: |
             ${{ matrix.output }}
             ${{ matrix.header }}
           if-no-files-found: error
 
   build-chat:
-    name: Build Chat (${{ matrix.os }})
+    name: Build Chat (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
+            label: linux-amd64
             output: moss-chat
+            goos: linux
+            goarch: amd64
           - os: windows-latest
+            label: windows-amd64
             output: moss-chat.exe
-          - os: macos-latest
+            goos: windows
+            goarch: amd64
+          - os: macos-13
+            label: macos-amd64
             output: moss-chat
+            goos: darwin
+            goarch: amd64
+          - os: macos-14
+            label: macos-arm64
+            output: moss-chat
+            goos: darwin
+            goarch: arm64
+    env:
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -141,7 +175,7 @@ jobs:
       - name: Upload chat artifact
         uses: actions/upload-artifact@v4
         with:
-          name: moss-chat-${{ runner.os }}
+          name: moss-chat-${{ matrix.label }}
           path: |
             ${{ matrix.output }}
             cmd/moss-chat/README.md
