@@ -303,6 +303,48 @@ button {
   gap: 12px;
 }
 
+.action-stack {
+  display: grid;
+  gap: 14px;
+}
+
+.inline-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 150px;
+  gap: 12px;
+  align-items: end;
+}
+
+.inline-form label,
+.composer-form {
+  display: grid;
+  gap: 8px;
+}
+
+.inline-form span {
+  color: rgba(237, 244, 238, 0.78);
+  font-size: 0.86rem;
+}
+
+.inline-form input,
+.composer-form textarea {
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(208, 230, 213, 0.18);
+  background: rgba(237, 244, 238, 0.06);
+  color: #edf4ee;
+}
+
+.composer-form {
+  min-width: 340px;
+}
+
+.composer-form textarea {
+  min-height: 88px;
+  resize: vertical;
+}
+
 .action-tile {
   padding: 14px;
   background: rgba(237, 244, 238, 0.04);
@@ -324,7 +366,8 @@ button {
   .chat-grid,
   .content-grid,
   .runtime-grid,
-  .action-grid {
+  .action-grid,
+  .inline-form {
     grid-template-columns: 1fr;
   }
 

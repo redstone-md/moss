@@ -40,6 +40,31 @@ export const peerSummarySchema = z.object({
   rooms: z.array(z.string().min(1)),
 })
 
+export const subscribeRoomInputSchema = z.object({
+  room: z
+    .string()
+    .trim()
+    .min(1)
+    .transform((value) => value.replace(/^#/, '').toLowerCase()),
+})
+
+export const connectPeerInputSchema = z.object({
+  addr: z
+    .string()
+    .trim()
+    .min(3)
+    .regex(/^[^:\s]+:\d+$/, 'Use HOST:PORT'),
+})
+
+export const publishMessageInputSchema = z.object({
+  room: z
+    .string()
+    .trim()
+    .min(1)
+    .transform((value) => value.replace(/^#/, '').toLowerCase()),
+  body: z.string().trim().min(1).max(65535),
+})
+
 export const milestoneSchema = z.object({
   title: z.string().min(1),
   detail: z.string().min(1),
@@ -66,3 +91,6 @@ export type Message = z.infer<typeof messageSchema>
 export type PeerSummary = z.infer<typeof peerSummarySchema>
 export type Milestone = z.infer<typeof milestoneSchema>
 export type DesktopSnapshot = z.infer<typeof desktopSnapshotSchema>
+export type SubscribeRoomInput = z.infer<typeof subscribeRoomInputSchema>
+export type ConnectPeerInput = z.infer<typeof connectPeerInputSchema>
+export type PublishMessageInput = z.infer<typeof publishMessageInputSchema>

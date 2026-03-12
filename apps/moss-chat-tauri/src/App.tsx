@@ -11,17 +11,49 @@ import { desktopStatusClient } from './lib/desktopStatusClient'
 
 export function App() {
   const [selectedRoomId, setSelectedRoomId] = useState('lobby')
+  const [roomDraft, setRoomDraft] = useState('release-war-room')
+  const [peerDraft, setPeerDraft] = useState('')
+  const [messageDraft, setMessageDraft] = useState('')
   const queryClient = useQueryClient()
 
   const snapshot = useQuery({
     queryKey: ['desktop-snapshot'],
     queryFn: () => desktopStatusClient.getSnapshot(),
+    refetchInterval: 1500,
   })
 
   const toggleRuntime = useMutation({
     mutationFn: () => desktopStatusClient.toggleRuntime(),
     onSuccess: (data) => {
       queryClient.setQueryData(['desktop-snapshot'], data)
+    },
+  })
+
+  const subscribeRoom = useMutation({
+    mutationFn: () => desktopStatusClient.subscribeRoom({ room: roomDraft }),
+    onSuccess: (data) => {
+      queryClient.setQueryData(['desktop-snapshot'], data)
+      setSelectedRoomId(roomDraft.replace(/^#/, '').toLowerCase())
+    },
+  })
+
+  const connectPeer = useMutation({
+    mutationFn: () => desktopStatusClient.connectPeer({ addr: peerDraft }),
+    onSuccess: (data) => {
+      queryClient.setQueryData(['desktop-snapshot'], data)
+      setPeerDraft('')
+    },
+  })
+
+  const publishMessage = useMutation({
+    mutationFn: () =>
+      desktopStatusClient.publishMessage({
+        room: selectedRoomId,
+        body: messageDraft,
+      }),
+    onSuccess: (updatedSnapshot) => {
+      queryClient.setQueryData(['desktop-snapshot'], updatedSnapshot)
+      setMessageDraft('')
     },
   })
 
@@ -50,6 +82,9 @@ export function App() {
   const visiblePeers = data.peers.filter((peer) =>
     peer.rooms.includes(activeRoom.label),
   )
+  const actionError =
+    subscribeRoom.error?.message ?? connectPeer.error?.message
+  const sendError = publishMessage.error?.message
 
   return (
     <main className="shell shell-chat">
@@ -70,7 +105,15 @@ export function App() {
           selectedRoomId={activeRoom.id}
           onSelect={setSelectedRoomId}
         />
-        <MessagePanel room={activeRoom} messages={visibleMessages} />
+        <MessagePanel
+          room={activeRoom}
+          messages={visibleMessages}
+          draft={messageDraft}
+          onDraftChange={setMessageDraft}
+          onSend={() => publishMessage.mutate()}
+          isSending={publishMessage.isPending}
+          errorNote={sendError}
+        />
         <PeerPanel peers={visiblePeers} />
       </section>
 
@@ -80,6 +123,14 @@ export function App() {
           version={data.version}
           branch={data.branch}
           stage={data.stage}
+          roomDraft={roomDraft}
+          peerDraft={peerDraft}
+          onRoomDraftChange={setRoomDraft}
+          onPeerDraftChange={setPeerDraft}
+          onJoinRoom={() => subscribeRoom.mutate()}
+          onConnectPeer={() => connectPeer.mutate()}
+          busyAction={subscribeRoom.isPending ? 'join' : connectPeer.isPending ? 'connect' : undefined}
+          errorNote={actionError}
         />
         <ArtifactList artifacts={data.artifacts} />
       </section>
