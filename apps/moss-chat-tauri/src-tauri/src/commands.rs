@@ -64,6 +64,21 @@ pub fn connect_peer(
 }
 
 #[tauri::command]
+pub fn open_direct_room(
+    state: State<'_, SharedDesktopState>,
+    target: String,
+) -> Result<DesktopSnapshot, String> {
+    let target = target.trim().to_string();
+    if target.is_empty() {
+        return Err("direct message target is required".to_string());
+    }
+    let mut state = state
+        .lock()
+        .map_err(|_| "desktop state lock poisoned".to_string())?;
+    Ok(state.open_direct_room(&target)?)
+}
+
+#[tauri::command]
 pub fn publish_message(
     state: State<'_, SharedDesktopState>,
     room: String,

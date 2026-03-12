@@ -5,10 +5,13 @@ type ActionDeckProps = {
   stage: string
   roomDraft: string
   peerDraft: string
+  directDraft: string
   onRoomDraftChange: (value: string) => void
   onPeerDraftChange: (value: string) => void
+  onDirectDraftChange: (value: string) => void
   onJoinRoom: () => void
   onConnectPeer: () => void
+  onOpenDirectRoom: () => void
   busyAction?: string
   errorNote?: string
 }
@@ -20,10 +23,13 @@ export function ActionDeck({
   stage,
   roomDraft,
   peerDraft,
+  directDraft,
   onRoomDraftChange,
   onPeerDraftChange,
+  onDirectDraftChange,
   onJoinRoom,
   onConnectPeer,
+  onOpenDirectRoom,
   busyAction,
   errorNote,
 }: ActionDeckProps) {
@@ -67,9 +73,22 @@ export function ActionDeck({
             {busyAction === 'connect' ? 'Connecting...' : 'Connect'}
           </button>
         </div>
+        <div className="inline-form">
+          <label>
+            <span>Open direct room</span>
+            <input
+              value={directDraft}
+              onChange={(event) => onDirectDraftChange(event.target.value)}
+              placeholder="nickname or peer id"
+            />
+          </label>
+          <button className="action-tile" onClick={onOpenDirectRoom} type="button">
+            {busyAction === 'dm' ? 'Opening...' : 'Open DM'}
+          </button>
+        </div>
         <div className="hero-meta">
-          <span>Publish and subscribe are already backed by libmoss.</span>
-          <span>Message callbacks drive the room history.</span>
+          <span>Room messages use the shared chat payload format.</span>
+          <span>Presence and direct-room invites flow over the control channel.</span>
         </div>
       </div>
       {errorNote ? <p className="runtime-error">{errorNote}</p> : null}

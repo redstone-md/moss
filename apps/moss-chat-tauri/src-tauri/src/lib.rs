@@ -1,4 +1,5 @@
 mod callback_state;
+mod chat_protocol;
 mod commands;
 mod ffi;
 mod models;
@@ -15,6 +16,7 @@ pub fn run() {
             commands::update_runtime_settings,
             commands::subscribe_room,
             commands::connect_peer,
+            commands::open_direct_room,
             commands::publish_message
         ])
         .run(tauri::generate_context!())

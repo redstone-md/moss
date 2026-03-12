@@ -12,6 +12,7 @@ const DEFAULT_INITIAL_ROOM: &str = "lobby";
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeSettingsInput {
+    pub nickname: String,
     pub mesh_id: String,
     pub listen_port: u16,
     pub initial_room: String,
@@ -22,6 +23,7 @@ pub struct RuntimeSettingsInput {
 
 #[derive(Clone)]
 pub struct DesktopRuntimeConfig {
+    nickname: String,
     mesh_id: String,
     listen_port: u16,
     initial_room: String,
@@ -39,6 +41,7 @@ enum TrackerMode {
 impl Default for DesktopRuntimeConfig {
     fn default() -> Self {
         Self {
+            nickname: "operator".to_string(),
             mesh_id: DEFAULT_MESH_ID.to_string(),
             listen_port: 0,
             initial_room: DEFAULT_INITIAL_ROOM.to_string(),
@@ -51,6 +54,7 @@ impl Default for DesktopRuntimeConfig {
 
 impl DesktopRuntimeConfig {
     pub fn apply(&mut self, input: RuntimeSettingsInput) -> Result<(), String> {
+        self.nickname = normalize_id(input.nickname, "nickname")?;
         self.mesh_id = normalize_id(input.mesh_id, "mesh id")?;
         self.listen_port = input.listen_port;
         self.initial_room = normalize_id(input.initial_room, "initial room")?;
@@ -62,6 +66,7 @@ impl DesktopRuntimeConfig {
 
     pub fn summary(&self) -> RuntimeSettings {
         RuntimeSettings {
+            nickname: self.nickname.clone(),
             mesh_id: self.mesh_id.clone(),
             listen_port: self.listen_port,
             initial_room: self.initial_room.clone(),
@@ -94,6 +99,7 @@ impl DesktopRuntimeConfig {
             };
 
         RuntimeDiagnostics {
+            configured_nickname: self.nickname.clone(),
             configured_mesh_id: self.mesh_id.clone(),
             configured_listen_port: port_label(self.listen_port),
             initial_room: format!("#{}", self.initial_room),
@@ -126,6 +132,10 @@ impl DesktopRuntimeConfig {
 
     pub fn mesh_id(&self) -> &str {
         &self.mesh_id
+    }
+
+    pub fn nickname(&self) -> &str {
+        &self.nickname
     }
 
     pub fn initial_room(&self) -> &str {
@@ -218,6 +228,7 @@ mod tests {
         let mut config = DesktopRuntimeConfig::default();
         config
             .apply(RuntimeSettingsInput {
+                nickname: "Andrii".to_string(),
                 mesh_id: " Moss-Chat-Live ".to_string(),
                 listen_port: 41030,
                 initial_room: "#Lobby".to_string(),
@@ -228,6 +239,7 @@ mod tests {
             .expect("runtime settings should normalize");
 
         let summary = config.summary();
+        assert_eq!(summary.nickname, "andrii");
         assert_eq!(summary.mesh_id, "moss-chat-live");
         assert_eq!(summary.initial_room, "lobby");
         assert_eq!(summary.startup_peer, "example.com:41031");
@@ -241,6 +253,7 @@ mod tests {
         let mut config = DesktopRuntimeConfig::default();
         let err = config
             .apply(RuntimeSettingsInput {
+                nickname: "Andrii".to_string(),
                 mesh_id: "moss-chat-live".to_string(),
                 listen_port: 0,
                 initial_room: "release war room".to_string(),
@@ -258,6 +271,7 @@ mod tests {
         let mut config = DesktopRuntimeConfig::default();
         let err = config
             .apply(RuntimeSettingsInput {
+                nickname: "Andrii".to_string(),
                 mesh_id: "moss-chat-live".to_string(),
                 listen_port: 0,
                 initial_room: "lobby".to_string(),

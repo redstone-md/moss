@@ -13,6 +13,7 @@ pub struct RuntimeStatus {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeSettings {
+    pub nickname: String,
     pub mesh_id: String,
     pub listen_port: u16,
     pub initial_room: String,
@@ -25,6 +26,7 @@ pub struct RuntimeSettings {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeDiagnostics {
+    pub configured_nickname: String,
     pub configured_mesh_id: String,
     pub configured_listen_port: String,
     pub initial_room: String,

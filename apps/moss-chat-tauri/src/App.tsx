@@ -11,6 +11,7 @@ import { desktopStatusClient } from './lib/desktopStatusClient'
 
 export function App() {
   const [selectedRoomId, setSelectedRoomId] = useState('lobby')
+  const [nicknameDraft, setNicknameDraft] = useState<string | null>(null)
   const [meshDraft, setMeshDraft] = useState<string | null>(null)
   const [listenPortDraft, setListenPortDraft] = useState<string | null>(null)
   const [initialRoomDraft, setInitialRoomDraft] = useState<string | null>(null)
@@ -21,6 +22,7 @@ export function App() {
   const [lanDiscoveryDraft, setLanDiscoveryDraft] = useState<boolean | null>(null)
   const [roomDraft, setRoomDraft] = useState('release-war-room')
   const [peerDraft, setPeerDraft] = useState('')
+  const [directDraft, setDirectDraft] = useState('')
   const [messageDraft, setMessageDraft] = useState('')
   const queryClient = useQueryClient()
 
@@ -40,6 +42,7 @@ export function App() {
   const updateRuntimeSettings = useMutation({
     mutationFn: () =>
       desktopStatusClient.updateRuntimeSettings({
+        nickname: nicknameDraft ?? snapshot.data?.settings.nickname ?? 'operator',
         meshId: meshDraft ?? snapshot.data?.settings.meshId ?? 'moss-chat-dev',
         listenPort: Number(listenPortDraft ?? snapshot.data?.settings.listenPort ?? 0),
         initialRoom:
@@ -73,6 +76,21 @@ export function App() {
     },
   })
 
+  const openDirectRoom = useMutation({
+    mutationFn: () => desktopStatusClient.openDirectRoom({ target: directDraft }),
+    onSuccess: (data) => {
+      queryClient.setQueryData(['desktop-snapshot'], data)
+      const targetLabel = directDraft.trim().toLowerCase()
+      const directRoom =
+        data.rooms.find((room) => room.label.toLowerCase() === `@${targetLabel}`) ??
+        data.rooms.find((room) => room.kind === 'dm')
+      if (directRoom) {
+        setSelectedRoomId(directRoom.id)
+      }
+      setDirectDraft('')
+    },
+  })
+
   const publishMessage = useMutation({
     mutationFn: () =>
       desktopStatusClient.publishMessage({
@@ -103,6 +121,7 @@ export function App() {
 
   const data = snapshot.data
   const settings = data.settings
+  const nicknameValue = nicknameDraft ?? settings.nickname
   const meshValue = meshDraft ?? settings.meshId
   const listenPortValue = listenPortDraft ?? `${settings.listenPort}`
   const initialRoomValue = initialRoomDraft ?? settings.initialRoom
@@ -115,9 +134,15 @@ export function App() {
     (message) => message.roomId === activeRoom.id,
   )
   const visiblePeers = data.peers.filter((peer) =>
-    peer.rooms.includes(activeRoom.label),
+    activeRoom.kind === 'system'
+      ? true
+      : peer.rooms.includes(activeRoom.label) ||
+        peer.rooms.includes(`#${activeRoom.id}`),
   )
-  const actionError = subscribeRoom.error?.message ?? connectPeer.error?.message
+  const actionError =
+    subscribeRoom.error?.message ??
+    connectPeer.error?.message ??
+    openDirectRoom.error?.message
   const sendError = publishMessage.error?.message
   const settingsError = updateRuntimeSettings.error?.message
 
@@ -155,6 +180,7 @@ export function App() {
 
       <section className="content-grid">
         <RuntimeSetupPanel
+          nickname={nicknameValue}
           meshId={meshValue}
           listenPort={listenPortValue}
           initialRoom={initialRoomValue}
@@ -164,6 +190,7 @@ export function App() {
           configPreview={settings.configPreview}
           errorNote={settingsError}
           isSaving={updateRuntimeSettings.isPending}
+          onNicknameChange={setNicknameDraft}
           onMeshIdChange={setMeshDraft}
           onListenPortChange={setListenPortDraft}
           onInitialRoomChange={setInitialRoomDraft}
@@ -183,11 +210,22 @@ export function App() {
           stage={data.stage}
           roomDraft={roomDraft}
           peerDraft={peerDraft}
+          directDraft={directDraft}
           onRoomDraftChange={setRoomDraft}
           onPeerDraftChange={setPeerDraft}
+          onDirectDraftChange={setDirectDraft}
           onJoinRoom={() => subscribeRoom.mutate()}
           onConnectPeer={() => connectPeer.mutate()}
-          busyAction={subscribeRoom.isPending ? 'join' : connectPeer.isPending ? 'connect' : undefined}
+          onOpenDirectRoom={() => openDirectRoom.mutate()}
+          busyAction={
+            subscribeRoom.isPending
+              ? 'join'
+              : connectPeer.isPending
+                ? 'connect'
+                : openDirectRoom.isPending
+                  ? 'dm'
+                  : undefined
+          }
           errorNote={actionError}
         />
         <div className="panel action-context">
