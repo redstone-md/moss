@@ -1,0 +1,91 @@
+name: Moss Chat Tauri Dev
+
+on:
+  push:
+    branches:
+      - dev
+    paths:
+      - apps/moss-chat-tauri/**
+      - .github/workflows/moss-chat-tauri-dev.yml
+  pull_request:
+    branches:
+      - dev
+    paths:
+      - apps/moss-chat-tauri/**
+      - .github/workflows/moss-chat-tauri-dev.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: moss-chat-tauri-dev-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Tauri (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            label: linux-amd64
+            rust-target: x86_64-unknown-linux-gnu
+            artifact: moss-chat-tauri-dev-linux-amd64
+            binary: apps/moss-chat-tauri/src-tauri/target/x86_64-unknown-linux-gnu/release/moss-chat-dev
+          - os: windows-latest
+            label: windows-amd64
+            rust-target: x86_64-pc-windows-msvc
+            artifact: moss-chat-tauri-dev-windows-amd64
+            binary: apps/moss-chat-tauri/src-tauri/target/x86_64-pc-windows-msvc/release/moss-chat-dev.exe
+          - os: macos-15-intel
+            label: macos-amd64
+            rust-target: x86_64-apple-darwin
+            artifact: moss-chat-tauri-dev-macos-amd64
+            binary: apps/moss-chat-tauri/src-tauri/target/x86_64-apple-darwin/release/moss-chat-dev
+          - os: macos-latest
+            label: macos-arm64
+            rust-target: aarch64-apple-darwin
+            artifact: moss-chat-tauri-dev-macos-arm64
+            binary: apps/moss-chat-tauri/src-tauri/target/aarch64-apple-darwin/release/moss-chat-dev
+    defaults:
+      run:
+        working-directory: apps/moss-chat-tauri
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/moss-chat-tauri/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-target }}
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build Tauri binary
+        run: npx tauri build --no-bundle --target ${{ matrix.rust-target }}
+
+      - name: Upload Tauri artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            ${{ matrix.binary }}
+            apps/moss-chat-tauri/README.md
+          if-no-files-found: error

@@ -1,16 +1,19 @@
-name: CI
+name: CI Dev
 
 on:
   push:
     branches:
-      - main
+      - dev
   pull_request:
+    branches:
+      - dev
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-dev-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -60,8 +63,26 @@ jobs:
         if: runner.os == 'Windows'
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Run tests
+      - name: Run full test suite
         run: go test ./... -count=1 -timeout 1800s
+
+  mesh-hardening:
+    name: Mesh Hardening
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Re-run mesh package with retries
+        run: go test ./internal/mesh -count=3 -timeout 1800s
 
   build-shared:
     name: Build Shared (${{ matrix.label }})
@@ -123,7 +144,7 @@ jobs:
       - name: Upload shared artifact
         uses: actions/upload-artifact@v4
         with:
-          name: moss-${{ matrix.label }}-shared
+          name: moss-dev-${{ matrix.label }}-shared
           path: |
             ${{ matrix.output }}
             ${{ matrix.header }}
@@ -175,8 +196,38 @@ jobs:
       - name: Upload chat artifact
         uses: actions/upload-artifact@v4
         with:
-          name: moss-chat-${{ matrix.label }}
+          name: moss-chat-dev-${{ matrix.label }}
           path: |
             ${{ matrix.output }}
             cmd/moss-chat/README.md
+          if-no-files-found: error
+
+  build-tauri-web:
+    name: Build Tauri Frontend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/moss-chat-tauri
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/moss-chat-tauri/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Upload frontend artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: moss-chat-tauri-web-dev
+          path: apps/moss-chat-tauri/dist
           if-no-files-found: error
