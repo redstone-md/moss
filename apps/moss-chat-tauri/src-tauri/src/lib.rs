@@ -2,6 +2,8 @@ mod callback_state;
 mod commands;
 mod ffi;
 mod models;
+mod runtime_settings;
+mod snapshot_view;
 mod state;
 
 pub fn run() {
@@ -10,6 +12,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::desktop_snapshot,
             commands::toggle_runtime,
+            commands::update_runtime_settings,
             commands::subscribe_room,
             commands::connect_peer,
             commands::publish_message

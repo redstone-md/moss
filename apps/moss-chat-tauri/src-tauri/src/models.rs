@@ -2,28 +2,41 @@ use serde::Serialize;
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Artifact {
-    pub name: String,
-    pub platform: String,
-    pub notes: String,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Milestone {
-    pub title: String,
-    pub detail: String,
-    pub status: String,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct RuntimeStatus {
     pub state: String,
     pub summary: String,
     pub route: String,
     pub nat_hint: String,
     pub shared_bridge: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeSettings {
+    pub mesh_id: String,
+    pub listen_port: u16,
+    pub initial_room: String,
+    pub startup_peer: String,
+    pub tracker_mode: String,
+    pub lan_discovery_enabled: bool,
+    pub config_preview: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeDiagnostics {
+    pub configured_mesh_id: String,
+    pub configured_listen_port: String,
+    pub initial_room: String,
+    pub startup_peer: String,
+    pub tracker_mode: String,
+    pub lan_discovery: String,
+    pub active_mesh_id: String,
+    pub active_listen_port: String,
+    pub peer_count: usize,
+    pub channel_count: usize,
+    pub active_channels: Vec<String>,
+    pub supernode_ready: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -66,9 +79,9 @@ pub struct DesktopSnapshot {
     pub branch: String,
     pub stage: String,
     pub runtime: RuntimeStatus,
+    pub settings: RuntimeSettings,
+    pub diagnostics: RuntimeDiagnostics,
     pub rooms: Vec<RoomSummary>,
     pub messages: Vec<Message>,
     pub peers: Vec<PeerSummary>,
-    pub artifacts: Vec<Artifact>,
-    pub milestones: Vec<Milestone>,
 }
