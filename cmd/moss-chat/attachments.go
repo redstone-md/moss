@@ -13,8 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rivo/tview"
-
 	"moss/internal/mesh"
 )
 
@@ -131,22 +129,16 @@ func (c *chatApp) confirmAttachmentSend(prepared *preparedAttachment) {
 		formatBytes(prepared.FileSize),
 		prepared.Room,
 	)
-	modal := tview.NewModal().
-		SetText(body).
-		AddButtons([]string{"Offer", "Cancel"}).
-		SetDoneFunc(func(buttonIndex int, buttonLabel string) {
-			c.closeModal("attachment-confirm")
-			if buttonLabel != "Offer" {
-				return
+	c.showChoiceModal("attachment-confirm", body, []string{"Offer", "Cancel"}, func(buttonLabel string) {
+		if buttonLabel != "Offer" {
+			return
+		}
+		go func() {
+			if err := c.offerAttachment(prepared); err != nil {
+				c.showAlert("Attachment", err.Error())
 			}
-			go func() {
-				if err := c.offerAttachment(prepared); err != nil {
-					c.showAlert("Attachment", err.Error())
-				}
-			}()
-		})
-	modal.SetTitle(" Share Attachment ").SetBorder(true)
-	c.showModal("attachment-confirm", modal)
+		}()
+	})
 }
 
 func (c *chatApp) offerAttachment(prepared *preparedAttachment) error {
@@ -339,22 +331,16 @@ func (c *chatApp) showIncomingAttachmentModal(transferID string) {
 		state.SenderName,
 		formatBytes(state.FileSize),
 	)
-	modal := tview.NewModal().
-		SetText(body).
-		AddButtons([]string{"Request", "Cancel"}).
-		SetDoneFunc(func(buttonIndex int, buttonLabel string) {
-			c.closeModal("attachment-download")
-			if buttonLabel != "Request" {
-				return
+	c.showChoiceModal("attachment-download", body, []string{"Request", "Cancel"}, func(buttonLabel string) {
+		if buttonLabel != "Request" {
+			return
+		}
+		go func() {
+			if err := c.acceptIncomingAttachment(transferID); err != nil {
+				c.showAlert("Attachment", err.Error())
 			}
-			go func() {
-				if err := c.acceptIncomingAttachment(transferID); err != nil {
-					c.showAlert("Attachment", err.Error())
-				}
-			}()
-		})
-	modal.SetTitle(" Download Attachment ").SetBorder(true)
-	c.showModal("attachment-download", modal)
+		}()
+	})
 }
 
 func (c *chatApp) acceptIncomingAttachment(transferID string) error {
@@ -424,24 +410,18 @@ func (c *chatApp) promptAttachmentRequest(requesterID, transferID string) {
 		state.FileName,
 		formatBytes(state.FileSize),
 	)
-	modal := tview.NewModal().
-		SetText(body).
-		AddButtons([]string{"Send", "Decline"}).
-		SetDoneFunc(func(buttonIndex int, buttonLabel string) {
-			c.closeModal("attachment-request")
-			switch buttonLabel {
-			case "Send":
-				go func() {
-					if err := c.streamAttachmentToTarget(transferID, requesterID); err != nil {
-						c.showAlert("Attachment", err.Error())
-					}
-				}()
-			case "Decline":
-				go c.declineAttachmentTransfer(transferID, requesterID)
-			}
-		})
-	modal.SetTitle(" Upload Request ").SetBorder(true)
-	c.showModal("attachment-request", modal)
+	c.showChoiceModal("attachment-request", body, []string{"Send", "Decline"}, func(buttonLabel string) {
+		switch buttonLabel {
+		case "Send":
+			go func() {
+				if err := c.streamAttachmentToTarget(transferID, requesterID); err != nil {
+					c.showAlert("Attachment", err.Error())
+				}
+			}()
+		case "Decline":
+			go c.declineAttachmentTransfer(transferID, requesterID)
+		}
+	})
 }
 
 func (c *chatApp) streamAttachmentToTarget(transferID, targetPeerID string) error {
