@@ -20,6 +20,12 @@ go build -o moss-chat.exe .\cmd\moss-chat
 ./moss-chat --nickname Alice --mesh moss-chat-live --listen-port 41036 --room lobby
 ```
 
+Or just run it without flags and answer the startup prompts:
+
+```bash
+./moss-chat
+```
+
 Second peer:
 
 ```bash

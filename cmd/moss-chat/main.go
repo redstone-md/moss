@@ -1,13 +1,16 @@
 package main
 
 import (
+	"bufio"
 	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 
 	mcrypto "moss/internal/crypto"
@@ -48,6 +51,11 @@ type options struct {
 
 func main() {
 	opts, err := parseFlags()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	opts, err = promptMissingOptions(opts, os.Stdin, os.Stdout)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
@@ -117,9 +125,6 @@ func parseFlags() (options, error) {
 	flag.StringVar(&opts.identityFile, "identity-file", "", "path to persistent identity file")
 	flag.Parse()
 
-	if strings.TrimSpace(opts.nickname) == "" {
-		return options{}, errors.New("--nickname is required")
-	}
 	opts.nickname = strings.TrimSpace(opts.nickname)
 	opts.peers = append([]string(nil), peers...)
 	if len(rooms) > 0 {
@@ -136,6 +141,170 @@ func parseFlags() (options, error) {
 	}
 	opts.trackers = append([]string(nil), trackers...)
 	return opts, nil
+}
+
+func promptMissingOptions(opts options, in io.Reader, out io.Writer) (options, error) {
+	if strings.TrimSpace(opts.nickname) != "" {
+		return finalizeOptions(opts)
+	}
+	if in == os.Stdin && !isInteractiveInput() {
+		return options{}, errors.New("--nickname is required when stdin is not interactive")
+	}
+
+	reader := bufio.NewReader(in)
+	fmt.Fprintln(out, "Moss Chat setup")
+	fmt.Fprintln(out, "Press Enter to accept defaults.")
+
+	nickname, err := promptRequired(reader, out, "Nickname")
+	if err != nil {
+		return options{}, err
+	}
+	opts.nickname = nickname
+
+	meshID, err := promptDefault(reader, out, "Mesh ID", opts.meshID)
+	if err != nil {
+		return options{}, err
+	}
+	opts.meshID = meshID
+
+	portText, err := promptDefault(reader, out, "Listen port (0 = auto)", strconv.Itoa(opts.listenPort))
+	if err != nil {
+		return options{}, err
+	}
+	port, err := strconv.Atoi(strings.TrimSpace(portText))
+	if err != nil || port < 0 || port > 65535 {
+		return options{}, errors.New("listen port must be a number between 0 and 65535")
+	}
+	opts.listenPort = port
+
+	roomDefault := defaultRoom
+	if len(opts.rooms) > 0 {
+		roomDefault = opts.rooms[0]
+	}
+	room, err := promptDefault(reader, out, "Initial room", roomDefault)
+	if err != nil {
+		return options{}, err
+	}
+	opts.rooms = []string{room}
+
+	peerText, err := promptDefault(reader, out, "Static peer HOST:PORT (optional)", "")
+	if err != nil {
+		return options{}, err
+	}
+	if peerText != "" {
+		for _, peer := range strings.Split(peerText, ",") {
+			peer = strings.TrimSpace(peer)
+			if peer != "" {
+				opts.peers = append(opts.peers, peer)
+			}
+		}
+	}
+
+	disableTrackers, err := promptDefault(reader, out, "Disable tracker bootstrap? [y/N]", "n")
+	if err != nil {
+		return options{}, err
+	}
+	opts.noTrackers = isYes(disableTrackers)
+
+	return finalizeOptions(opts)
+}
+
+func finalizeOptions(opts options) (options, error) {
+	opts.nickname = strings.TrimSpace(opts.nickname)
+	if opts.nickname == "" {
+		return options{}, errors.New("nickname cannot be empty")
+	}
+
+	opts.meshID = strings.TrimSpace(opts.meshID)
+	if opts.meshID == "" {
+		opts.meshID = defaultMesh
+	}
+
+	if opts.listenPort < 0 || opts.listenPort > 65535 {
+		return options{}, errors.New("listen port must be a number between 0 and 65535")
+	}
+
+	if len(opts.rooms) == 0 {
+		opts.rooms = []string{defaultRoom}
+	}
+	normalizedRooms := make([]string, 0, len(opts.rooms))
+	for _, room := range opts.rooms {
+		normalized, err := normalizeRoom(room)
+		if err != nil {
+			return options{}, err
+		}
+		if !containsString(normalizedRooms, normalized) {
+			normalizedRooms = append(normalizedRooms, normalized)
+		}
+	}
+	opts.rooms = normalizedRooms
+
+	normalizedPeers := make([]string, 0, len(opts.peers))
+	for _, peer := range opts.peers {
+		peer = strings.TrimSpace(peer)
+		if peer != "" && !containsString(normalizedPeers, peer) {
+			normalizedPeers = append(normalizedPeers, peer)
+		}
+	}
+	opts.peers = normalizedPeers
+
+	normalizedTrackers := make([]string, 0, len(opts.trackers))
+	for _, tracker := range opts.trackers {
+		tracker = strings.TrimSpace(tracker)
+		if tracker != "" && !containsString(normalizedTrackers, tracker) {
+			normalizedTrackers = append(normalizedTrackers, tracker)
+		}
+	}
+	opts.trackers = normalizedTrackers
+	return opts, nil
+}
+
+func promptRequired(reader *bufio.Reader, out io.Writer, label string) (string, error) {
+	for {
+		value, err := promptDefault(reader, out, label, "")
+		if err != nil {
+			return "", err
+		}
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value, nil
+		}
+		fmt.Fprintln(out, "Value is required.")
+	}
+}
+
+func promptDefault(reader *bufio.Reader, out io.Writer, label, defaultValue string) (string, error) {
+	if defaultValue == "" {
+		fmt.Fprintf(out, "%s: ", label)
+	} else {
+		fmt.Fprintf(out, "%s [%s]: ", label, defaultValue)
+	}
+	line, err := reader.ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+	value := strings.TrimSpace(line)
+	if value == "" {
+		return defaultValue, nil
+	}
+	return value, nil
+}
+
+func isInteractiveInput() bool {
+	info, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return (info.Mode() & os.ModeCharDevice) != 0
+}
+
+func isYes(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "y", "yes", "1", "true":
+		return true
+	default:
+		return false
+	}
 }
 
 func resolveIdentityPath(nickname, explicit string) (string, error) {
