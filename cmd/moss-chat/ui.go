@@ -490,7 +490,7 @@ func (c *chatApp) showTextModal(title, body string) {
 			c.closeModal("overlay")
 		})
 	modal.SetTitle(" " + title + " ").SetBorder(true)
-	c.showModal("overlay", modal)
+	c.showModal("overlay", modal, modal)
 }
 
 func (c *chatApp) showAlert(title, body string) {
@@ -501,7 +501,7 @@ func (c *chatApp) showAlert(title, body string) {
 			c.closeModal("alert")
 		})
 	modal.SetTitle(" " + title + " ").SetBorder(true)
-	c.showModal("alert", modal)
+	c.showModal("alert", modal, modal)
 }
 
 func (c *chatApp) showJoinRoomModal() {
@@ -596,8 +596,7 @@ func (c *chatApp) showInputModal(title, label, initial string, submit func(strin
 		}
 	})
 	modal := centered(62, 9, form)
-	c.showModal("overlay", modal)
-	c.ui.SetFocus(input)
+	c.showModal("overlay", modal, input)
 }
 
 func (c *chatApp) showChoiceModal(title, body string, buttons []string, onSelect func(label string)) {
@@ -646,8 +645,7 @@ func (c *chatApp) showChoiceModal(title, body string, buttons []string, onSelect
 		form.SetFocus(1)
 	}
 	modal := centered(68, 11, form)
-	c.showModal(title, modal)
-	c.ui.SetFocus(form)
+	c.showModal(title, modal, form)
 }
 
 func centered(width, height int, primitive tview.Primitive) tview.Primitive {
@@ -665,10 +663,14 @@ func centered(width, height int, primitive tview.Primitive) tview.Primitive {
 		AddItem(nil, 0, 1, false)
 }
 
-func (c *chatApp) showModal(name string, primitive tview.Primitive) {
+func (c *chatApp) showModal(name string, primitive tview.Primitive, focus tview.Primitive) {
 	c.queueUI(func() {
 		c.pages.RemovePage(name)
 		c.pages.AddPage(name, primitive, true, true)
+		if focus != nil {
+			c.ui.SetFocus(focus)
+			return
+		}
 		c.ui.SetFocus(primitive)
 	})
 }

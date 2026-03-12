@@ -82,13 +82,13 @@ jobs:
             header: moss.h
             goos: windows
             goarch: amd64
-          - os: macos-13
+          - os: macos-15-intel
             label: macos-amd64
             output: libmoss.dylib
             header: libmoss.h
             goos: darwin
             goarch: amd64
-          - os: macos-14
+          - os: macos-latest
             label: macos-arm64
             output: libmoss.dylib
             header: libmoss.h
@@ -146,12 +146,12 @@ jobs:
             output: moss-chat.exe
             goos: windows
             goarch: amd64
-          - os: macos-13
+          - os: macos-15-intel
             label: macos-amd64
             output: moss-chat
             goos: darwin
             goarch: amd64
-          - os: macos-14
+          - os: macos-latest
             label: macos-arm64
             output: moss-chat
             goos: darwin
