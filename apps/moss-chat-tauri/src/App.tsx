@@ -7,6 +7,8 @@ import { PeerPanel } from './components/PeerPanel'
 import { RoomList } from './components/RoomList'
 import { RuntimePanel } from './components/RuntimePanel'
 import { RuntimeSetupPanel } from './components/RuntimeSetupPanel'
+import { useDesktopErrorDialogs } from './hooks/useDesktopErrorDialogs'
+import { useDesktopNotifications } from './hooks/useDesktopNotifications'
 import { desktopStatusClient } from './lib/desktopStatusClient'
 
 export function App() {
@@ -77,10 +79,11 @@ export function App() {
   })
 
   const openDirectRoom = useMutation({
-    mutationFn: () => desktopStatusClient.openDirectRoom({ target: directDraft }),
-    onSuccess: (data) => {
+    mutationFn: (target?: string) =>
+      desktopStatusClient.openDirectRoom({ target: target ?? directDraft }),
+    onSuccess: (data, target) => {
       queryClient.setQueryData(['desktop-snapshot'], data)
-      const targetLabel = directDraft.trim().toLowerCase()
+      const targetLabel = (target ?? directDraft).trim().toLowerCase()
       const directRoom =
         data.rooms.find((room) => room.label.toLowerCase() === `@${targetLabel}`) ??
         data.rooms.find((room) => room.kind === 'dm')
@@ -145,6 +148,14 @@ export function App() {
     openDirectRoom.error?.message
   const sendError = publishMessage.error?.message
   const settingsError = updateRuntimeSettings.error?.message
+  const runtimeError = toggleRuntime.error?.message
+
+  useDesktopNotifications({ snapshot: data, selectedRoomId })
+  useDesktopErrorDialogs({
+    errors: [settingsError, actionError, sendError, runtimeError].filter(
+      (value): value is string => Boolean(value),
+    ),
+  })
 
   return (
     <main className="shell shell-chat">
@@ -155,7 +166,7 @@ export function App() {
         natHint={data.runtime.natHint}
         sharedBridge={data.runtime.sharedBridge}
         isOnline={data.runtime.state === 'Runtime online'}
-        errorNote={toggleRuntime.isError ? toggleRuntime.error.message : undefined}
+        errorNote={runtimeError}
         onToggle={() => toggleRuntime.mutate()}
         isBusy={toggleRuntime.isPending}
       />
@@ -175,7 +186,13 @@ export function App() {
           isSending={publishMessage.isPending}
           errorNote={sendError}
         />
-        <PeerPanel peers={visiblePeers} />
+        <PeerPanel
+          peers={visiblePeers}
+          onOpenDirectRoom={(target) => {
+            setDirectDraft(target)
+            openDirectRoom.mutate(target)
+          }}
+        />
       </section>
 
       <section className="content-grid">
@@ -216,7 +233,7 @@ export function App() {
           onDirectDraftChange={setDirectDraft}
           onJoinRoom={() => subscribeRoom.mutate()}
           onConnectPeer={() => connectPeer.mutate()}
-          onOpenDirectRoom={() => openDirectRoom.mutate()}
+          onOpenDirectRoom={() => openDirectRoom.mutate(directDraft)}
           busyAction={
             subscribeRoom.isPending
               ? 'join'

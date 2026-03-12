@@ -2,9 +2,10 @@ import type { PeerSummary } from '../lib/schemas'
 
 type PeerPanelProps = {
   peers: PeerSummary[]
+  onOpenDirectRoom: (target: string) => void
 }
 
-export function PeerPanel({ peers }: PeerPanelProps) {
+export function PeerPanel({ peers, onOpenDirectRoom }: PeerPanelProps) {
   return (
     <aside className="panel peer-panel">
       <div className="panel-header">
@@ -25,6 +26,15 @@ export function PeerPanel({ peers }: PeerPanelProps) {
               <span>{peer.latency}</span>
               <span>{peer.rooms.join(', ')}</span>
             </div>
+            {peer.status !== 'self' ? (
+              <button
+                className="secondary-action"
+                type="button"
+                onClick={() => onOpenDirectRoom(peer.displayName)}
+              >
+                Open DM
+              </button>
+            ) : null}
           </article>
         ))}
       </div>
