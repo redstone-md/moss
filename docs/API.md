@@ -2,6 +2,8 @@
 
 This document describes the current public FFI surface exported by `cmd/moss-ffi`.
 
+For packaging, lifecycle, callback/threading guidance, and JNI integration patterns, see [docs/SHARED_INTEGRATION.md](./SHARED_INTEGRATION.md).
+
 ## Build Outputs
 
 Build Moss as a C-shared library:
