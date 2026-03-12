@@ -25,7 +25,10 @@ type chatConfig struct {
 	rooms        []string
 	bootstrap    []string
 	trackers     string
+	debug        bool
+	sounds       bool
 	identityPath string
+	downloadsDir string
 	localPeerID  string
 }
 
@@ -38,12 +41,24 @@ type roomState struct {
 }
 
 type chatPayload struct {
-	Kind   string `json:"kind,omitempty"`
-	Nick   string `json:"nick,omitempty"`
-	Text   string `json:"text,omitempty"`
-	SentAt string `json:"sent_at,omitempty"`
-	Room   string `json:"room,omitempty"`
-	Target string `json:"target,omitempty"`
+	Kind         string `json:"kind,omitempty"`
+	Nick         string `json:"nick,omitempty"`
+	Text         string `json:"text,omitempty"`
+	SentAt       string `json:"sent_at,omitempty"`
+	Room         string `json:"room,omitempty"`
+	Target       string `json:"target,omitempty"`
+	TransferID   string `json:"transfer_id,omitempty"`
+	FileName     string `json:"file_name,omitempty"`
+	FileSize     int64  `json:"file_size,omitempty"`
+	FileSHA256   string `json:"file_sha256,omitempty"`
+	ChunkIndex   int    `json:"chunk_index,omitempty"`
+	ChunkCount   int    `json:"chunk_count,omitempty"`
+	ChunkData    string `json:"chunk_data,omitempty"`
+	CallID       string `json:"call_id,omitempty"`
+	CallAction   string `json:"call_action,omitempty"`
+	Mention      bool   `json:"mention,omitempty"`
+	Attachment   bool   `json:"attachment,omitempty"`
+	Notification string `json:"notification,omitempty"`
 }
 
 type eventDetail struct {
@@ -77,7 +92,10 @@ type chatApp struct {
 	identityPath string
 	bootstrap    []string
 	trackers     string
+	debug        bool
+	sounds       bool
 	localPeerID  string
+	downloadsDir string
 
 	ui       *tview.Application
 	pages    *tview.Pages
@@ -100,6 +118,8 @@ type chatApp struct {
 	roomOrder    []string
 	roomByName   map[string]*roomState
 	peerNames    map[string]string
+	callState    callState
+	incoming     map[string]*incomingAttachment
 	currentRoom  string
 	info         runtimeInfo
 	refreshCh    chan struct{}
@@ -113,7 +133,10 @@ func newChatApp(cfg chatConfig) *chatApp {
 		identityPath: cfg.identityPath,
 		bootstrap:    append([]string(nil), cfg.bootstrap...),
 		trackers:     cfg.trackers,
+		debug:        cfg.debug,
+		sounds:       cfg.sounds,
 		localPeerID:  cfg.localPeerID,
+		downloadsDir: cfg.downloadsDir,
 		stopCh:       make(chan struct{}),
 		roomByName: map[string]*roomState{
 			systemRoom: {
@@ -125,6 +148,7 @@ func newChatApp(cfg chatConfig) *chatApp {
 		roomOrder:   []string{systemRoom},
 		currentRoom: defaultRoom,
 		peerNames:   make(map[string]string),
+		incoming:    make(map[string]*incomingAttachment),
 		refreshCh:   make(chan struct{}, 1),
 	}
 	app.peerNames[cfg.localPeerID] = cfg.nickname
@@ -291,7 +315,7 @@ func (c *chatApp) buildUI() {
 	})
 
 	c.help = tview.NewTextView().SetDynamicColors(true)
-	c.help.SetText("F1 help | F2/F3 rooms | F4 new room | F5 DM | F6 nick | F8 connect | Tab focus | Enter send")
+	c.help.SetText("F1 help | F4 room | F5 DM | F6 nick | F7 attach | F8 connect | F9 debug | F10 call | Enter send")
 	c.status = tview.NewTextView().SetDynamicColors(true)
 
 	body := tview.NewFlex().
@@ -329,8 +353,17 @@ func (c *chatApp) buildUI() {
 		case tcell.KeyF6:
 			c.showNickModal()
 			return nil
+		case tcell.KeyF7:
+			c.showAttachModal()
+			return nil
 		case tcell.KeyF8:
 			c.showConnectModal()
+			return nil
+		case tcell.KeyF9:
+			c.toggleDebug()
+			return nil
+		case tcell.KeyF10:
+			c.showCallModal()
 			return nil
 		case tcell.KeyTAB:
 			c.cycleFocus(1)
@@ -402,10 +435,13 @@ func (c *chatApp) showHelpModal() {
 		"F4: create or join room",
 		"F5: open direct chat",
 		"F6: rename yourself",
+		"F7: send attachment",
 		"F8: connect to HOST:PORT",
+		"F9: toggle debug events",
+		"F10: place a call",
 		"Tab / Shift-Tab: switch focus",
 		"Ctrl-L: jump to composer",
-		"/join ROOM, /leave, /goto ROOM, /msg TARGET [TEXT], /peers, /net, /status",
+		"/join ROOM, /leave, /goto ROOM, /msg TARGET [TEXT], /attach PATH, /call TARGET, /answer, /decline, /hangup, /peers, /net, /status",
 	}, "\n")
 	c.showTextModal("Shortcuts", body)
 }
@@ -442,6 +478,12 @@ func (c *chatApp) showConnectModal() {
 	})
 }
 
+func (c *chatApp) showAttachModal() {
+	c.showInputModal("Send Attachment", "File path", "", func(value string) {
+		c.handleCommand("attach " + value)
+	})
+}
+
 func (c *chatApp) showDirectMessageModal() {
 	c.showInputModal("Open Direct Chat", "Nickname or peer id", "", func(value string) {
 		if value == "" {
@@ -451,6 +493,24 @@ func (c *chatApp) showDirectMessageModal() {
 			c.systemMessage(err.Error())
 		}
 	})
+}
+
+func (c *chatApp) showCallModal() {
+	c.showInputModal("Call Peer", "Nickname or peer id", "", func(value string) {
+		c.handleCommand("call " + value)
+	})
+}
+
+func (c *chatApp) toggleDebug() {
+	c.mu.Lock()
+	c.debug = !c.debug
+	enabled := c.debug
+	c.mu.Unlock()
+	if enabled {
+		c.systemMessage("Debug events enabled.")
+		return
+	}
+	c.systemMessage("Debug events disabled.")
 }
 
 func (c *chatApp) showInputModal(title, label, initial string, submit func(string)) {
@@ -504,12 +564,17 @@ func centered(width, height int, primitive tview.Primitive) tview.Primitive {
 }
 
 func (c *chatApp) showModal(name string, primitive tview.Primitive) {
-	c.pages.AddPage(name, primitive, true, true)
+	c.queueUI(func() {
+		c.pages.RemovePage(name)
+		c.pages.AddPage(name, primitive, true, true)
+	})
 }
 
 func (c *chatApp) closeModal(name string) {
-	c.pages.RemovePage(name)
-	c.setFocus(2)
+	c.queueUI(func() {
+		c.pages.RemovePage(name)
+		c.setFocus(2)
+	})
 }
 
 func (c *chatApp) handleInput(text string) {
@@ -535,10 +600,11 @@ func (c *chatApp) sendCurrentRoomMessage(room, text string) {
 	}
 
 	payload := chatPayload{
-		Kind:   "chat",
-		Nick:   c.nickname,
-		Text:   text,
-		SentAt: time.Now().Format("15:04:05"),
+		Kind:    "chat",
+		Nick:    c.nickname,
+		Text:    text,
+		SentAt:  time.Now().Format("15:04:05"),
+		Mention: c.containsMention(text),
 	}
 	raw, _ := json.Marshal(payload)
 	code := c.node.Publish(room, raw)
@@ -564,7 +630,7 @@ func (c *chatApp) handleCommand(raw string) {
 
 	switch command {
 	case "help":
-		c.systemMessage("Commands: /join ROOM, /leave [ROOM], /goto ROOM, /nick NAME, /msg TARGET [TEXT], /peers, /rooms, /status, /net, /connect HOST:PORT, /quit")
+		c.systemMessage("Commands: /join ROOM, /leave [ROOM], /goto ROOM, /nick NAME, /msg TARGET [TEXT], /attach PATH, /call TARGET, /answer, /decline, /hangup, /debug, /peers, /rooms, /status, /net, /connect HOST:PORT, /quit")
 	case "quit", "exit":
 		c.ui.Stop()
 	case "join":
@@ -679,6 +745,39 @@ func (c *chatApp) handleCommand(raw string) {
 		}
 	case "peers":
 		c.showPeerSummary()
+	case "attach":
+		if arg == "" {
+			c.systemMessage("Usage: /attach PATH")
+			return
+		}
+		c.mu.RLock()
+		room := c.currentRoom
+		c.mu.RUnlock()
+		if err := c.sendAttachment(room, arg); err != nil {
+			c.systemMessage(err.Error())
+		}
+	case "call":
+		if arg == "" {
+			c.systemMessage("Usage: /call TARGET")
+			return
+		}
+		if err := c.startCall(arg); err != nil {
+			c.systemMessage(err.Error())
+		}
+	case "answer":
+		if err := c.answerCall(); err != nil {
+			c.systemMessage(err.Error())
+		}
+	case "decline":
+		if err := c.declineCall(); err != nil {
+			c.systemMessage(err.Error())
+		}
+	case "hangup":
+		if err := c.hangupCall(); err != nil {
+			c.systemMessage(err.Error())
+		}
+	case "debug":
+		c.toggleDebug()
 	case "status":
 		c.mu.RLock()
 		info := c.info
@@ -771,6 +870,13 @@ func (c *chatApp) onMessage(channel string, sender [32]byte, data []byte) {
 
 	line := string(data)
 	var payload chatPayload
+	if json.Unmarshal(data, &payload) == nil {
+		switch payload.Kind {
+		case "attachment-meta", "attachment-chunk":
+			c.handleAttachmentPayload(room, senderID, payload)
+			return
+		}
+	}
 	if json.Unmarshal(data, &payload) == nil && payload.Text != "" {
 		c.rememberPeerName(senderID, payload.Nick)
 		nick := payload.Nick
@@ -785,6 +891,9 @@ func (c *chatApp) onMessage(channel string, sender [32]byte, data []byte) {
 			sentAt = time.Now().Format("15:04:05")
 		}
 		line = fmt.Sprintf("[%s] %s: %s", sentAt, nick, payload.Text)
+		if senderID != c.localPeerID {
+			c.notifyIncomingMessage(room, nick, payload.Text)
+		}
 	}
 	c.appendLine(room, line)
 }
@@ -809,6 +918,8 @@ func (c *chatApp) handleControlMessage(senderID string, data []byte) {
 		}
 		c.setRoomTitle(room, "@"+emptyFallback(payload.Nick, c.displayNameForPeer(senderID)))
 		c.systemMessage("Direct chat ready with " + c.displayNameForPeer(senderID))
+	case "call_invite", "call_accept", "call_decline", "call_hangup":
+		c.handleCallPayload(senderID, payload)
 	}
 }
 
@@ -827,6 +938,12 @@ func (c *chatApp) onEvent(eventType int32, detailJSON string) {
 	case mesh.EventSupernodeRevoked:
 		c.systemMessage("Local node is no longer relay-capable (" + detail.NATType + ").")
 	case mesh.EventTrackerAnnounce:
+		c.mu.RLock()
+		debug := c.debug
+		c.mu.RUnlock()
+		if !debug {
+			return
+		}
 		c.systemMessage(fmt.Sprintf(
 			"Tracker returned %d candidate peers; connected now: %d.",
 			detail.CandidatePeers,
@@ -1071,6 +1188,21 @@ func (c *chatApp) queueRefresh() {
 	}
 }
 
+func (c *chatApp) queueUI(action func()) {
+	if c.ui == nil {
+		action()
+		return
+	}
+	c.mu.RLock()
+	running := c.running
+	c.mu.RUnlock()
+	if !running {
+		action()
+		return
+	}
+	go c.ui.QueueUpdateDraw(action)
+}
+
 func (c *chatApp) refresh() {
 	c.mu.RLock()
 	currentRoom := c.currentRoom
@@ -1085,6 +1217,8 @@ func (c *chatApp) refresh() {
 	}
 	info := c.info
 	nickname := c.nickname
+	debug := c.debug
+	callLabel := c.callState.summary()
 	c.mu.RUnlock()
 
 	c.mu.Lock()
@@ -1129,13 +1263,15 @@ func (c *chatApp) refresh() {
 	c.messages.ScrollToEnd()
 	c.input.SetLabel(fmt.Sprintf("%s@%s> ", nickname, currentRoom))
 	c.status.SetText(fmt.Sprintf(
-		"mesh=%s nick=%s room=#%s peers=%d nat=%s relay-ready=%t advertised=%s",
+		"mesh=%s nick=%s room=#%s peers=%d nat=%s relay-ready=%t debug=%t call=%s advertised=%s",
 		info.MeshID,
 		nickname,
 		currentRoom,
 		info.PeerCount,
 		emptyFallback(info.NATType, "unknown"),
 		info.SupernodeReady,
+		debug,
+		callLabel,
 		emptyFallback(info.AdvertisedAddr, net.JoinHostPort("127.0.0.1", strconv.Itoa(info.ListenPort))),
 	))
 }

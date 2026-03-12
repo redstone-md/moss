@@ -48,7 +48,10 @@ type options struct {
 	rooms        []string
 	trackers     []string
 	noTrackers   bool
+	debug        bool
+	noSound      bool
 	identityFile string
+	downloadsDir string
 }
 
 func main() {
@@ -71,6 +74,15 @@ func main() {
 	identity, err := loadOrCreateIdentity(identityPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "identity error: %v\n", err)
+		os.Exit(1)
+	}
+	downloadsDir, err := resolveDownloadsPath(opts.downloadsDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "downloads dir error: %v\n", err)
+		os.Exit(1)
+	}
+	if err := os.MkdirAll(downloadsDir, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "downloads dir error: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -99,7 +111,10 @@ func main() {
 		rooms:        opts.rooms,
 		bootstrap:    opts.peers,
 		trackers:     trackerMode(cfg.Trackers, opts.noTrackers),
+		debug:        opts.debug,
+		sounds:       !opts.noSound,
 		identityPath: identityPath,
+		downloadsDir: downloadsDir,
 		localPeerID:  hex.EncodeToString(pub[:]),
 	})
 	if err := app.run(); err != nil {
@@ -124,7 +139,10 @@ func parseFlags() (options, error) {
 	flag.Var(&rooms, "room", "initial room to join (repeatable)")
 	flag.Var(&trackers, "tracker", "override tracker list (repeatable)")
 	flag.BoolVar(&opts.noTrackers, "no-trackers", false, "disable tracker bootstrap")
+	flag.BoolVar(&opts.debug, "debug", false, "show tracker and protocol debug events in the System room")
+	flag.BoolVar(&opts.noSound, "no-sound", false, "disable desktop and beep notifications")
 	flag.StringVar(&opts.identityFile, "identity-file", "", "path to persistent identity file")
+	flag.StringVar(&opts.downloadsDir, "downloads-dir", "", "directory where incoming attachments are stored")
 	flag.Parse()
 
 	opts.nickname = strings.TrimSpace(opts.nickname)
@@ -319,6 +337,17 @@ func resolveIdentityPath(nickname, explicit string) (string, error) {
 	}
 	safeName := sanitizeName(nickname)
 	return filepath.Join(configDir, "moss-chat", safeName+".identity"), nil
+}
+
+func resolveDownloadsPath(explicit string) (string, error) {
+	if explicit != "" {
+		return filepath.Abs(explicit)
+	}
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(configDir, "moss-chat", "downloads"), nil
 }
 
 func loadOrCreateIdentity(path string) (*mcrypto.Identity, error) {

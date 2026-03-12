@@ -92,3 +92,16 @@ func TestDirectRoomNameStableOrdering(t *testing.T) {
 		t.Fatalf("expected stable room ordering, got %q and %q", a, b)
 	}
 }
+
+func TestFormatBytes(t *testing.T) {
+	if got := formatBytes(1536); got != "1.5 KB" {
+		t.Fatalf("unexpected byte format %q", got)
+	}
+}
+
+func TestContainsMention(t *testing.T) {
+	app := &chatApp{nickname: "Andrii"}
+	if !app.containsMention("hello @andrii") {
+		t.Fatal("expected mention to be detected")
+	}
+}
