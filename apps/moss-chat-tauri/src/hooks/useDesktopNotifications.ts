@@ -3,7 +3,7 @@ import type { DesktopSnapshot } from '../lib/schemas'
 import { notifyDesktop } from '../lib/desktopNotifications'
 
 type UseDesktopNotificationsOptions = {
-  snapshot: DesktopSnapshot
+  snapshot?: DesktopSnapshot
   selectedRoomId: string
 }
 
@@ -14,6 +14,10 @@ export function useDesktopNotifications({
   const seenMessageIds = useRef<Set<string>>(new Set())
 
   useEffect(() => {
+    if (!snapshot) {
+      return
+    }
+
     for (const message of snapshot.messages) {
       if (seenMessageIds.current.has(message.id)) {
         continue

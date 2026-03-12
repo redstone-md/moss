@@ -35,6 +35,11 @@ export function App() {
     refetchInterval: 1500,
   })
 
+  useDesktopNotifications({
+    snapshot: snapshot.data,
+    selectedRoomId,
+  })
+
   const toggleRuntime = useMutation({
     mutationFn: () => desktopStatusClient.toggleRuntime(),
     onSuccess: (data) => {
@@ -107,6 +112,20 @@ export function App() {
     },
   })
 
+  const settingsError = updateRuntimeSettings.error?.message
+  const actionError =
+    subscribeRoom.error?.message ??
+    connectPeer.error?.message ??
+    openDirectRoom.error?.message
+  const sendError = publishMessage.error?.message
+  const runtimeError = toggleRuntime.error?.message
+
+  useDesktopErrorDialogs({
+    errors: [settingsError, actionError, sendError, runtimeError].filter(
+      (value): value is string => Boolean(value),
+    ),
+  })
+
   if (snapshot.isPending) {
     return <main className="shell loading">Loading desktop runtime snapshot...</main>
   }
@@ -146,20 +165,6 @@ export function App() {
       : peer.rooms.includes(activeRoom.label) ||
         peer.rooms.includes(`#${activeRoom.id}`),
   )
-  const actionError =
-    subscribeRoom.error?.message ??
-    connectPeer.error?.message ??
-    openDirectRoom.error?.message
-  const sendError = publishMessage.error?.message
-  const settingsError = updateRuntimeSettings.error?.message
-  const runtimeError = toggleRuntime.error?.message
-
-  useDesktopNotifications({ snapshot: data, selectedRoomId })
-  useDesktopErrorDialogs({
-    errors: [settingsError, actionError, sendError, runtimeError].filter(
-      (value): value is string => Boolean(value),
-    ),
-  })
 
   return (
     <main className="shell shell-chat">
