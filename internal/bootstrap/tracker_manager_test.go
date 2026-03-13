@@ -190,3 +190,63 @@ func containsTrackerCall(calls []string, want string) bool {
 	}
 	return false
 }
+
+type blockingTrackerClient struct {
+	fakeTrackerClient
+	block map[string]bool
+}
+
+func (b *blockingTrackerClient) Announce(ctx context.Context, trackerURL string, req AnnounceRequest) ([]string, error) {
+	b.mu.Lock()
+	b.calls = append(b.calls, trackerURL)
+	shouldBlock := b.block[trackerURL]
+	result := b.responses[trackerURL]
+	b.mu.Unlock()
+	if shouldBlock {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	if result.peers == nil {
+		return nil, result.err
+	}
+	return append([]string(nil), result.peers...), result.err
+}
+
+func TestManagerAnnounceAllHonorsContextDeadline(t *testing.T) {
+	client := &blockingTrackerClient{
+		fakeTrackerClient: fakeTrackerClient{
+			responses: map[string]fakeTrackerResult{
+				"udp://tracker-fast/announce":     {err: errors.New("fast failed")},
+				"udp://tracker-blocking/announce": {err: context.DeadlineExceeded},
+			},
+		},
+		block: map[string]bool{
+			"udp://tracker-blocking/announce": true,
+		},
+	}
+	manager := &Manager{
+		UDP:           client,
+		HTTP:          client,
+		maxConcurrent: 2,
+		state:         make(map[string]trackerState),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err := manager.AnnounceAll(ctx, []string{
+		"udp://tracker-fast/announce",
+		"udp://tracker-blocking/announce",
+	}, AnnounceRequest{})
+	if err == nil {
+		t.Fatal("expected AnnounceAll to fail on context deadline")
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("expected AnnounceAll to stop promptly on deadline, got %s", elapsed)
+	}
+	calls := client.Calls()
+	if len(calls) != 2 {
+		t.Fatalf("expected both trackers to be attempted in batch, got %#v", calls)
+	}
+}
