@@ -154,6 +154,13 @@ type meshInfo struct {
 	SupernodeReady bool     `json:"supernode_ready"`
 }
 
+const (
+	peerLatencyPruneThreshold = 2 * time.Second
+	peerPingTimeout           = 5 * time.Second
+	peerDisconnectMissLimit   = 6
+	peerProbeIntervalFloor    = 30 * time.Second
+)
+
 func NewNode(meshID string, psk []byte, cfg Config) (*Node, error) {
 	return NewNodeWithIdentity(meshID, psk, cfg, nil)
 }
@@ -1568,14 +1575,11 @@ func (n *Node) probePeerLatency(now time.Time) {
 		peer      *peerConn
 		requestID string
 	}
-	interval := 30 * time.Second
-	if heartbeat := n.config.Heartbeat(); heartbeat > 0 && heartbeat < interval {
-		interval = heartbeat
-	}
+	interval := n.peerProbeInterval()
 	targets := make([]pingTarget, 0)
 	n.mu.Lock()
 	for _, peer := range n.peers {
-		if peer.pingPending != "" && now.Sub(peer.pingSentAt) <= 2*time.Second {
+		if peer.pingPending != "" && now.Sub(peer.pingSentAt) <= peerPingTimeout {
 			continue
 		}
 		if peer.pingPending == "" && !peer.pingSentAt.IsZero() && now.Sub(peer.pingSentAt) < interval {
@@ -1598,25 +1602,30 @@ func (n *Node) probePeerLatency(now time.Time) {
 func (n *Node) pruneHighLatencyPeers() {
 	now := time.Now()
 	ids := make([]string, 0, len(n.peers))
+	pruneOnly := make([]string, 0, len(n.peers))
 	n.mu.Lock()
 	for id, peer := range n.peers {
 		if n.shouldRetainPeerLocked(peer) {
 			continue
 		}
-		if peer.lastRTT > 2*time.Second {
-			ids = append(ids, id)
+		if peer.lastRTT > peerLatencyPruneThreshold {
+			pruneOnly = append(pruneOnly, id)
 			continue
 		}
-		if peer.pingPending != "" && now.Sub(peer.pingSentAt) > 2*time.Second {
+		if peer.pingPending != "" && now.Sub(peer.pingSentAt) > peerPingTimeout {
 			peer.pingPending = ""
 			peer.pingSentAt = time.Time{}
 			peer.pingMisses++
-			if peer.pingMisses >= 3 {
+			pruneOnly = append(pruneOnly, id)
+			if peer.pingMisses >= peerDisconnectMissLimit {
 				ids = append(ids, id)
 			}
 		}
 	}
 	n.mu.Unlock()
+	for _, id := range pruneOnly {
+		n.prunePeerFromAllMeshes(id)
+	}
 	for _, id := range ids {
 		n.mu.RLock()
 		peer := n.peers[id]
@@ -1666,13 +1675,31 @@ func (n *Node) pruneLowScoringPeers() {
 	}
 	n.mu.RUnlock()
 	for _, id := range ids {
+		n.prunePeerFromAllMeshes(id)
+	}
+}
+
+func (n *Node) prunePeerFromAllMeshes(peerID string) {
+	for _, channel := range n.pubsub.SnapshotLocal() {
+		if !n.pubsub.InMesh(channel, peerID) {
+			continue
+		}
+		n.pubsub.SetMeshPeer(channel, peerID, false)
 		n.mu.RLock()
-		peer := n.peers[id]
+		peer := n.peers[peerID]
 		n.mu.RUnlock()
 		if peer != nil {
-			_ = peer.session.Close()
+			n.sendEnvelope(peer, gossip.Envelope{Type: gossip.TypePrune, Channel: channel})
 		}
 	}
+}
+
+func (n *Node) peerProbeInterval() time.Duration {
+	interval := peerProbeIntervalFloor
+	if heartbeat := n.config.Heartbeat(); heartbeat > interval {
+		interval = heartbeat
+	}
+	return interval
 }
 
 func (n *Node) dispatchLoop(ctx context.Context) {
