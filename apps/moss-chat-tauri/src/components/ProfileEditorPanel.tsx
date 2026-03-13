@@ -1,5 +1,7 @@
 type ProfileEditorPanelProps = {
   nickname: string
+  avatarPreviewUrl: string | null
+  avatarFileName: string | null
   meshId: string
   initialRoom: string
   startupPeer: string
@@ -9,6 +11,7 @@ type ProfileEditorPanelProps = {
   configPreview: string
   errorNote?: string
   isSaving: boolean
+  onAvatarChange: (file: File | null) => void
   onNicknameChange: (value: string) => void
   onMeshIdChange: (value: string) => void
   onInitialRoomChange: (value: string) => void
@@ -21,6 +24,8 @@ type ProfileEditorPanelProps = {
 
 export function ProfileEditorPanel({
   nickname,
+  avatarPreviewUrl,
+  avatarFileName,
   meshId,
   initialRoom,
   startupPeer,
@@ -30,6 +35,7 @@ export function ProfileEditorPanel({
   configPreview,
   errorNote,
   isSaving,
+  onAvatarChange,
   onNicknameChange,
   onMeshIdChange,
   onInitialRoomChange,
@@ -49,17 +55,38 @@ export function ProfileEditorPanel({
       </div>
 
       <div className="profile-preview">
-        <div className="profile-avatar-preview">{avatarLabel(nickname)}</div>
+        <div className="profile-avatar-preview-shell">
+          {avatarPreviewUrl ? (
+            <img
+              className="profile-avatar-image"
+              src={avatarPreviewUrl}
+              alt="Profile preview"
+            />
+          ) : (
+            <div className="profile-avatar-preview">{avatarLabel(nickname)}</div>
+          )}
+        </div>
         <div>
           <strong>{nickname || 'operator'}</strong>
           <p className="runtime-summary">
             Live preview of how your identity appears in the channel list and message
             stream.
           </p>
+          <p className="runtime-summary">
+            {avatarFileName ? `Photo ready: ${avatarFileName}` : 'No profile photo selected yet.'}
+          </p>
         </div>
       </div>
 
       <div className="setup-grid">
+        <label className="field-grid">
+          <span>Profile photo</span>
+          <input
+            type="file"
+            accept="image/*"
+            onChange={(event) => onAvatarChange(event.target.files?.[0] ?? null)}
+          />
+        </label>
         <label className="field-grid">
           <span>Display name</span>
           <input value={nickname} onChange={(event) => onNicknameChange(event.target.value)} />

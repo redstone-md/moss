@@ -1,12 +1,12 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ActionDeck } from './components/ActionDeck'
 import { ChatHeader } from './components/ChatHeader'
 import { DiagnosticsPanel } from './components/DiagnosticsPanel'
 import { MessagePanel } from './components/MessagePanel'
 import { OnboardingScreen } from './components/OnboardingScreen'
 import { PeerPanel } from './components/PeerPanel'
 import { ProfileEditorPanel } from './components/ProfileEditorPanel'
+import { QuickActionsPanel } from './components/QuickActionsPanel'
 import { RuntimePanel } from './components/RuntimePanel'
 import { Sidebar } from './components/Sidebar'
 import { useDesktopErrorDialogs } from './hooks/useDesktopErrorDialogs'
@@ -32,11 +32,21 @@ export function App() {
     null,
   )
   const [lanDiscoveryDraft, setLanDiscoveryDraft] = useState<boolean | null>(null)
+  const [avatarPreviewUrl, setAvatarPreviewUrl] = useState<string | null>(null)
+  const [avatarFileName, setAvatarFileName] = useState<string | null>(null)
   const [roomDraft, setRoomDraft] = useState('design-reviews')
   const [peerDraft, setPeerDraft] = useState('')
   const [directDraft, setDirectDraft] = useState('')
   const [messageDraft, setMessageDraft] = useState('')
   const queryClient = useQueryClient()
+
+  useEffect(() => {
+    return () => {
+      if (avatarPreviewUrl?.startsWith('blob:')) {
+        URL.revokeObjectURL(avatarPreviewUrl)
+      }
+    }
+  }, [avatarPreviewUrl])
 
   const snapshot = useQuery({
     queryKey: ['desktop-snapshot'],
@@ -82,6 +92,7 @@ export function App() {
       setSelectedRoomId(normalizedRoom)
       setCreateMode(false)
       setSidebarOpen(false)
+      setSelectedView('chat')
     },
   })
 
@@ -163,18 +174,36 @@ export function App() {
   const trackerModeValue = trackerModeDraft ?? settings.trackerMode
   const lanDiscoveryValue = lanDiscoveryDraft ?? settings.lanDiscoveryEnabled
 
+  const visibleRooms = (() => {
+    const filtered = rooms
+      .filter((room) => room.id !== '__moss_chat_control__')
+      .sort((left, right) => {
+        if (left.kind === 'system' && right.kind !== 'system') {
+          return 1
+        }
+        if (left.kind !== 'system' && right.kind === 'system') {
+          return -1
+        }
+        return left.label.localeCompare(right.label)
+      })
+    return filtered.length > 0 ? filtered : [getFallbackRoom()]
+  })()
+
   const filteredRooms = (() => {
     const needle = roomSearch.trim().toLowerCase()
     if (!needle) {
-      return rooms
+      return visibleRooms
     }
-    return rooms.filter((room) => room.label.toLowerCase().includes(needle))
+    return visibleRooms.filter((room) => room.label.toLowerCase().includes(needle))
   })()
 
+  const sidebarChannels = filteredRooms.filter((room) => room.kind !== 'system')
+  const sidebarUtilityRooms = filteredRooms.filter((room) => room.kind === 'system')
+
   const activeRoom =
-    rooms.find((room) => room.id === selectedRoomId) ??
-    rooms.find((room) => room.id === settings.initialRoom) ??
-    rooms[0]
+    visibleRooms.find((room) => room.id === selectedRoomId) ??
+    visibleRooms.find((room) => room.id === settings.initialRoom) ??
+    visibleRooms[0]
 
   const visibleMessages = data.messages.filter((message) => message.roomId === activeRoom.id)
 
@@ -192,6 +221,19 @@ export function App() {
       setSelectedRoomId(runningSnapshot.settings.initialRoom)
     }
     setOnboardingDismissed(true)
+  }
+
+  function handleAvatarChange(file: File | null) {
+    if (avatarPreviewUrl?.startsWith('blob:')) {
+      URL.revokeObjectURL(avatarPreviewUrl)
+    }
+    if (!file) {
+      setAvatarPreviewUrl(null)
+      setAvatarFileName(null)
+      return
+    }
+    setAvatarPreviewUrl(URL.createObjectURL(file))
+    setAvatarFileName(file.name)
   }
 
   const showOnboarding = data.runtime.state !== 'Runtime online' && !onboardingDismissed
@@ -239,7 +281,8 @@ export function App() {
       <section className="workspace-shell">
         <div className={`sidebar-drawer${sidebarOpen ? ' sidebar-drawer-open' : ''}`}>
           <Sidebar
-            rooms={filteredRooms}
+            channels={sidebarChannels}
+            utilityRooms={sidebarUtilityRooms}
             selectedRoomId={activeRoom.id}
             roomSearch={roomSearch}
             roomDraft={roomDraft}
@@ -272,6 +315,8 @@ export function App() {
             <div className="chat-content profile-content">
               <ProfileEditorPanel
                 nickname={nicknameValue}
+                avatarPreviewUrl={avatarPreviewUrl}
+                avatarFileName={avatarFileName}
                 meshId={meshValue}
                 initialRoom={initialRoomValue}
                 startupPeer={startupPeerValue}
@@ -281,6 +326,7 @@ export function App() {
                 configPreview={settings.configPreview}
                 errorNote={settingsError}
                 isSaving={updateRuntimeSettings.isPending}
+                onAvatarChange={handleAvatarChange}
                 onNicknameChange={setNicknameDraft}
                 onMeshIdChange={setMeshDraft}
                 onInitialRoomChange={setInitialRoomDraft}
@@ -290,7 +336,26 @@ export function App() {
                 onLanDiscoveryChange={setLanDiscoveryDraft}
                 onSave={() => updateRuntimeSettings.mutate()}
               />
-              <DiagnosticsPanel diagnostics={data.diagnostics} />
+
+              <div className="profile-side-stack">
+                <QuickActionsPanel
+                  peerDraft={peerDraft}
+                  directDraft={directDraft}
+                  busyAction={
+                    connectPeer.isPending
+                      ? 'connect'
+                      : openDirectRoom.isPending
+                        ? 'dm'
+                        : undefined
+                  }
+                  errorNote={actionError}
+                  onPeerDraftChange={setPeerDraft}
+                  onDirectDraftChange={setDirectDraft}
+                  onConnectPeer={() => connectPeer.mutate()}
+                  onOpenDirectRoom={() => openDirectRoom.mutate(directDraft)}
+                />
+                <DiagnosticsPanel diagnostics={data.diagnostics} />
+              </div>
             </div>
           ) : (
             <div className="chat-content">
@@ -313,34 +378,6 @@ export function App() {
             </div>
           )}
         </section>
-      </section>
-
-      <section className="bottom-dock">
-        <ActionDeck
-          appName={data.appName}
-          version={data.version}
-          branch={data.branch}
-          stage={data.stage}
-          roomDraft={roomDraft}
-          peerDraft={peerDraft}
-          directDraft={directDraft}
-          onRoomDraftChange={setRoomDraft}
-          onPeerDraftChange={setPeerDraft}
-          onDirectDraftChange={setDirectDraft}
-          onJoinRoom={() => subscribeRoom.mutate()}
-          onConnectPeer={() => connectPeer.mutate()}
-          onOpenDirectRoom={() => openDirectRoom.mutate(directDraft)}
-          busyAction={
-            subscribeRoom.isPending
-              ? 'join'
-              : connectPeer.isPending
-                ? 'connect'
-                : openDirectRoom.isPending
-                  ? 'dm'
-                  : undefined
-          }
-          errorNote={actionError}
-        />
       </section>
     </main>
   )

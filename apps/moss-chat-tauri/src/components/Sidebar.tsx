@@ -1,7 +1,8 @@
 import type { RoomSummary } from '../lib/schemas'
 
 type SidebarProps = {
-  rooms: RoomSummary[]
+  channels: RoomSummary[]
+  utilityRooms: RoomSummary[]
   selectedRoomId: string
   roomSearch: string
   roomDraft: string
@@ -15,7 +16,8 @@ type SidebarProps = {
 }
 
 export function Sidebar({
-  rooms,
+  channels,
+  utilityRooms,
   selectedRoomId,
   roomSearch,
   roomDraft,
@@ -75,35 +77,48 @@ export function Sidebar({
       ) : null}
 
       <div className="sidebar-room-list" role="list" aria-label="Channels">
-        {rooms.length > 0 ? (
-          rooms.map((room) => {
-            const selected = room.id === selectedRoomId
-            return (
-              <button
-                className={`sidebar-room${selected ? ' sidebar-room-selected' : ''}`}
-                key={room.id}
-                type="button"
-                onClick={() => onSelectRoom(room.id)}
-              >
-                <div>
-                  <strong>{room.label}</strong>
-                  <span>
-                    {room.participants} member{room.participants === 1 ? '' : 's'}
-                  </span>
-                </div>
-                <span className="room-pill">
-                  {room.unread > 0 ? room.unread : room.kind}
-                </span>
-              </button>
-            )
-          })
+        {channels.length > 0 ? (
+          channels.map((room) => renderRoom(room, selectedRoomId, onSelectRoom))
         ) : (
           <div className="sidebar-empty">
             <strong>No channels yet</strong>
             <p>Create or join a room to start a conversation.</p>
           </div>
         )}
+
+        {utilityRooms.length > 0 ? (
+          <div className="sidebar-section">
+            <p className="eyebrow">Workspace</p>
+            <div className="sidebar-room-stack">
+              {utilityRooms.map((room) => renderRoom(room, selectedRoomId, onSelectRoom))}
+            </div>
+          </div>
+        ) : null}
       </div>
     </aside>
+  )
+}
+
+function renderRoom(
+  room: RoomSummary,
+  selectedRoomId: string,
+  onSelectRoom: (roomId: string) => void,
+) {
+  const selected = room.id === selectedRoomId
+  return (
+    <button
+      className={`sidebar-room${selected ? ' sidebar-room-selected' : ''}`}
+      key={room.id}
+      type="button"
+      onClick={() => onSelectRoom(room.id)}
+    >
+      <div>
+        <strong>{room.label}</strong>
+        <span>
+          {room.participants} member{room.participants === 1 ? '' : 's'}
+        </span>
+      </div>
+      <span className="room-pill">{room.unread > 0 ? room.unread : room.kind}</span>
+    </button>
   )
 }

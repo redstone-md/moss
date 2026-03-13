@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import type { Message, RoomSummary } from '../lib/schemas'
 
 type MessagePanelProps = {
@@ -19,9 +20,22 @@ export function MessagePanel({
   isSending,
   errorNote,
 }: MessagePanelProps) {
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    const container = scrollRef.current
+    if (!container) {
+      return
+    }
+    container.scrollTo({
+      top: container.scrollHeight,
+      behavior: 'smooth',
+    })
+  }, [messages.length, room?.id])
+
   return (
     <section className="message-panel-shell">
-      <div className="message-scroll-region">
+      <div className="message-scroll-region" ref={scrollRef}>
         {messages.length > 0 ? (
           <div className="message-list">
             {messages.map((message) => (
@@ -58,7 +72,12 @@ export function MessagePanel({
             placeholder={`Message ${room?.label ?? '#room'}`}
           />
         </label>
-        <button className="primary-action" onClick={onSend} type="button">
+        <button
+          className="primary-action composer-send"
+          onClick={onSend}
+          type="button"
+          aria-label={`Send message to ${room?.label ?? '#room'}`}
+        >
           {isSending ? 'Sending...' : 'Send'}
         </button>
       </div>
