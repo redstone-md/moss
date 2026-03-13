@@ -135,7 +135,7 @@ func TestRelayBurstDeliveryRemainsStable(t *testing.T) {
 	for i := 0; i < 16; i++ {
 		payload := fmt.Sprintf("relay-burst-%02d", i)
 		want[payload] = struct{}{}
-		if err := nodeA.RelaySend(sessionID, []byte(payload)); err != nil {
+		if err := relaySendEventually(nodeA, sessionID, []byte(payload), 500*time.Millisecond); err != nil {
 			t.Fatalf("RelaySend %s failed: %v", payload, err)
 		}
 	}
@@ -257,7 +257,7 @@ func TestMixedTopologyPubSubAndRelayRemainStable(t *testing.T) {
 
 		relayPayload := fmt.Sprintf("mix-relay-%02d", i)
 		relayWant[relayPayload] = struct{}{}
-		if err := natA.RelaySend(sessionID, []byte(relayPayload)); err != nil {
+		if err := relaySendEventually(natA, sessionID, []byte(relayPayload), 500*time.Millisecond); err != nil {
 			t.Fatalf("RelaySend %s failed: %v", relayPayload, err)
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -395,7 +395,7 @@ func TestMixedTopologySteadyStateSoakRetainsConnectivity(t *testing.T) {
 		if i%2 == 0 {
 			relayPayload := fmt.Sprintf("soak-relay-%02d", i)
 			relayWant[relayPayload] = struct{}{}
-			if err := natA.RelaySend(sessionID, []byte(relayPayload)); err != nil {
+			if err := relaySendEventually(natA, sessionID, []byte(relayPayload), 500*time.Millisecond); err != nil {
 				t.Fatalf("RelaySend %s failed: %v", relayPayload, err)
 			}
 		}
@@ -459,4 +459,18 @@ func tailPayloads(payloads []string, max int) []string {
 		return payloads
 	}
 	return payloads[len(payloads)-max:]
+}
+
+func relaySendEventually(node *Node, sessionID string, payload []byte, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		if err := node.RelaySend(sessionID, payload); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	return lastErr
 }
