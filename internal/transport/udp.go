@@ -102,6 +102,10 @@ func (l *UDPListener) Accept() (*Session, error) {
 	}
 }
 
+func (c *udpCarrier) supportsDatagramSession() bool {
+	return true
+}
+
 func (l *UDPListener) DialContext(ctx context.Context, addr string) (*Session, error) {
 	return l.DialPeerContext(ctx, addr, nil)
 }
