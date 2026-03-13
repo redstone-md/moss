@@ -7,6 +7,7 @@ import (
 	"sort"
 	"sync"
 	"testing"
+	"time"
 )
 
 type fakeTrackerClient struct {
@@ -120,5 +121,13 @@ func TestManagerPrefersHealthyTrackersOnNextAnnounce(t *testing.T) {
 	}
 	if calls := udp.Calls(); len(calls) != 2 || calls[0] == "udp://tracker-a/announce" || calls[1] == "udp://tracker-a/announce" {
 		t.Fatalf("expected only healthy trackers in first batch, got %#v", calls)
+	}
+}
+
+func TestNewManagerUsesSpecTrackerConcurrency(t *testing.T) {
+	manager := NewManager(3 * time.Second)
+
+	if manager.maxConcurrent != defaultTrackerConcurrency {
+		t.Fatalf("expected default tracker concurrency %d, got %d", defaultTrackerConcurrency, manager.maxConcurrent)
 	}
 }
