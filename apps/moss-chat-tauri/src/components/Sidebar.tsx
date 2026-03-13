@@ -5,12 +5,8 @@ type SidebarProps = {
   utilityRooms: RoomSummary[]
   selectedRoomId: string
   roomSearch: string
-  roomDraft: string
-  createMode: boolean
   onRoomSearchChange: (value: string) => void
-  onRoomDraftChange: (value: string) => void
-  onToggleCreateMode: () => void
-  onCreateRoom: () => void
+  onOpenCreateChannel: () => void
   onSelectRoom: (roomId: string) => void
   onOpenProfile: () => void
 }
@@ -20,12 +16,8 @@ export function Sidebar({
   utilityRooms,
   selectedRoomId,
   roomSearch,
-  roomDraft,
-  createMode,
   onRoomSearchChange,
-  onRoomDraftChange,
-  onToggleCreateMode,
-  onCreateRoom,
+  onOpenCreateChannel,
   onSelectRoom,
   onOpenProfile,
 }: SidebarProps) {
@@ -55,26 +47,10 @@ export function Sidebar({
           <p className="eyebrow">Channels</p>
           <h3>Active rooms</h3>
         </div>
-        <button className="primary-action" type="button" onClick={onToggleCreateMode}>
-          {createMode ? 'Close' : 'Create Channel'}
+        <button className="primary-action" type="button" onClick={onOpenCreateChannel}>
+          Create Channel
         </button>
       </div>
-
-      {createMode ? (
-        <section className="sidebar-card sidebar-inline-form">
-          <label className="field-grid">
-            <span>Channel name</span>
-            <input
-              value={roomDraft}
-              onChange={(event) => onRoomDraftChange(event.target.value)}
-              placeholder="design-reviews"
-            />
-          </label>
-          <button className="secondary-action" type="button" onClick={onCreateRoom}>
-            Join channel
-          </button>
-        </section>
-      ) : null}
 
       <div className="sidebar-room-list" role="list" aria-label="Channels">
         {channels.length > 0 ? (
