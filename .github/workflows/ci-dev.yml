@@ -83,26 +83,3 @@ jobs:
 
       - name: Re-run mesh package with retries
         run: go test ./internal/mesh -count=3 -timeout 1800s
-
-  build-tauri-web:
-    name: Build Tauri Frontend
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: apps/moss-chat-tauri
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: apps/moss-chat-tauri/package-lock.json
-
-      - name: Install frontend dependencies
-        run: npm ci
-
-      - name: Build frontend
-        run: npm run build
