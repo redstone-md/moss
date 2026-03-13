@@ -1502,6 +1502,13 @@ func (n *Node) removePeer(peerID string, session *transport.Session) {
 	delete(n.relayBuckets, peerID)
 	delete(n.directProbes, peerID)
 	delete(n.peerDials, peerID)
+	for sessionID, relaySession := range n.relayLocals {
+		if relaySession.viaPeerID != peerID {
+			continue
+		}
+		delete(n.relayLocals, sessionID)
+		delete(n.directProbes, relaySession.remotePeerID)
+	}
 	if info, ok := n.knownPeers[peerID]; ok {
 		info.direct = false
 		info.lastSeen = time.Now()
