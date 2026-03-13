@@ -41,7 +41,7 @@ For a second machine on the same LAN, use the first machine's hostname or LAN IP
 python examples\python_chat\moss_chat.py --nickname Pi --listen-port 41030 --peer rpi1.local:41030 --room lobby
 ```
 
-For autonomous bootstrap closer to the PRD, start nodes without `--no-trackers`. In that mode the chat uses the default public tracker set and peers should discover each other without manual `/connect`.
+For autonomous bootstrap closer to the Moss specification, start nodes without `--no-trackers`. In that mode the chat uses the default public tracker set and peers should discover each other without manual `/connect`.
 
 Or launch both demo windows automatically:
 
