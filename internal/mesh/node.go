@@ -86,6 +86,7 @@ type peerConn struct {
 	bootstrap   bool
 	connectedAt time.Time
 	lastRTT     time.Duration
+	meshBlocked time.Time
 	pingSentAt  time.Time
 	pingPending string
 	pingMisses  int
@@ -1605,9 +1606,6 @@ func (n *Node) pruneHighLatencyPeers() {
 	pruneOnly := make([]string, 0, len(n.peers))
 	n.mu.Lock()
 	for id, peer := range n.peers {
-		if n.shouldRetainPeerLocked(peer) {
-			continue
-		}
 		if peer.lastRTT > peerLatencyPruneThreshold {
 			pruneOnly = append(pruneOnly, id)
 			continue
@@ -1617,7 +1615,7 @@ func (n *Node) pruneHighLatencyPeers() {
 			peer.pingSentAt = time.Time{}
 			peer.pingMisses++
 			pruneOnly = append(pruneOnly, id)
-			if peer.pingMisses >= peerDisconnectMissLimit {
+			if !n.shouldRetainPeerLocked(peer) && peer.pingMisses >= peerDisconnectMissLimit {
 				ids = append(ids, id)
 			}
 		}
@@ -1665,10 +1663,7 @@ func (n *Node) maintenanceLoop(ctx context.Context) {
 func (n *Node) pruneLowScoringPeers() {
 	n.mu.RLock()
 	ids := make([]string, 0, len(n.peers))
-	for id, peer := range n.peers {
-		if n.shouldRetainPeerLocked(peer) {
-			continue
-		}
+	for id := range n.peers {
 		if n.peerScore(id) < 0 {
 			ids = append(ids, id)
 		}
@@ -1680,6 +1675,7 @@ func (n *Node) pruneLowScoringPeers() {
 }
 
 func (n *Node) prunePeerFromAllMeshes(peerID string) {
+	until := time.Now().Add(n.peerPruneBackoff())
 	for _, channel := range n.pubsub.SnapshotLocal() {
 		if !n.pubsub.InMesh(channel, peerID) {
 			continue
@@ -1692,6 +1688,11 @@ func (n *Node) prunePeerFromAllMeshes(peerID string) {
 			n.sendEnvelope(peer, gossip.Envelope{Type: gossip.TypePrune, Channel: channel})
 		}
 	}
+	n.mu.Lock()
+	if peer := n.peers[peerID]; peer != nil && until.After(peer.meshBlocked) {
+		peer.meshBlocked = until
+	}
+	n.mu.Unlock()
 }
 
 func (n *Node) peerProbeInterval() time.Duration {
@@ -1700,6 +1701,14 @@ func (n *Node) peerProbeInterval() time.Duration {
 		interval = heartbeat
 	}
 	return interval
+}
+
+func (n *Node) peerPruneBackoff() time.Duration {
+	backoff := n.peerProbeInterval()
+	if backoff < 30*time.Second {
+		return 30 * time.Second
+	}
+	return backoff
 }
 
 func (n *Node) dispatchLoop(ctx context.Context) {
@@ -2137,7 +2146,7 @@ func (n *Node) selectMeshCandidates(channel string, limit int) []string {
 	})
 	filtered := make([]string, 0, len(candidates))
 	for _, peerID := range candidates {
-		if n.isPeerBelowBaseline(peerID) {
+		if !n.eligibleForMeshCandidate(peerID) {
 			continue
 		}
 		filtered = append(filtered, peerID)
@@ -2177,7 +2186,7 @@ func (n *Node) selectHighScoringCandidates(channel string, limit int, threshold 
 	candidates := n.selectMeshCandidates(channel, n.config.MaxPeers)
 	filtered := make([]string, 0, len(candidates))
 	for _, peerID := range candidates {
-		if n.isPeerBelowBaseline(peerID) {
+		if !n.eligibleForMeshCandidate(peerID) {
 			continue
 		}
 		if n.peerScore(peerID) <= threshold {
@@ -3427,6 +3436,26 @@ func shouldPreferRelayBetween(local, remote nat.Type) bool {
 
 func (n *Node) isPeerBelowBaseline(peerID string) bool {
 	return n.peerScore(peerID) < gossip.BaselineThreshold
+}
+
+func (n *Node) eligibleForMeshCandidate(peerID string) bool {
+	if n.isPeerBelowBaseline(peerID) {
+		return false
+	}
+	now := time.Now()
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	peer := n.peers[peerID]
+	if peer == nil {
+		return false
+	}
+	if now.Before(peer.meshBlocked) {
+		return false
+	}
+	if peer.lastRTT > peerLatencyPruneThreshold {
+		return false
+	}
+	return peer.pingMisses == 0
 }
 
 func (n *Node) canGossipWithPeer(peerID string) bool {
