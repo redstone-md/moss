@@ -1181,7 +1181,11 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 	current, ok := n.knownPeers[env.AdvertisedPeerID]
 	previousAddr := current.addr
 	addr := preferredKnownPeerAddr(current, env.AdvertisedAddr)
-	if shouldFreezeDirectKnownPeerAddr(current, env.AdvertisedAddr, peer != nil && env.AdvertisedPeerID == peer.id) {
+	liveSessionAddr := ""
+	if peer != nil && env.AdvertisedPeerID == peer.id {
+		liveSessionAddr = peer.addr
+	}
+	if shouldFreezeDirectKnownPeerAddr(current, env.AdvertisedAddr, liveSessionAddr) {
 		addr = current.addr
 	}
 	lan := current.lan && knownPeerAddrRank(addr) <= 1
@@ -2869,7 +2873,7 @@ func preferredKnownPeerAddr(current knownPeer, candidate string) string {
 	return candidate
 }
 
-func shouldFreezeDirectKnownPeerAddr(current knownPeer, candidate string, selfAnnounced bool) bool {
+func shouldFreezeDirectKnownPeerAddr(current knownPeer, candidate, liveSessionAddr string) bool {
 	if !current.direct || current.addr == "" {
 		return false
 	}
@@ -2878,11 +2882,12 @@ func shouldFreezeDirectKnownPeerAddr(current knownPeer, candidate string, selfAn
 	if candidateRank < currentRank {
 		return true
 	}
+	selfAnnounced := liveSessionAddr != ""
 	if !selfAnnounced {
 		return true
 	}
 	if currentRank < 3 || candidateRank < 3 {
-		return true
+		return current.addr == liveSessionAddr || liveSessionAddr == ""
 	}
 	return false
 }
