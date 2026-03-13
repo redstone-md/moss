@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	mcrypto "moss/internal/crypto"
 	"moss/internal/gossip"
 	"moss/internal/nat"
 )
@@ -927,6 +928,73 @@ func TestDiscoveredPeersAutoConnectIntoOverlay(t *testing.T) {
 
 	sourcePub := nodeA.PublicKey()
 	waitForDirectPeer(t, nodeC, hex.EncodeToString(sourcePub[:]))
+}
+
+func TestDiscoveredPeerReconnectsAfterRestartWithNewPort(t *testing.T) {
+	cfgHub := DefaultConfig()
+	cfgHub.Trackers = nil
+	cfgHub.GossipSub.HeartbeatMS = 50
+	hub, err := NewNode("mesh-overlay-restart", nil, cfgHub)
+	if err != nil {
+		t.Fatalf("NewNode hub failed: %v", err)
+	}
+	if code := hub.Start(); code != MOSS_OK {
+		t.Fatalf("hub.Start failed: %d", code)
+	}
+	defer hub.Stop()
+
+	newLeaf := func(identity *mcrypto.Identity) *Node {
+		cfg := DefaultConfig()
+		cfg.Trackers = nil
+		cfg.GossipSub.HeartbeatMS = 50
+		cfg.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(hub.ListenPort()))}
+		node, err := NewNodeWithIdentity("mesh-overlay-restart", nil, cfg, identity)
+		if err != nil {
+			t.Fatalf("NewNode leaf failed: %v", err)
+		}
+		if code := node.Start(); code != MOSS_OK {
+			t.Fatalf("leaf.Start failed: %d", code)
+		}
+		return node
+	}
+
+	nodeA := newLeaf(nil)
+	defer nodeA.Stop()
+
+	restartIdentity, err := mcrypto.NewIdentity()
+	if err != nil {
+		t.Fatalf("NewIdentity failed: %v", err)
+	}
+	nodeB := newLeaf(restartIdentity)
+	defer nodeB.Stop()
+
+	waitForPeerCount(t, hub, 2)
+	waitForPeerCount(t, nodeA, 1)
+	waitForPeerCount(t, nodeB, 1)
+
+	nodeBPub := nodeB.PublicKey()
+	nodeBID := hex.EncodeToString(nodeBPub[:])
+	nodeAPub := nodeA.PublicKey()
+	nodeAID := hex.EncodeToString(nodeAPub[:])
+	waitForKnownPeer(t, nodeA, nodeBID)
+	waitForDirectPeer(t, nodeA, nodeBID)
+	waitForDirectPeer(t, nodeB, nodeAID)
+	waitForPeerCount(t, nodeA, 2)
+
+	nodeB.Stop()
+
+	nodeB = newLeaf(restartIdentity)
+	defer nodeB.Stop()
+	waitForPeerCount(t, nodeB, 1)
+	if nodeB.ListenPort() == 0 {
+		t.Fatal("expected restarted nodeB to have a listen port")
+	}
+	restartedAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(nodeB.ListenPort()))
+	waitForKnownPeer(t, nodeA, nodeBID)
+	waitForDirectPeer(t, nodeA, nodeBID)
+	waitForDirectPeer(t, nodeB, nodeAID)
+	waitForKnownPeerAddr(t, nodeA, nodeBID, restartedAddr)
+	waitForPeerCount(t, nodeA, 2)
 }
 
 func TestRelaySendToFallsBackAfterDirectDialFailure(t *testing.T) {
@@ -2264,6 +2332,21 @@ func waitForPeerCount(t *testing.T, node *Node, want int) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("peer count did not reach %d; info=%s", want, node.MeshInfoJSON())
+}
+
+func waitForKnownPeerAddr(t *testing.T, node *Node, peerID, want string) {
+	t.Helper()
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		node.mu.RLock()
+		info, ok := node.knownPeers[peerID]
+		node.mu.RUnlock()
+		if ok && info.addr == want {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("known peer %s addr did not converge to %s; info=%s", peerID, want, node.MeshInfoJSON())
 }
 
 func waitForPeerCountWithin(node *Node, want int, dur time.Duration) bool {
