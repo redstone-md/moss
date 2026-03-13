@@ -149,3 +149,20 @@ func TestMeshDeliveryDeficitSkipsPeersThatForward(t *testing.T) {
 		t.Fatalf("expected peer-b to avoid deficit penalty, got %f", score)
 	}
 }
+
+func TestSelectMeshCandidatesSkipsHighLatencyPeers(t *testing.T) {
+	node, err := NewNode("mesh-candidate-latency", nil, DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+	node.pubsub.Subscribe("alpha")
+	node.pubsub.SetPeerSubscription("peer-fast", "alpha", true)
+	node.pubsub.SetPeerSubscription("peer-slow", "alpha", true)
+	node.peers["peer-fast"] = &peerConn{id: "peer-fast", addr: "198.51.100.10:41030"}
+	node.peers["peer-slow"] = &peerConn{id: "peer-slow", addr: "198.51.100.11:41030", lastRTT: 3 * time.Second}
+
+	selected := node.selectMeshCandidates("alpha", 2)
+	if len(selected) != 1 || selected[0] != "peer-fast" {
+		t.Fatalf("expected only low-latency candidate, got %#v", selected)
+	}
+}
