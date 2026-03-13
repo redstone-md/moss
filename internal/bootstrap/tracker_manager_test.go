@@ -250,3 +250,35 @@ func TestManagerAnnounceAllHonorsContextDeadline(t *testing.T) {
 		t.Fatalf("expected both trackers to be attempted in batch, got %#v", calls)
 	}
 }
+
+func TestManagerAnnounceAllReturnsLastErrorWhenAllTrackersFail(t *testing.T) {
+	udp := &fakeTrackerClient{
+		responses: map[string]fakeTrackerResult{
+			"udp://tracker-a/announce": {err: errors.New("a failed")},
+			"udp://tracker-b/announce": {err: errors.New("b failed")},
+			"udp://tracker-c/announce": {err: errors.New("c failed")},
+		},
+	}
+	manager := &Manager{
+		UDP:           udp,
+		HTTP:          udp,
+		maxConcurrent: 2,
+		state:         make(map[string]trackerState),
+	}
+
+	_, err := manager.AnnounceAll(context.Background(), []string{
+		"udp://tracker-a/announce",
+		"udp://tracker-b/announce",
+		"udp://tracker-c/announce",
+	}, AnnounceRequest{})
+	if err == nil {
+		t.Fatal("expected AnnounceAll to fail when every tracker fails")
+	}
+	if err.Error() != "c failed" && err.Error() != "b failed" && err.Error() != "a failed" {
+		t.Fatalf("unexpected terminal error %v", err)
+	}
+	calls := udp.Calls()
+	if len(calls) != 3 {
+		t.Fatalf("expected every tracker to be attempted, got %#v", calls)
+	}
+}
