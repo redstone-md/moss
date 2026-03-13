@@ -20,6 +20,7 @@ type Session struct {
 	sendCipher *noise.CipherState
 	recvCipher *noise.CipherState
 	datagram   *datagramSession
+	mux        *Multiplexer
 	writeMu    sync.Mutex
 	readMu     sync.Mutex
 	remoteID   [32]byte
@@ -31,17 +32,31 @@ func NewSession(carrier carrier, sendCipher, recvCipher *noise.CipherState, remo
 	if dc, ok := carrier.(datagramCapable); ok && dc.supportsDatagramSession() {
 		return newDatagramSession(carrier, sendCipher, recvCipher, remoteID, remoteKey, handshake)
 	}
-	return &Session{
+	session := &Session{
 		carrier:    carrier,
 		sendCipher: sendCipher,
 		recvCipher: recvCipher,
 		remoteID:   remoteID,
 		remoteKey:  remoteKey,
 		handshake:  handshake,
-	}, nil
+	}
+	session.mux = newMultiplexer(session)
+	return session, nil
 }
 
 func (s *Session) WritePacket(packet []byte) error {
+	return s.mux.Default().WritePacket(packet)
+}
+
+func (s *Session) ReadPacket() ([]byte, error) {
+	return s.mux.Default().ReadPacket()
+}
+
+func (s *Session) Stream(id StreamID) *Stream {
+	return s.mux.Stream(id)
+}
+
+func (s *Session) writeRawPacket(packet []byte) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	if s.datagram != nil {
@@ -58,7 +73,7 @@ func (s *Session) WritePacket(packet []byte) error {
 	return s.carrier.WritePacket(ciphertext)
 }
 
-func (s *Session) ReadPacket() ([]byte, error) {
+func (s *Session) readRawPacket() ([]byte, error) {
 	s.readMu.Lock()
 	defer s.readMu.Unlock()
 	for {
@@ -94,5 +109,8 @@ func (s *Session) RemoteAddr() net.Addr {
 }
 
 func (s *Session) Close() error {
+	if s.mux != nil {
+		s.mux.closeAll()
+	}
 	return s.carrier.Close()
 }
