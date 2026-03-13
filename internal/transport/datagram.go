@@ -26,7 +26,7 @@ type datagramSession struct {
 }
 
 func newDatagramSession(carrier carrier, sendCipher, recvCipher *noise.CipherState, remoteID, remoteKey [32]byte, handshake byte) (*Session, error) {
-	return &Session{
+	session := &Session{
 		carrier: carrier,
 		datagram: &datagramSession{
 			sendCipher: sendCipher.Cipher(),
@@ -36,7 +36,9 @@ func newDatagramSession(carrier carrier, sendCipher, recvCipher *noise.CipherSta
 		remoteID:  remoteID,
 		remoteKey: remoteKey,
 		handshake: handshake,
-	}, nil
+	}
+	session.mux = newMultiplexer(session)
+	return session, nil
 }
 
 func (s *datagramSession) Encrypt(packet []byte) ([]byte, error) {
