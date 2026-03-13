@@ -3,9 +3,9 @@ package mesh
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
-	"encoding/binary"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -2124,9 +2124,16 @@ func TestHighLatencyPeerIsPruned(t *testing.T) {
 
 	waitForPeerCount(t, nodeA, 1)
 	waitForPeerCount(t, nodeB, 1)
+	if code := nodeA.Subscribe("alpha"); code != MOSS_OK {
+		t.Fatalf("nodeA.Subscribe failed: %d", code)
+	}
+	if code := nodeB.Subscribe("alpha"); code != MOSS_OK {
+		t.Fatalf("nodeB.Subscribe failed: %d", code)
+	}
 
 	targetPub := nodeB.PublicKey()
 	targetID := hex.EncodeToString(targetPub[:])
+	waitForPeerMeshState(t, nodeA, "alpha", targetID, true)
 	nodeA.mu.Lock()
 	if peer := nodeA.peers[targetID]; peer != nil {
 		peer.connectedAt = time.Now().Add(-time.Minute)
@@ -2135,7 +2142,60 @@ func TestHighLatencyPeerIsPruned(t *testing.T) {
 	nodeA.mu.Unlock()
 
 	nodeA.pruneHighLatencyPeers()
-	waitForPeerGone(t, nodeA, targetID)
+	waitForPeerMeshState(t, nodeA, "alpha", targetID, false)
+	waitForPeerCountAtLeast(t, nodeA, 1, 500*time.Millisecond)
+}
+
+func TestNegativeScorePeerIsPrunedFromMeshWithoutDisconnect(t *testing.T) {
+	cfgA := DefaultConfig()
+	cfgA.Trackers = nil
+	cfgA.GossipSub.HeartbeatMS = 50
+	nodeA, err := NewNode("mesh-negative-score", nil, cfgA)
+	if err != nil {
+		t.Fatalf("NewNode nodeA failed: %v", err)
+	}
+	if code := nodeA.Start(); code != MOSS_OK {
+		t.Fatalf("nodeA.Start failed: %d", code)
+	}
+	defer nodeA.Stop()
+
+	cfgB := DefaultConfig()
+	cfgB.Trackers = nil
+	cfgB.GossipSub.HeartbeatMS = 50
+	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(nodeA.ListenPort()))}
+	nodeB, err := NewNode("mesh-negative-score", nil, cfgB)
+	if err != nil {
+		t.Fatalf("NewNode nodeB failed: %v", err)
+	}
+	if code := nodeB.Start(); code != MOSS_OK {
+		t.Fatalf("nodeB.Start failed: %d", code)
+	}
+	defer nodeB.Stop()
+
+	waitForPeerCount(t, nodeA, 1)
+	waitForPeerCount(t, nodeB, 1)
+	if code := nodeA.Subscribe("alpha"); code != MOSS_OK {
+		t.Fatalf("nodeA.Subscribe failed: %d", code)
+	}
+	if code := nodeB.Subscribe("alpha"); code != MOSS_OK {
+		t.Fatalf("nodeB.Subscribe failed: %d", code)
+	}
+
+	targetPub := nodeB.PublicKey()
+	targetID := hex.EncodeToString(targetPub[:])
+	waitForPeerMeshState(t, nodeA, "alpha", targetID, true)
+
+	nodeA.mu.Lock()
+	if peer := nodeA.peers[targetID]; peer != nil {
+		peer.connectedAt = time.Now().Add(-time.Minute)
+	}
+	nodeA.mu.Unlock()
+	nodeA.scoring.SetApplicationScore(targetID, -5)
+
+	nodeA.pruneLowScoringPeers()
+
+	waitForPeerMeshState(t, nodeA, "alpha", targetID, false)
+	waitForPeerCountAtLeast(t, nodeA, 1, 500*time.Millisecond)
 }
 
 func TestSimultaneousDirectDialsResolveToSingleConnection(t *testing.T) {
@@ -2366,6 +2426,18 @@ func waitForPeerRTT(t *testing.T, node *Node, peerID string, max time.Duration) 
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatalf("peer %s did not report RTT within %s", peerID, max)
+}
+
+func waitForPeerMeshState(t *testing.T, node *Node, channel, peerID string, want bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if node.pubsub.InMesh(channel, peerID) == want {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("peer %s mesh state for %s did not become %t", peerID, channel, want)
 }
 
 func waitForKnownPeerPort(t *testing.T, node *Node, wantPeerID, wantPort string) {
