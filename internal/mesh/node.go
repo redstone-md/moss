@@ -682,7 +682,7 @@ func (n *Node) kickBootstrapPeers(ctx context.Context, peers []string) {
 		go func(addr string) {
 			attemptCtx, cancel := context.WithTimeout(ctx, n.config.HandshakeTimeout())
 			defer cancel()
-			_ = n.connectBootstrapPeer(attemptCtx, addr)
+			_ = n.connectBootstrapSeed(attemptCtx, addr)
 		}(peer)
 	}
 }
@@ -1850,7 +1850,7 @@ func (n *Node) connectBootstrapSeeds(ctx context.Context) {
 		go func(seed string) {
 			attemptCtx, cancel := context.WithTimeout(ctx, n.config.HandshakeTimeout())
 			defer cancel()
-			_ = n.connectBootstrapPeer(attemptCtx, seed)
+			_ = n.connectBootstrapSeed(attemptCtx, seed)
 		}(addr)
 	}
 }
@@ -3287,6 +3287,13 @@ func (n *Node) connectBootstrapPeer(ctx context.Context, addr string) error {
 		return firstErr
 	}
 	return nil
+}
+
+func (n *Node) connectBootstrapSeed(ctx context.Context, addr string) error {
+	if knownPeerAddrRank(addr) < 3 {
+		return n.connectPeer(ctx, addr)
+	}
+	return n.connectBootstrapPeer(ctx, addr)
 }
 
 func (n *Node) relayBucketFor(peerID string) *nat.TokenBucket {
