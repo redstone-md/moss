@@ -194,6 +194,23 @@
   color: #f8fff7;
 }
 
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(3, 7, 5, 0.6);
+  backdrop-filter: blur(10px);
+}
+
+.modal-card {
+  width: min(100%, 520px);
+  display: grid;
+  gap: 18px;
+}
+
 @media (max-width: 1240px) {
   .runtime-strip,
   .chat-content,
@@ -207,6 +224,10 @@
 
   .runtime-strip-meta {
     justify-content: flex-start;
+  }
+
+  .modal-backdrop {
+    padding: 18px;
   }
 }
 

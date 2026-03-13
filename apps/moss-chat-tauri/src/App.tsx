@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChatHeader } from './components/ChatHeader'
+import { CreateChannelModal } from './components/CreateChannelModal'
 import { DiagnosticsPanel } from './components/DiagnosticsPanel'
 import { MessagePanel } from './components/MessagePanel'
 import { OnboardingScreen } from './components/OnboardingScreen'
@@ -21,7 +22,7 @@ export function App() {
   const [selectedView, setSelectedView] = useState<ShellView>('chat')
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [onboardingDismissed, setOnboardingDismissed] = useState(false)
-  const [createMode, setCreateMode] = useState(false)
+  const [createModalOpen, setCreateModalOpen] = useState(false)
   const [roomSearch, setRoomSearch] = useState('')
   const [nicknameDraft, setNicknameDraft] = useState<string | null>(null)
   const [meshDraft, setMeshDraft] = useState<string | null>(null)
@@ -90,7 +91,7 @@ export function App() {
       queryClient.setQueryData(['desktop-snapshot'], data)
       const normalizedRoom = roomDraft.replace(/^#/, '').toLowerCase()
       setSelectedRoomId(normalizedRoom)
-      setCreateMode(false)
+      setCreateModalOpen(false)
       setSidebarOpen(false)
       setSelectedView('chat')
     },
@@ -285,12 +286,8 @@ export function App() {
             utilityRooms={sidebarUtilityRooms}
             selectedRoomId={activeRoom.id}
             roomSearch={roomSearch}
-            roomDraft={roomDraft}
-            createMode={createMode}
             onRoomSearchChange={setRoomSearch}
-            onRoomDraftChange={setRoomDraft}
-            onToggleCreateMode={() => setCreateMode((current) => !current)}
-            onCreateRoom={() => subscribeRoom.mutate()}
+            onOpenCreateChannel={() => setCreateModalOpen(true)}
             onSelectRoom={(roomId) => {
               setSelectedRoomId(roomId)
               setSelectedView('chat')
@@ -379,6 +376,17 @@ export function App() {
           )}
         </section>
       </section>
+
+      {createModalOpen ? (
+        <CreateChannelModal
+          roomDraft={roomDraft}
+          isCreating={subscribeRoom.isPending}
+          errorNote={subscribeRoom.error?.message}
+          onRoomDraftChange={setRoomDraft}
+          onCreate={() => subscribeRoom.mutate()}
+          onClose={() => setCreateModalOpen(false)}
+        />
+      ) : null}
     </main>
   )
 }
