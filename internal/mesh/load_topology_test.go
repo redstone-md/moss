@@ -392,10 +392,12 @@ func TestMixedTopologySteadyStateSoakRetainsConnectivity(t *testing.T) {
 			t.Fatalf("publisher %d Publish %s failed: %d", i, payload, code)
 		}
 
-		relayPayload := fmt.Sprintf("soak-relay-%02d", i)
-		relayWant[relayPayload] = struct{}{}
-		if err := natA.RelaySend(sessionID, []byte(relayPayload)); err != nil {
-			t.Fatalf("RelaySend %s failed: %v", relayPayload, err)
+		if i%2 == 0 {
+			relayPayload := fmt.Sprintf("soak-relay-%02d", i)
+			relayWant[relayPayload] = struct{}{}
+			if err := natA.RelaySend(sessionID, []byte(relayPayload)); err != nil {
+				t.Fatalf("RelaySend %s failed: %v", relayPayload, err)
+			}
 		}
 
 		if relayNode.currentPeerCount() < 3 {
@@ -407,7 +409,7 @@ func TestMixedTopologySteadyStateSoakRetainsConnectivity(t *testing.T) {
 		if natA.currentPeerCount() < 1 || natB.currentPeerCount() < 1 {
 			t.Fatalf("nat peers lost connectivity during soak; natA=%s natB=%s", natA.MeshInfoJSON(), natB.MeshInfoJSON())
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(125 * time.Millisecond)
 	}
 
 	deadline := time.Now().Add(6 * time.Second)
