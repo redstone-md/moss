@@ -940,9 +940,11 @@ func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 	switch env.Type {
 	case gossip.TypeGraft:
 		n.pubsub.SetPeerSubscription(peer.id, env.Channel, true)
-		if n.pubsub.IsLocalSubscriber(env.Channel) {
+		if n.pubsub.IsLocalSubscriber(env.Channel) && n.eligibleForMeshCandidate(peer.id) {
 			n.pubsub.SetMeshPeer(env.Channel, peer.id, true)
 			n.sendRecentIHave(peer, env.Channel)
+		} else if peer != nil {
+			n.sendEnvelope(peer, gossip.Envelope{Type: gossip.TypePrune, Channel: env.Channel})
 		}
 	case gossip.TypePrune:
 		n.pubsub.SetMeshPeer(env.Channel, peer.id, false)
