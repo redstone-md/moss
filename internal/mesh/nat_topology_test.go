@@ -11,17 +11,23 @@ import (
 )
 
 func TestShouldPreferRelayBetweenSymmetricAndCGNATPeers(t *testing.T) {
-	if !shouldPreferRelayBetween(nat.TypeSymmetric, nat.TypeSymmetric) {
-		t.Fatal("expected symmetric peers to prefer relay")
+	cases := []struct {
+		name string
+		a    nat.Type
+		b    nat.Type
+		want bool
+	}{
+		{name: "symmetric-symmetric", a: nat.TypeSymmetric, b: nat.TypeSymmetric, want: true},
+		{name: "cgnat-symmetric", a: nat.TypeCGNAT, b: nat.TypeSymmetric, want: true},
+		{name: "cgnat-cgnat", a: nat.TypeCGNAT, b: nat.TypeCGNAT, want: true},
+		{name: "port-restricted-port-restricted", a: nat.TypePortRestricted, b: nat.TypePortRestricted, want: false},
+		{name: "full-cone-cgnat", a: nat.TypeFullCone, b: nat.TypeCGNAT, want: false},
+		{name: "public-symmetric", a: nat.TypePublic, b: nat.TypeSymmetric, want: false},
 	}
-	if !shouldPreferRelayBetween(nat.TypeCGNAT, nat.TypeSymmetric) {
-		t.Fatal("expected cgnat+symmetric peers to prefer relay")
-	}
-	if shouldPreferRelayBetween(nat.TypePortRestricted, nat.TypePortRestricted) {
-		t.Fatal("expected port-restricted peers to keep direct hole-punch path")
-	}
-	if shouldPreferRelayBetween(nat.TypeFullCone, nat.TypeCGNAT) {
-		t.Fatal("expected public/cone peer to keep direct path available")
+	for _, tc := range cases {
+		if got := shouldPreferRelayBetween(tc.a, tc.b); got != tc.want {
+			t.Fatalf("%s: shouldPreferRelayBetween(%s, %s) = %t, want %t", tc.name, tc.a, tc.b, got, tc.want)
+		}
 	}
 }
 
@@ -119,5 +125,99 @@ func TestSymmetricNATPeersRelayWithinFiveSeconds(t *testing.T) {
 	}
 	if nodeA.directPeerConnected(targetID) {
 		t.Fatal("expected symmetric nat peers to stay off direct path during relay fallback")
+	}
+}
+
+func TestPortRestrictedPeersConnectDirectWithinFiveSeconds(t *testing.T) {
+	cfgRelay := DefaultConfig()
+	cfgRelay.Trackers = nil
+	cfgRelay.GossipSub.HeartbeatMS = 50
+	relayNode, err := NewNode("mesh-port-restricted-direct", nil, cfgRelay)
+	if err != nil {
+		t.Fatalf("NewNode relay failed: %v", err)
+	}
+	if code := relayNode.Start(); code != MOSS_OK {
+		t.Fatalf("relayNode.Start failed: %d", code)
+	}
+	defer relayNode.Stop()
+
+	cfgA := DefaultConfig()
+	cfgA.Trackers = nil
+	cfgA.GossipSub.HeartbeatMS = 50
+	cfgA.MaxPeers = 2
+	cfgA.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(relayNode.ListenPort()))}
+	nodeA, err := NewNode("mesh-port-restricted-direct", nil, cfgA)
+	if err != nil {
+		t.Fatalf("NewNode nodeA failed: %v", err)
+	}
+	if code := nodeA.Start(); code != MOSS_OK {
+		t.Fatalf("nodeA.Start failed: %d", code)
+	}
+	defer nodeA.Stop()
+
+	cfgB := DefaultConfig()
+	cfgB.Trackers = nil
+	cfgB.GossipSub.HeartbeatMS = 50
+	cfgB.MaxPeers = 2
+	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(relayNode.ListenPort()))}
+	nodeB, err := NewNode("mesh-port-restricted-direct", nil, cfgB)
+	if err != nil {
+		t.Fatalf("NewNode nodeB failed: %v", err)
+	}
+	if code := nodeB.Start(); code != MOSS_OK {
+		t.Fatalf("nodeB.Start failed: %d", code)
+	}
+	defer nodeB.Stop()
+
+	waitForPeerCount(t, relayNode, 2)
+	waitForPeerCount(t, nodeA, 1)
+	waitForPeerCount(t, nodeB, 1)
+
+	targetPub := nodeB.PublicKey()
+	targetID := hex.EncodeToString(targetPub[:])
+	sourcePub := nodeA.PublicKey()
+	sourceID := hex.EncodeToString(sourcePub[:])
+	waitForKnownPeer(t, nodeA, targetID)
+	waitForKnownPeer(t, nodeB, sourceID)
+
+	nodeA.natProfile.Store(nat.Profile{Type: nat.TypePortRestricted})
+	nodeB.natProfile.Store(nat.Profile{Type: nat.TypePortRestricted})
+
+	nodeA.mu.Lock()
+	infoA := nodeA.knownPeers[targetID]
+	infoA.natType = nat.TypePortRestricted
+	nodeA.knownPeers[targetID] = infoA
+	nodeA.mu.Unlock()
+
+	nodeB.mu.Lock()
+	infoB := nodeB.knownPeers[sourceID]
+	infoB.natType = nat.TypePortRestricted
+	nodeB.knownPeers[sourceID] = infoB
+	nodeB.mu.Unlock()
+
+	if nodeA.shouldPreferRelayForTarget(targetID) {
+		t.Fatal("expected port-restricted target to keep direct path available")
+	}
+
+	nodeA.mu.RLock()
+	targetAddr := nodeA.knownPeers[targetID].addr
+	nodeA.mu.RUnlock()
+	start := time.Now()
+	waitForDirectPeerWithin(t, nodeA, targetID, 5*time.Second)
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("expected direct path within 5s, got %s", elapsed)
+	}
+	if !nodeA.directPeerConnected(targetID) {
+		t.Fatal("expected direct peer connection to remain established")
+	}
+	nodeA.mu.RLock()
+	relaySessions := len(nodeA.relayLocals)
+	gotAddr := nodeA.knownPeers[targetID].addr
+	nodeA.mu.RUnlock()
+	if relaySessions != 0 {
+		t.Fatalf("expected no relay sessions for direct path, got %d", len(nodeA.relayLocals))
+	}
+	if gotAddr != targetAddr {
+		t.Fatalf("expected known direct addr to remain stable, got %q want %q", gotAddr, targetAddr)
 	}
 }
