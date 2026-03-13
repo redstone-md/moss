@@ -1503,11 +1503,17 @@ func (n *Node) removePeer(peerID string, session *transport.Session) {
 	delete(n.directProbes, peerID)
 	delete(n.peerDials, peerID)
 	for sessionID, relaySession := range n.relayLocals {
-		if relaySession.viaPeerID != peerID {
+		if relaySession.viaPeerID == peerID || relaySession.remotePeerID == peerID {
+			delete(n.relayLocals, sessionID)
+			delete(n.directProbes, relaySession.remotePeerID)
+		}
+	}
+	for sessionID, route := range n.relayRoutes {
+		if route.initiator != peerID && route.target != peerID {
 			continue
 		}
-		delete(n.relayLocals, sessionID)
-		delete(n.directProbes, relaySession.remotePeerID)
+		delete(n.relayRoutes, sessionID)
+		n.relaySessions.Release(sessionID)
 	}
 	if info, ok := n.knownPeers[peerID]; ok {
 		info.direct = false
