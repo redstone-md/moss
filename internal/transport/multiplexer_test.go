@@ -2,6 +2,7 @@ package transport
 
 import (
 	"io"
+	"net"
 	"testing"
 	"time"
 
@@ -79,6 +80,19 @@ func TestStreamReadReturnsEOFWhenSessionCloses(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("stream read did not unblock after carrier close")
+	}
+}
+
+func TestStreamWriteReturnsClosedAfterSessionClose(t *testing.T) {
+	sender, _, _, _ := newStubSessionPair(t)
+	stream := sender.Stream(5)
+	if err := sender.Close(); err != nil {
+		t.Fatalf("sender close failed: %v", err)
+	}
+	if err := stream.WritePacket([]byte("late")); err == nil {
+		t.Fatal("expected write after session close to fail")
+	} else if err != net.ErrClosed {
+		t.Fatalf("expected net.ErrClosed after session close, got %v", err)
 	}
 }
 
