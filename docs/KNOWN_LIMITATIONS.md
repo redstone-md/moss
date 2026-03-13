@@ -10,8 +10,8 @@ This document exists to keep repository claims aligned with current runtime beha
 
 ## Specification parity
 
-- The repository tracks the `PRD.md` scope with a practical v1 implementation.
-- Some production-grade goals from the PRD are only partially proven by automated tests and not by broad public telemetry.
+- The repository tracks [docs/SPECIFICATION.md](SPECIFICATION.md) with a practical v1 implementation.
+- Some production-grade goals from the specification are only partially proven by automated tests and not by broad public telemetry.
 
 ## Performance and scale
 

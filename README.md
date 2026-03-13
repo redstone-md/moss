@@ -5,7 +5,7 @@
 
 Moss is an embeddable P2P mesh core written in Go and exported through CGO as a C-shared library. This repository is the runtime layer, not the end-user chat application.
 
-The current implementation covers the `PRD.md` scope with a pragmatic v1 runtime:
+The current implementation follows the public technical specification in [docs/SPECIFICATION.md](docs/SPECIFICATION.md) with a pragmatic v1 runtime:
 
 - tracker-based bootstrapping via BEP 15 UDP and BEP 3 HTTP announces
 - encrypted peer transport with Noise XX (`25519_ChaChaPoly_BLAKE2s`) plus identity binding
