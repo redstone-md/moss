@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"errors"
 	"net"
 	"sync"
 
@@ -18,6 +19,7 @@ type Session struct {
 	carrier    carrier
 	sendCipher *noise.CipherState
 	recvCipher *noise.CipherState
+	datagram   *datagramSession
 	writeMu    sync.Mutex
 	readMu     sync.Mutex
 	remoteID   [32]byte
@@ -26,6 +28,9 @@ type Session struct {
 }
 
 func NewSession(carrier carrier, sendCipher, recvCipher *noise.CipherState, remoteID, remoteKey [32]byte, handshake byte) (*Session, error) {
+	if dc, ok := carrier.(datagramCapable); ok && dc.supportsDatagramSession() {
+		return newDatagramSession(carrier, sendCipher, recvCipher, remoteID, remoteKey, handshake)
+	}
 	return &Session{
 		carrier:    carrier,
 		sendCipher: sendCipher,
@@ -39,6 +44,13 @@ func NewSession(carrier carrier, sendCipher, recvCipher *noise.CipherState, remo
 func (s *Session) WritePacket(packet []byte) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	if s.datagram != nil {
+		ciphertext, err := s.datagram.Encrypt(packet)
+		if err != nil {
+			return err
+		}
+		return s.carrier.WritePacket(ciphertext)
+	}
 	ciphertext, err := s.sendCipher.Encrypt(nil, nil, packet)
 	if err != nil {
 		return err
@@ -49,11 +61,20 @@ func (s *Session) WritePacket(packet []byte) error {
 func (s *Session) ReadPacket() ([]byte, error) {
 	s.readMu.Lock()
 	defer s.readMu.Unlock()
-	buf, err := s.carrier.ReadPacket()
-	if err != nil {
-		return nil, err
+	for {
+		buf, err := s.carrier.ReadPacket()
+		if err != nil {
+			return nil, err
+		}
+		if s.datagram != nil {
+			packet, err := s.datagram.Decrypt(buf)
+			if errors.Is(err, errDatagramDrop) {
+				continue
+			}
+			return packet, err
+		}
+		return s.recvCipher.Decrypt(nil, nil, buf)
 	}
-	return s.recvCipher.Decrypt(nil, nil, buf)
 }
 
 func (s *Session) RemoteID() [32]byte {
