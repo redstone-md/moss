@@ -96,6 +96,25 @@ func TestStreamWriteReturnsClosedAfterSessionClose(t *testing.T) {
 	}
 }
 
+func TestMalformedFrameIsIgnoredBeforeNextValidPacket(t *testing.T) {
+	sender, receiver, senderCarrier, receiverCarrier := newStubSessionPair(t)
+	stream := sender.Stream(7)
+
+	if err := stream.WritePacket([]byte("valid")); err != nil {
+		t.Fatalf("WritePacket valid failed: %v", err)
+	}
+	receiverCarrier.incoming <- []byte{0x01, 0x02, 0x03}
+	receiverCarrier.incoming <- senderCarrier.writes[0]
+
+	packet, err := receiver.Stream(7).ReadPacket()
+	if err != nil {
+		t.Fatalf("ReadPacket after malformed frame failed: %v", err)
+	}
+	if got := string(packet); got != "valid" {
+		t.Fatalf("unexpected stream payload %q", got)
+	}
+}
+
 func newStubSessionPair(t *testing.T) (*Session, *Session, *stubDatagramCarrier, *stubDatagramCarrier) {
 	t.Helper()
 
