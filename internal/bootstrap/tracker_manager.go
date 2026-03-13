@@ -50,11 +50,13 @@ type Manager struct {
 	state         map[string]trackerState
 }
 
+const defaultTrackerConcurrency = 5
+
 func NewManager(timeout time.Duration) *Manager {
 	return &Manager{
 		HTTP:          NewHTTPClient(timeout),
 		UDP:           &UDPClient{},
-		maxConcurrent: 3,
+		maxConcurrent: defaultTrackerConcurrency,
 		state:         make(map[string]trackerState),
 	}
 }
@@ -76,7 +78,7 @@ func (m *Manager) AnnounceAll(ctx context.Context, trackers []string, req Announ
 	}
 	limit := m.maxConcurrent
 	if limit <= 0 {
-		limit = 3
+		limit = defaultTrackerConcurrency
 	}
 	if limit > len(ordered) {
 		limit = len(ordered)
