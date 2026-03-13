@@ -51,7 +51,7 @@ func TestTrackerBootstrapRecoversAfterClientRestart(t *testing.T) {
 	defer nodeB.Stop()
 
 	if !waitForPeerCountWithin(nodeA, 1, 10*time.Second) || !waitForPeerCountWithin(nodeB, 1, 10*time.Second) {
-		t.Skipf("bootstrap peers did not connect in time; server=%s nodeA=%s nodeB=%s", server.MeshInfoJSON(), nodeA.MeshInfoJSON(), nodeB.MeshInfoJSON())
+		t.Fatalf("bootstrap peers did not connect in time; server=%s nodeA=%s nodeB=%s", server.MeshInfoJSON(), nodeA.MeshInfoJSON(), nodeB.MeshInfoJSON())
 	}
 
 	if code := nodeA.Subscribe("lobby"); code != MOSS_OK {
@@ -60,6 +60,7 @@ func TestTrackerBootstrapRecoversAfterClientRestart(t *testing.T) {
 	if code := nodeB.Subscribe("lobby"); code != MOSS_OK {
 		t.Fatalf("nodeB.Subscribe failed: %d", code)
 	}
+	waitForSubscriberCount(t, server, "lobby", 2)
 
 	received := make(chan string, 4)
 	nodeB.SetMessageCallback(func(channel string, senderID [32]byte, data []byte) {
@@ -77,7 +78,7 @@ func TestTrackerBootstrapRecoversAfterClientRestart(t *testing.T) {
 			t.Fatalf("unexpected payload before restart: %q", payload)
 		}
 	case <-time.After(5 * time.Second):
-		t.Skipf("bootstrap publish did not converge before restart; server=%s nodeA=%s nodeB=%s", server.MeshInfoJSON(), nodeA.MeshInfoJSON(), nodeB.MeshInfoJSON())
+		t.Fatalf("bootstrap publish did not converge before restart; server=%s nodeA=%s nodeB=%s", server.MeshInfoJSON(), nodeA.MeshInfoJSON(), nodeB.MeshInfoJSON())
 	}
 
 	nodeB.Stop()
@@ -96,6 +97,7 @@ func TestTrackerBootstrapRecoversAfterClientRestart(t *testing.T) {
 	if !waitForPeerCountWithin(nodeB, 1, 10*time.Second) || !waitForPeerCountWithin(nodeA, 1, 10*time.Second) {
 		t.Fatalf("bootstrap peers did not reconnect after restart; server=%s nodeA=%s nodeB=%s", server.MeshInfoJSON(), nodeA.MeshInfoJSON(), nodeB.MeshInfoJSON())
 	}
+	waitForSubscriberCount(t, server, "lobby", 2)
 
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
@@ -111,5 +113,5 @@ func TestTrackerBootstrapRecoversAfterClientRestart(t *testing.T) {
 		}
 	}
 
-	t.Skipf("bootstrap transit did not recover after client restart in time; server=%s nodeA=%s nodeB=%s", server.MeshInfoJSON(), nodeA.MeshInfoJSON(), nodeB.MeshInfoJSON())
+	t.Fatalf("bootstrap transit did not recover after client restart in time; server=%s nodeA=%s nodeB=%s", server.MeshInfoJSON(), nodeA.MeshInfoJSON(), nodeB.MeshInfoJSON())
 }

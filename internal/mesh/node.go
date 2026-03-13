@@ -1109,6 +1109,21 @@ func (n *Node) announceLocalSubscriptionsToPeer(peer *peerConn) {
 	}
 }
 
+func (n *Node) refreshLocalSubscriptions() {
+	n.mu.RLock()
+	peers := make([]*peerConn, 0, len(n.peers))
+	for _, peer := range n.peers {
+		peers = append(peers, peer)
+	}
+	n.mu.RUnlock()
+	if len(peers) == 0 {
+		return
+	}
+	for _, peer := range peers {
+		n.announceLocalSubscriptionsToPeer(peer)
+	}
+}
+
 func (n *Node) broadcastPeerAnnouncement(info knownPeer, excludePeerID string) {
 	if info.id == "" || info.addr == "" {
 		return
@@ -1654,6 +1669,7 @@ func (n *Node) maintenanceLoop(ctx context.Context) {
 			n.connectKnownPeers()
 			n.connectBootstrapSeeds(ctx)
 			n.promoteRelayPeers()
+			n.refreshLocalSubscriptions()
 			for _, channel := range n.pubsub.SnapshotLocal() {
 				n.maintainTopicMesh(channel)
 			}
