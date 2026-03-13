@@ -3029,25 +3029,6 @@ func (n *Node) requestBindingObservation(peerID string, timeout time.Duration) (
 	}
 }
 
-func (n *Node) confirmReachability(addr string, deadline time.Time) bool {
-	n.mu.RLock()
-	peerIDs := make([]string, 0, len(n.peers))
-	for peerID := range n.peers {
-		peerIDs = append(peerIDs, peerID)
-	}
-	n.mu.RUnlock()
-	for _, peerID := range peerIDs {
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			return false
-		}
-		if n.requestReachabilityProbe(peerID, addr, remaining) {
-			return true
-		}
-	}
-	return false
-}
-
 func (n *Node) requestReachabilityProbe(peerID, addr string, timeout time.Duration) bool {
 	requestID, err := newRelaySessionID()
 	if err != nil {
