@@ -1,7 +1,9 @@
 package transport
 
 import (
+	"io"
 	"testing"
+	"time"
 
 	"github.com/flynn/noise"
 )
@@ -52,6 +54,31 @@ func TestNamedStreamsStayIsolated(t *testing.T) {
 	}
 	if got := string(packet); got != "alpha" {
 		t.Fatalf("unexpected stream 7 payload %q", got)
+	}
+}
+
+func TestStreamReadReturnsEOFWhenSessionCloses(t *testing.T) {
+	_, receiver, _, receiverCarrier := newStubSessionPair(t)
+	stream := receiver.Stream(11)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := stream.ReadPacket()
+		done <- err
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	if err := receiverCarrier.Close(); err != nil {
+		t.Fatalf("receiver carrier close failed: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if err == nil || err != io.EOF {
+			t.Fatalf("expected io.EOF after session close, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stream read did not unblock after carrier close")
 	}
 }
 
