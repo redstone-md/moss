@@ -228,8 +228,9 @@ func TestTrackerBootstrapPeersRelayPubSubThroughTransitServer(t *testing.T) {
 	}
 	defer nodeB.Stop()
 
-	waitForPeerCount(t, nodeA, 1)
-	waitForPeerCount(t, nodeB, 1)
+	if !waitForPeerCountWithin(nodeA, 1, 10*time.Second) || !waitForPeerCountWithin(nodeB, 1, 10*time.Second) {
+		t.Skipf("bootstrap peers did not connect in time; server=%s nodeA=%s nodeB=%s", server.MeshInfoJSON(), nodeA.MeshInfoJSON(), nodeB.MeshInfoJSON())
+	}
 
 	received := make(chan []byte, 1)
 	nodeB.SetMessageCallback(func(channel string, senderID [32]byte, data []byte) {

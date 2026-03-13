@@ -131,3 +131,62 @@ func TestNewManagerUsesSpecTrackerConcurrency(t *testing.T) {
 		t.Fatalf("expected default tracker concurrency %d, got %d", defaultTrackerConcurrency, manager.maxConcurrent)
 	}
 }
+
+func TestManagerRecoversWhenHealthyTrackerChangesBetweenAnnounces(t *testing.T) {
+	udp := &fakeTrackerClient{
+		responses: map[string]fakeTrackerResult{
+			"udp://tracker-a/announce": {err: errors.New("a failed")},
+			"udp://tracker-b/announce": {peers: []string{"198.51.100.30:4000"}},
+			"udp://tracker-c/announce": {err: errors.New("c failed")},
+		},
+	}
+	manager := &Manager{
+		UDP:           udp,
+		HTTP:          udp,
+		maxConcurrent: 2,
+		state:         make(map[string]trackerState),
+	}
+	trackers := []string{
+		"udp://tracker-a/announce",
+		"udp://tracker-b/announce",
+		"udp://tracker-c/announce",
+	}
+
+	peers, err := manager.AnnounceAll(context.Background(), trackers, AnnounceRequest{})
+	if err != nil {
+		t.Fatalf("first AnnounceAll failed: %v", err)
+	}
+	if !reflect.DeepEqual(peers, []string{"198.51.100.30:4000"}) {
+		t.Fatalf("unexpected first peers %#v", peers)
+	}
+
+	udp.mu.Lock()
+	udp.calls = nil
+	udp.responses["udp://tracker-b/announce"] = fakeTrackerResult{err: errors.New("b failed")}
+	udp.responses["udp://tracker-c/announce"] = fakeTrackerResult{peers: []string{"198.51.100.31:4000"}}
+	udp.mu.Unlock()
+
+	peers, err = manager.AnnounceAll(context.Background(), trackers, AnnounceRequest{})
+	if err != nil {
+		t.Fatalf("second AnnounceAll failed: %v", err)
+	}
+	if !reflect.DeepEqual(peers, []string{"198.51.100.31:4000"}) {
+		t.Fatalf("unexpected second peers %#v", peers)
+	}
+	calls := udp.Calls()
+	if len(calls) == 0 {
+		t.Fatalf("expected tracker calls on recovery cycle, got %#v", calls)
+	}
+	if !containsTrackerCall(calls, "udp://tracker-c/announce") {
+		t.Fatalf("expected recovery cycle to query new healthy tracker, got %#v", calls)
+	}
+}
+
+func containsTrackerCall(calls []string, want string) bool {
+	for _, call := range calls {
+		if call == want {
+			return true
+		}
+	}
+	return false
+}
