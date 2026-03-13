@@ -1180,7 +1180,7 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 	n.mu.Lock()
 	current, ok := n.knownPeers[env.AdvertisedPeerID]
 	addr := preferredKnownPeerAddr(current, env.AdvertisedAddr)
-	if current.direct && current.addr != "" {
+	if shouldFreezeDirectKnownPeerAddr(current, env.AdvertisedAddr, peer != nil && env.AdvertisedPeerID == peer.id) {
 		addr = current.addr
 	}
 	lan := current.lan && knownPeerAddrRank(addr) <= 1
@@ -2862,6 +2862,24 @@ func preferredKnownPeerAddr(current knownPeer, candidate string) string {
 		return current.addr
 	}
 	return candidate
+}
+
+func shouldFreezeDirectKnownPeerAddr(current knownPeer, candidate string, selfAnnounced bool) bool {
+	if !current.direct || current.addr == "" {
+		return false
+	}
+	currentRank := knownPeerAddrRank(current.addr)
+	candidateRank := knownPeerAddrRank(candidate)
+	if candidateRank < currentRank {
+		return true
+	}
+	if !selfAnnounced {
+		return true
+	}
+	if currentRank < 3 || candidateRank < 3 {
+		return true
+	}
+	return false
 }
 
 func knownPeerAddrRank(addr string) int {
