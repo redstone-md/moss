@@ -916,6 +916,10 @@ func (n *Node) readPeer(peer *peerConn) {
 		if err != nil {
 			return
 		}
+		if len(packet) > n.config.Security.MaxMessageSizeBytes {
+			n.scoring.PenalizeInvalid(peer.id)
+			return
+		}
 		var env gossip.Envelope
 		if err := json.Unmarshal(packet, &env); err != nil {
 			n.scoring.PenalizeInvalid(peer.id)

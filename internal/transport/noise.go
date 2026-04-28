@@ -316,6 +316,9 @@ func readFrame(ctx context.Context, conn net.Conn) ([]byte, error) {
 	if size == 0 {
 		return nil, nil
 	}
+	if size > maxStreamPacketSize {
+		return nil, errPacketTooLarge
+	}
 	payload := make([]byte, size)
 	if err := readRaw(ctx, conn, payload); err != nil {
 		return nil, err

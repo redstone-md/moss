@@ -2,9 +2,14 @@ package transport
 
 import (
 	"encoding/binary"
+	"errors"
 	"io"
 	"net"
 )
+
+const maxStreamPacketSize uint32 = 16 * 1024 * 1024
+
+var errPacketTooLarge = errors.New("transport packet too large")
 
 type streamCarrier struct {
 	conn net.Conn
@@ -29,6 +34,9 @@ func (c *streamCarrier) ReadPacket() ([]byte, error) {
 		return nil, err
 	}
 	size := binary.BigEndian.Uint32(header)
+	if size > maxStreamPacketSize {
+		return nil, errPacketTooLarge
+	}
 	buf := make([]byte, size)
 	if _, err := io.ReadFull(c.conn, buf); err != nil {
 		return nil, err
