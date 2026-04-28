@@ -4,7 +4,10 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
+	"time"
 )
+
+const streamWriteTimeout = 5 * time.Second
 
 type streamCarrier struct {
 	conn net.Conn
@@ -15,6 +18,10 @@ func newStreamCarrier(conn net.Conn) carrier {
 }
 
 func (c *streamCarrier) WritePacket(packet []byte) error {
+	if err := c.conn.SetWriteDeadline(time.Now().Add(streamWriteTimeout)); err != nil {
+		return err
+	}
+	defer c.conn.SetWriteDeadline(time.Time{})
 	header := make([]byte, 4)
 	binary.BigEndian.PutUint32(header, uint32(len(packet)))
 	if err := writeAll(c.conn, header); err != nil {
