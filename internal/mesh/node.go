@@ -154,6 +154,13 @@ type meshInfo struct {
 	SupernodeReady bool     `json:"supernode_ready"`
 }
 
+const (
+	maxKnownPeers           = 1024
+	maxKnownPeerSnapshot    = 256
+	maxAdvertisedPeerIDLen  = 128
+	maxAdvertisedAddressLen = 256
+)
+
 func NewNode(meshID string, psk []byte, cfg Config) (*Node, error) {
 	return NewNodeWithIdentity(meshID, psk, cfg, nil)
 }
@@ -1063,11 +1070,16 @@ func (n *Node) sendKnownPeerSnapshot(peer *peerConn) {
 		known = append(known, info)
 	}
 	n.mu.RUnlock()
+	sent := 0
 	for _, info := range known {
 		if info.id == peer.id || info.addr == "" {
 			continue
 		}
+		if sent >= maxKnownPeerSnapshot {
+			break
+		}
 		n.sendEnvelope(peer, n.peerAnnouncementEnvelope(info))
+		sent++
 	}
 	n.announceLocalSubscriptionsToPeer(peer)
 }
@@ -1151,6 +1163,18 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 	if env.AdvertisedPeerID == "" || env.AdvertisedAddr == "" || env.AdvertisedPeerID == n.localPeerID() {
 		return
 	}
+	if len(env.AdvertisedPeerID) > maxAdvertisedPeerIDLen || len(env.AdvertisedAddr) > maxAdvertisedAddressLen {
+		if peer != nil {
+			n.scoring.PenalizeInvalid(peer.id)
+		}
+		return
+	}
+	if !isValidAdvertisedAddr(env.AdvertisedAddr) {
+		if peer != nil {
+			n.scoring.PenalizeInvalid(peer.id)
+		}
+		return
+	}
 	changed := false
 	n.mu.Lock()
 	current, ok := n.knownPeers[env.AdvertisedPeerID]
@@ -1160,6 +1184,10 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 	}
 	lan := current.lan && knownPeerAddrRank(addr) <= 1
 	if !ok || current.addr != addr || !current.direct || current.natType != nat.Type(env.AdvertisedNATType) || current.publicReachable != env.AdvertisedReachable || current.relayCapable != env.AdvertisedRelayCapable {
+		if !ok && len(n.knownPeers) >= maxKnownPeers && !n.evictKnownPeerLocked() {
+			n.mu.Unlock()
+			return
+		}
 		direct := false
 		if ok && current.direct {
 			direct = true
@@ -3180,9 +3208,15 @@ func (n *Node) updateKnownPeer(peerID, addr string, direct bool) {
 	if peerID == "" || addr == "" || peerID == n.localPeerID() {
 		return
 	}
+	if len(peerID) > maxAdvertisedPeerIDLen || len(addr) > maxAdvertisedAddressLen || !isValidAdvertisedAddr(addr) {
+		return
+	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	current, ok := n.knownPeers[peerID]
+	if !ok && len(n.knownPeers) >= maxKnownPeers && !n.evictKnownPeerLocked() {
+		return
+	}
 	if ok && current.direct {
 		direct = true
 	}
@@ -3235,6 +3269,49 @@ func (n *Node) connectPeerUDPWithHint(ctx context.Context, targetPeerID, addr st
 	}
 	n.registerPeer(session, true)
 	return nil
+}
+
+func isValidAdvertisedAddr(addr string) bool {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil || host == "" || port == "" {
+		return false
+	}
+	portNum, err := strconv.Atoi(port)
+	if err != nil || portNum < 1 || portNum > 65535 {
+		return false
+	}
+	ip := net.ParseIP(host)
+	if ip != nil {
+		return true
+	}
+	for _, r := range host {
+		if r <= 31 || r == 127 {
+			return false
+		}
+	}
+	return true
+}
+
+func (n *Node) evictKnownPeerLocked() bool {
+	var (
+		staleID   string
+		staleTime time.Time
+	)
+	for peerID, info := range n.knownPeers {
+		if info.direct || peerID == n.localPeerID() {
+			continue
+		}
+		if staleID == "" || info.lastSeen.Before(staleTime) {
+			staleID = peerID
+			staleTime = info.lastSeen
+		}
+	}
+	if staleID == "" {
+		return false
+	}
+	delete(n.knownPeers, staleID)
+	delete(n.peerDials, staleID)
+	return true
 }
 
 func (n *Node) connectBootstrapPeer(ctx context.Context, addr string) error {

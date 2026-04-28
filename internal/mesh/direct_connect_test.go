@@ -98,3 +98,64 @@ func TestHandleKnownPeerEnvelopeDoesNotOverwritePublicAddrWithPrivateAnnounce(t 
 		t.Fatalf("expected public known peer addr to be preserved, got %q", got)
 	}
 }
+
+func TestHandleKnownPeerEnvelopeRejectsInvalidAdvertisedAddr(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Trackers = nil
+	node, err := NewNode("mesh-known-peer-invalid-addr", nil, cfg)
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+
+	node.handleKnownPeerEnvelope(&peerConn{id: "sender-1"}, gossip.Envelope{
+		AdvertisedPeerID: "peer-1",
+		AdvertisedAddr:   "invalid-addr",
+	}, gossip.TypePeerAnnounce)
+
+	node.mu.RLock()
+	defer node.mu.RUnlock()
+	if _, ok := node.knownPeers["peer-1"]; ok {
+		t.Fatal("expected invalid advertised addr to be ignored")
+	}
+}
+
+func TestHandleKnownPeerEnvelopeEvictsOldestKnownPeerAtCapacity(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Trackers = nil
+	node, err := NewNode("mesh-known-peer-capacity", nil, cfg)
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+
+	oldest := "peer-oldest"
+	node.mu.Lock()
+	for i := 0; i < maxKnownPeers; i++ {
+		id := oldest
+		if i > 0 {
+			id = "peer-" + string(rune('a'+(i%26))) + "-" + string(rune('a'+((i/26)%26))) + "-" + string(rune('a'+((i/676)%26))) + "-" + string(rune('a'+((i/17576)%26)))
+		}
+		node.knownPeers[id] = knownPeer{
+			id:       id,
+			addr:     "10.0.0.1:41030",
+			lastSeen: time.Now().Add(-time.Duration(maxKnownPeers-i) * time.Second),
+		}
+	}
+	node.mu.Unlock()
+
+	node.handleKnownPeerEnvelope(&peerConn{id: "sender-1"}, gossip.Envelope{
+		AdvertisedPeerID: "peer-new",
+		AdvertisedAddr:   "10.0.0.2:41030",
+	}, gossip.TypePeerAnnounce)
+
+	node.mu.RLock()
+	defer node.mu.RUnlock()
+	if len(node.knownPeers) != maxKnownPeers {
+		t.Fatalf("expected known peer count to stay capped at %d, got %d", maxKnownPeers, len(node.knownPeers))
+	}
+	if _, ok := node.knownPeers["peer-new"]; !ok {
+		t.Fatal("expected new peer to be inserted after eviction")
+	}
+	if _, ok := node.knownPeers[oldest]; ok {
+		t.Fatal("expected oldest peer to be evicted")
+	}
+}
