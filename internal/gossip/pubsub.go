@@ -59,8 +59,14 @@ func (m *Manager) SetPeerSubscription(peerID, channel string, subscribed bool) {
 		subscriptions[channel] = struct{}{}
 	} else {
 		delete(subscriptions, channel)
+		if len(subscriptions) == 0 {
+			delete(m.peerSubscriptions, peerID)
+		}
 		if peers, ok := m.meshPeers[channel]; ok {
 			delete(peers, peerID)
+			if len(peers) == 0 {
+				delete(m.meshPeers, channel)
+			}
 		}
 	}
 }
@@ -69,8 +75,11 @@ func (m *Manager) RemovePeer(peerID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.peerSubscriptions, peerID)
-	for _, peers := range m.meshPeers {
+	for channel, peers := range m.meshPeers {
 		delete(peers, peerID)
+		if len(peers) == 0 {
+			delete(m.meshPeers, channel)
+		}
 	}
 }
 
@@ -90,6 +99,9 @@ func (m *Manager) SetMeshPeer(channel, peerID string, inMesh bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	peers, ok := m.meshPeers[channel]
+	if !ok && !inMesh {
+		return
+	}
 	if !ok {
 		peers = make(map[string]struct{})
 		m.meshPeers[channel] = peers
@@ -98,6 +110,9 @@ func (m *Manager) SetMeshPeer(channel, peerID string, inMesh bool) {
 		peers[peerID] = struct{}{}
 	} else {
 		delete(peers, peerID)
+		if len(peers) == 0 {
+			delete(m.meshPeers, channel)
+		}
 	}
 }
 

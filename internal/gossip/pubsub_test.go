@@ -24,3 +24,25 @@ func TestManagerTracksMeshPeersSeparatelyFromSubscriptions(t *testing.T) {
 		t.Fatal("peer-1 should have been removed from mesh")
 	}
 }
+
+func TestSetMeshPeerDoesNotCreateChannelOnRemove(t *testing.T) {
+	manager := NewManager()
+
+	manager.SetMeshPeer("unknown", "peer-1", false)
+
+	if peers := manager.MeshPeers("unknown"); len(peers) != 0 {
+		t.Fatalf("unexpected mesh peers for unknown channel: %#v", peers)
+	}
+}
+
+func TestRemovePeerCleansEmptyMeshChannels(t *testing.T) {
+	manager := NewManager()
+	manager.SetPeerSubscription("peer-1", "alpha", true)
+	manager.SetMeshPeer("alpha", "peer-1", true)
+
+	manager.RemovePeer("peer-1")
+
+	if peers := manager.MeshPeers("alpha"); len(peers) != 0 {
+		t.Fatalf("expected empty mesh peers after remove, got %#v", peers)
+	}
+}
