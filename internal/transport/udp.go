@@ -22,6 +22,9 @@ const (
 	udpMessageData          byte = 4
 	udpMessageObserveReq    byte = 5
 	udpMessageObserveResp   byte = 6
+
+	udpPendingServerHandshakeMax = 1024
+	udpPendingServerHandshakeTTL = 10 * time.Second
 )
 
 var errUDPAlreadyConnected = errors.New("udp peer is already connected")
@@ -49,8 +52,9 @@ type udpClientHandshake struct {
 }
 
 type udpServerHandshake struct {
-	hs   *noise.HandshakeState
-	mode byte
+	hs        *noise.HandshakeState
+	mode      byte
+	createdAt time.Time
 }
 
 type udpDialResult struct {
@@ -335,7 +339,12 @@ func (l *UDPListener) handleHandshakeInit(remote *net.UDPAddr, payload []byte) {
 	}
 	key := remote.String()
 	l.mu.Lock()
+	l.pruneExpiredServerHandshakesLocked(time.Now())
 	if l.sessions[key] != nil {
+		l.mu.Unlock()
+		return
+	}
+	if _, exists := l.servers[key]; !exists && len(l.servers) >= udpPendingServerHandshakeMax {
 		l.mu.Unlock()
 		return
 	}
@@ -356,7 +365,10 @@ func (l *UDPListener) handleHandshakeInit(remote *net.UDPAddr, payload []byte) {
 			return
 		}
 		l.mu.Lock()
-		l.servers[key] = &udpServerHandshake{hs: hs, mode: mode}
+		l.pruneExpiredServerHandshakesLocked(time.Now())
+		if l.sessions[key] == nil && (l.servers[key] != nil || len(l.servers) < udpPendingServerHandshakeMax) {
+			l.servers[key] = &udpServerHandshake{hs: hs, mode: mode, createdAt: time.Now()}
+		}
 		l.mu.Unlock()
 		_ = l.writeDatagram(remote, udpMessageHandshakeResp, payload2)
 	case HandshakeModeIK:
@@ -388,6 +400,14 @@ func (l *UDPListener) handleHandshakeInit(remote *net.UDPAddr, payload []byte) {
 		}
 	default:
 		return
+	}
+}
+
+func (l *UDPListener) pruneExpiredServerHandshakesLocked(now time.Time) {
+	for key, pending := range l.servers {
+		if now.Sub(pending.createdAt) > udpPendingServerHandshakeTTL {
+			delete(l.servers, key)
+		}
 	}
 }
 

@@ -263,3 +263,49 @@ func TestUDPObserveSTUNContextReportsObservedEndpoint(t *testing.T) {
 		t.Fatalf("expected observed port %d, got %s", clientPort, port)
 	}
 }
+
+func TestUDPHandshakeInitCapsPendingServers(t *testing.T) {
+	identity, err := mcrypto.NewIdentity()
+	if err != nil {
+		t.Fatalf("identity failed: %v", err)
+	}
+	listener, _, err := ListenUDP(0, HandshakeConfig{
+		MeshID:   "mesh-udp-pending-cap",
+		Identity: identity,
+	})
+	if err != nil {
+		t.Fatalf("ListenUDP failed: %v", err)
+	}
+	defer listener.Close()
+
+	initIdentity, err := mcrypto.NewIdentity()
+	if err != nil {
+		t.Fatalf("initiator identity failed: %v", err)
+	}
+	initHS, err := newHandshakeState(HandshakeConfig{
+		MeshID:   "mesh-udp-pending-cap",
+		Identity: initIdentity,
+	}, true, HandshakeModeXX)
+	if err != nil {
+		t.Fatalf("newHandshakeState failed: %v", err)
+	}
+	msg, _, _, err := initHS.WriteMessage(nil, nil)
+	if err != nil {
+		t.Fatalf("WriteMessage failed: %v", err)
+	}
+	msg = append([]byte{HandshakeModeXX}, msg...)
+
+	for i := 0; i < udpPendingServerHandshakeMax+100; i++ {
+		listener.handleHandshakeInit(&net.UDPAddr{
+			IP:   net.IPv4(198, 51, 100, byte((i%254)+1)),
+			Port: 10000 + i,
+		}, msg)
+	}
+
+	listener.mu.Lock()
+	pending := len(listener.servers)
+	listener.mu.Unlock()
+	if pending != udpPendingServerHandshakeMax {
+		t.Fatalf("expected pending handshake cap %d, got %d", udpPendingServerHandshakeMax, pending)
+	}
+}
