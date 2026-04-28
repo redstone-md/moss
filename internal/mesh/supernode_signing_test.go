@@ -68,3 +68,25 @@ func TestHandleSupernodeStatusRejectsInvalidSignature(t *testing.T) {
 		t.Fatalf("expected invalid supernode announce to penalize sender, base=%f new=%f", base, score)
 	}
 }
+
+func TestVerifySupernodeEnvelopeRejectsMalformedPeerIDLength(t *testing.T) {
+	env := gossip.Envelope{
+		Type:                   gossip.TypeSupernodeAnnounce,
+		AdvertisedPeerID:       "00",
+		AdvertisedAddr:         "192.168.1.50:41030",
+		AdvertisedNATType:      string(nat.TypePublic),
+		AdvertisedReachable:    true,
+		AdvertisedRelayCapable: true,
+		AdvertisedSignature:    []byte{1},
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("verifySupernodeEnvelope panicked for malformed peer ID length: %v", r)
+		}
+	}()
+
+	if verifySupernodeEnvelope(env) {
+		t.Fatal("expected malformed peer ID length to fail verification")
+	}
+}
