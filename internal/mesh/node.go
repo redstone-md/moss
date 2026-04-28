@@ -1450,19 +1450,13 @@ func (n *Node) sendToPeers(peerIDs []string, env gossip.Envelope) bool {
 	if len(peers) == 0 {
 		return false
 	}
-	var sent atomic.Bool
-	var wg sync.WaitGroup
-	wg.Add(len(peers))
+	sent := false
 	for _, peer := range peers {
-		go func(peer *peerConn) {
-			defer wg.Done()
-			if err := peer.session.WritePacket(payload); err == nil {
-				sent.Store(true)
-			}
-		}(peer)
+		if err := peer.session.WritePacket(payload); err == nil {
+			sent = true
+		}
 	}
-	wg.Wait()
-	return sent.Load()
+	return sent
 }
 
 func (n *Node) removePeer(peerID string, session *transport.Session) {
