@@ -1,6 +1,7 @@
 package mesh
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -147,5 +148,52 @@ func TestMeshDeliveryDeficitSkipsPeersThatForward(t *testing.T) {
 	}
 	if score := node.scoring.Score("peer-b"); score != 0 {
 		t.Fatalf("expected peer-b to avoid deficit penalty, got %f", score)
+	}
+}
+
+func TestInboundPublishAboveMaxSizeIsRejected(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Security.MaxMessageSizeBytes = 8
+	node, err := NewNode("mesh-publish-size-limit", nil, cfg)
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+	node.pubsub.Subscribe("alpha")
+	peerID := "peer-oversize"
+	payload := []byte("payload-too-large")
+
+	node.handleEnvelope(&peerConn{id: peerID}, gossip.Envelope{
+		Type:      gossip.TypePublish,
+		Channel:   "alpha",
+		MessageID: "msg-oversized",
+		Payload:   payload,
+	})
+
+	if _, ok := node.cache.Get("msg-oversized"); ok {
+		t.Fatal("expected oversized publish to be rejected before caching")
+	}
+	if score := node.scoring.Score(peerID); score >= 0 {
+		t.Fatalf("expected invalid publish to penalize peer, got %f", score)
+	}
+}
+
+func TestRememberSuppressionCapsPerPeerEntries(t *testing.T) {
+	node, err := NewNode("mesh-suppression-cap", nil, DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+	peerID := "peer-suppress"
+	ids := make([]string, maxSuppressionEntriesPerPeer+32)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("msg-%d", i)
+	}
+
+	node.rememberSuppression(peerID, ids, "")
+
+	node.mu.RLock()
+	defer node.mu.RUnlock()
+	entry := node.suppress[peerID]
+	if len(entry) > maxSuppressionEntriesPerPeer {
+		t.Fatalf("expected suppression entries to be capped at %d, got %d", maxSuppressionEntriesPerPeer, len(entry))
 	}
 }

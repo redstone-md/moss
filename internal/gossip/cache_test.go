@@ -61,3 +61,23 @@ func TestCacheStoreIfNewRejectsDuplicateMessageID(t *testing.T) {
 		t.Fatalf("expected original payload to be preserved, got %q", string(env.Payload))
 	}
 }
+
+func TestCacheEvictsOldestWhenMaxEntriesReached(t *testing.T) {
+	cache := NewCache(time.Minute)
+	cache.maxEntries = 2
+	cache.Store(Envelope{Type: TypePublish, Channel: "alpha", MessageID: "m1", Payload: []byte("one")})
+	time.Sleep(time.Millisecond)
+	cache.Store(Envelope{Type: TypePublish, Channel: "alpha", MessageID: "m2", Payload: []byte("two")})
+	time.Sleep(time.Millisecond)
+	cache.Store(Envelope{Type: TypePublish, Channel: "alpha", MessageID: "m3", Payload: []byte("three")})
+
+	if _, ok := cache.Get("m1"); ok {
+		t.Fatal("expected oldest cached envelope to be evicted")
+	}
+	if _, ok := cache.Get("m2"); !ok {
+		t.Fatal("expected newer cached envelope to be retained")
+	}
+	if _, ok := cache.Get("m3"); !ok {
+		t.Fatal("expected newest cached envelope to be retained")
+	}
+}

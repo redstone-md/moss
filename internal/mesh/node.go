@@ -78,6 +78,12 @@ type Node struct {
 	dispatchCh       chan any
 }
 
+const (
+	maxSuppressionEntriesPerPeer = 1024
+	maxSuppressionIDsPerMessage  = 256
+	suppressionTTL               = 2 * time.Minute
+)
+
 type peerConn struct {
 	id          string
 	addr        string
@@ -976,6 +982,10 @@ func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 			return
 		}
 		if env.Channel == "" || env.MessageID == "" {
+			n.scoring.PenalizeInvalid(peer.id)
+			return
+		}
+		if len(env.Payload) > n.config.Security.MaxMessageSizeBytes {
 			n.scoring.PenalizeInvalid(peer.id)
 			return
 		}
@@ -1970,6 +1980,9 @@ func (n *Node) rememberSuppression(peerID string, ids []string, fallback string)
 	if len(ids) == 0 && fallback != "" {
 		ids = []string{fallback}
 	}
+	if len(ids) > maxSuppressionIDsPerMessage {
+		ids = ids[:maxSuppressionIDsPerMessage]
+	}
 	if len(ids) == 0 {
 		return
 	}
@@ -1981,7 +1994,14 @@ func (n *Node) rememberSuppression(peerID string, ids []string, fallback string)
 		n.suppress[peerID] = entry
 	}
 	now := time.Now()
+	pruneSuppressionLocked(entry, now)
 	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		for len(entry) >= maxSuppressionEntriesPerPeer {
+			evictOldestSuppressionLocked(entry)
+		}
 		entry[id] = now
 	}
 }
@@ -1997,11 +2017,33 @@ func (n *Node) isSuppressed(peerID, messageID string) bool {
 	if !ok {
 		return false
 	}
-	if time.Since(ts) > 2*time.Minute {
+	if time.Since(ts) > suppressionTTL {
 		delete(entry, messageID)
 		return false
 	}
 	return true
+}
+
+func pruneSuppressionLocked(entry map[string]time.Time, now time.Time) {
+	for id, ts := range entry {
+		if now.Sub(ts) > suppressionTTL {
+			delete(entry, id)
+		}
+	}
+}
+
+func evictOldestSuppressionLocked(entry map[string]time.Time) {
+	oldestID := ""
+	oldestAt := time.Now()
+	for id, ts := range entry {
+		if oldestID == "" || ts.Before(oldestAt) {
+			oldestID = id
+			oldestAt = ts
+		}
+	}
+	if oldestID != "" {
+		delete(entry, oldestID)
+	}
 }
 
 func (n *Node) maintainTopicMesh(channel string) {
