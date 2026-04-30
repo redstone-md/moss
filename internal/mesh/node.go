@@ -2262,6 +2262,9 @@ func (n *Node) handleRelayRequest(peer *peerConn, env gossip.Envelope) {
 		return
 	}
 	if env.RelayTarget == n.localPeerID() {
+		if peer == nil || env.RelaySource != peer.id {
+			return
+		}
 		n.mu.Lock()
 		n.relayLocals[env.RelaySession] = relayLocalSession{
 			sessionID:    env.RelaySession,
