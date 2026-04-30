@@ -16,6 +16,7 @@ concurrency:
 jobs:
   build-shared:
     name: Build Shared (${{ matrix.label }})
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
