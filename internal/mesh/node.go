@@ -147,6 +147,7 @@ type knownPeer struct {
 	lastSeen        time.Time
 	observations    []string
 	noiseStatic     []byte
+	signature       []byte
 }
 
 type meshInfo struct {
@@ -1162,6 +1163,7 @@ func (n *Node) peerAnnouncementEnvelope(info knownPeer) gossip.Envelope {
 	if info.id == n.localPeerID() {
 		return n.signPeerAnnouncementEnvelope(env)
 	}
+	env.AdvertisedSignature = append([]byte(nil), info.signature...)
 	return env
 }
 
@@ -1200,6 +1202,10 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 	if env.AdvertisedPeerID == "" || env.AdvertisedAddr == "" || env.AdvertisedPeerID == n.localPeerID() {
 		return
 	}
+	trustedSelfAnnouncement := peer != nil && env.AdvertisedPeerID == peer.id
+	if forwardType == gossip.TypePeerAnnounce && !trustedSelfAnnouncement && !verifiedEnvelope {
+		return
+	}
 	trustCapabilities := verifySupernodeStatusEnvelope(env)
 	changed := false
 	n.mu.Lock()
@@ -1223,7 +1229,8 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 		publicReachable = env.AdvertisedReachable
 		relayCapable = env.AdvertisedRelayCapable
 	}
-	if !ok || current.addr != addr || !current.direct || current.verified != verified || current.natType != natType || current.publicReachable != publicReachable || current.relayCapable != relayCapable {
+	signature := knownPeerSignature(current, addr, env, verifiedEnvelope)
+	if !ok || current.addr != addr || !current.direct || current.verified != verified || current.natType != natType || current.publicReachable != publicReachable || current.relayCapable != relayCapable || !equalBytes(current.signature, signature) {
 		direct := false
 		if ok && current.direct {
 			direct = true
@@ -1245,6 +1252,7 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 			lastSeen:        time.Now(),
 			observations:    appendObservation(current.observations, env.AdvertisedAddr),
 			noiseStatic:     append([]byte(nil), current.noiseStatic...),
+			signature:       signature,
 		}
 		if previousAddr != "" && previousAddr != addr {
 			delete(n.peerDials, env.AdvertisedPeerID)
@@ -1255,7 +1263,7 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 	n.mu.Unlock()
 	if changed {
 		advertisedSignature := append([]byte(nil), env.AdvertisedSignature...)
-		if nat.Type(env.AdvertisedNATType) != natType || env.AdvertisedReachable != publicReachable || env.AdvertisedRelayCapable != relayCapable {
+		if forwardType != gossip.TypePeerAnnounce && (nat.Type(env.AdvertisedNATType) != natType || env.AdvertisedReachable != publicReachable || env.AdvertisedRelayCapable != relayCapable) {
 			advertisedSignature = nil
 		}
 		n.broadcastToAll(gossip.Envelope{
@@ -1268,6 +1276,28 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 			AdvertisedSignature:    advertisedSignature,
 		}, peer.id)
 	}
+}
+
+func knownPeerSignature(current knownPeer, addr string, env gossip.Envelope, valid bool) []byte {
+	if valid && env.AdvertisedAddr == addr {
+		return append([]byte(nil), env.AdvertisedSignature...)
+	}
+	if current.addr == addr {
+		return append([]byte(nil), current.signature...)
+	}
+	return nil
+}
+
+func equalBytes(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (n *Node) handleBindingRequest(peer *peerConn, env gossip.Envelope) {
