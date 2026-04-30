@@ -457,12 +457,12 @@ func (n *Node) OpenRelaySession(viaPeerID, targetPeerID string, timeout time.Dur
 		wait:         wait,
 	}
 	n.mu.Unlock()
-	n.sendEnvelope(peer, gossip.Envelope{
+	n.sendEnvelope(peer, n.signRelayRequestEnvelope(gossip.Envelope{
 		Type:         gossip.TypeRelayRequest,
 		RelaySession: sessionID,
 		RelaySource:  n.localPeerID(),
 		RelayTarget:  targetPeerID,
-	})
+	}))
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
@@ -1057,6 +1057,9 @@ func filterPeerIDs(peerIDs []string, keep func(string) bool) []string {
 }
 
 func (n *Node) sendEnvelope(peer *peerConn, env gossip.Envelope) {
+	if peer == nil || peer.session == nil {
+		return
+	}
 	payload, err := json.Marshal(env)
 	if err != nil {
 		return
@@ -2262,7 +2265,7 @@ func (n *Node) handleRelayRequest(peer *peerConn, env gossip.Envelope) {
 		return
 	}
 	if env.RelayTarget == n.localPeerID() {
-		if peer == nil || env.RelaySource != peer.id {
+		if peer == nil || !verifyRelayRequestEnvelope(env) {
 			return
 		}
 		n.mu.Lock()
