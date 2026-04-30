@@ -1,7 +1,6 @@
 package mesh
 
 import (
-	"crypto/ed25519"
 	"encoding/hex"
 	"strconv"
 
@@ -37,7 +36,7 @@ func verifySupernodeEnvelope(env gossip.Envelope) bool {
 		return false
 	}
 	publicKey, err := hex.DecodeString(env.AdvertisedPeerID)
-	if err != nil || len(publicKey) != ed25519.PublicKeySize {
+	if err != nil {
 		return false
 	}
 	return mcrypto.Verify(publicKey, supernodeSignaturePayload(env), env.AdvertisedSignature)

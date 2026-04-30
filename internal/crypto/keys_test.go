@@ -23,3 +23,19 @@ func TestIdentityEncodeDecodeRoundTrip(t *testing.T) {
 		t.Fatal("decoded identity signature verification failed")
 	}
 }
+
+func TestVerifyRejectsMalformedInputs(t *testing.T) {
+	identity, err := NewIdentity()
+	if err != nil {
+		t.Fatalf("NewIdentity failed: %v", err)
+	}
+	message := []byte("moss-identity-malformed")
+	signature := identity.Sign(message)
+
+	if Verify([]byte{1}, message, signature) {
+		t.Fatal("expected short public key to fail verification")
+	}
+	if Verify(identity.PublicKeyBytes(), message, []byte{1}) {
+		t.Fatal("expected short signature to fail verification")
+	}
+}
