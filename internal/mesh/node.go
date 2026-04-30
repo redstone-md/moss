@@ -1295,7 +1295,6 @@ func (n *Node) handleReachabilityResponse(env gossip.Envelope) {
 
 func normalizeHolePunchCoordAt(coordAtMillis int64, now time.Time) time.Time {
 	const (
-		minLead = 300 * time.Millisecond
 		offset  = 600 * time.Millisecond
 		maxLead = 2 * time.Second
 	)
@@ -1304,7 +1303,7 @@ func normalizeHolePunchCoordAt(coordAtMillis int64, now time.Time) time.Time {
 	}
 	coordAt := time.UnixMilli(coordAtMillis)
 	lead := coordAt.Sub(now)
-	if lead < minLead || lead > maxLead {
+	if lead > maxLead {
 		return now.Add(offset)
 	}
 	return coordAt

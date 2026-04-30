@@ -250,6 +250,15 @@ func TestNormalizeHolePunchCoordAtClampsOutOfWindow(t *testing.T) {
 	}
 }
 
+func TestNormalizeHolePunchCoordAtPreservesNearFutureCoord(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	nearFuture := now.Add(150 * time.Millisecond)
+	got := normalizeHolePunchCoordAt(nearFuture.UnixMilli(), now)
+	if !got.Equal(nearFuture) {
+		t.Fatalf("expected near-future coordAt to be preserved, want %s got %s", nearFuture, got)
+	}
+}
+
 func TestNormalizeHolePunchCoordAtPreservesValidWindow(t *testing.T) {
 	now := time.Unix(1700000000, 0)
 	valid := now.Add(1200 * time.Millisecond)
