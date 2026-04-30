@@ -162,10 +162,15 @@ func TestPeerAnnounceCannotUpgradeRelayCapabilities(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewNode failed: %v", err)
 	}
+	attackerNode, err := NewNode("mesh-relay-announce", nil, DefaultConfig())
+	if err != nil {
+		t.Fatalf("attacker NewNode failed: %v", err)
+	}
+	attackerID := attackerNode.localPeerID()
 
-	node.peers["attacker"] = &peerConn{id: "attacker", addr: "203.0.113.10:4000"}
-	node.knownPeers["attacker"] = knownPeer{
-		id:           "attacker",
+	node.peers[attackerID] = &peerConn{id: attackerID, addr: "203.0.113.10:4000"}
+	node.knownPeers[attackerID] = knownPeer{
+		id:           attackerID,
 		addr:         "203.0.113.10:4000",
 		direct:       true,
 		natType:      nat.TypeRestrictedCone,
@@ -180,27 +185,28 @@ func TestPeerAnnounceCannotUpgradeRelayCapabilities(t *testing.T) {
 		publicReachable: true,
 		relayCapable:    true,
 	}
-	node.scoring.SetApplicationScore("attacker", 100)
+	node.scoring.SetApplicationScore(attackerID, 100)
 	node.scoring.SetApplicationScore("honest", 1)
 
-	node.handlePeerAnnounce(node.peers["attacker"], gossip.Envelope{
+	selfSignedAnnounce := attackerNode.signSupernodeEnvelope(gossip.Envelope{
 		Type:                   gossip.TypePeerAnnounce,
-		AdvertisedPeerID:       "attacker",
+		AdvertisedPeerID:       attackerID,
 		AdvertisedAddr:         "203.0.113.10:4000",
 		AdvertisedNATType:      string(nat.TypePublic),
 		AdvertisedReachable:    true,
 		AdvertisedRelayCapable: true,
 	})
+	node.handlePeerAnnounce(node.peers[attackerID], selfSignedAnnounce)
 
-	info := node.knownPeers["attacker"]
+	info := node.knownPeers[attackerID]
 	if info.relayCapable {
-		t.Fatalf("expected unsigned peer announce to leave relay capability unchanged")
+		t.Fatalf("expected self-signed peer announce to leave relay capability unchanged")
 	}
 	if info.publicReachable {
-		t.Fatalf("expected unsigned peer announce to leave reachability unchanged")
+		t.Fatalf("expected self-signed peer announce to leave reachability unchanged")
 	}
 	if info.natType != nat.TypeRestrictedCone {
-		t.Fatalf("expected unsigned peer announce to leave NAT type unchanged, got %s", info.natType)
+		t.Fatalf("expected self-signed peer announce to leave NAT type unchanged, got %s", info.natType)
 	}
 
 	selected, err := node.selectRelayPeer("target-peer")

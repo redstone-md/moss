@@ -1163,7 +1163,7 @@ func (n *Node) handlePeerAnnounce(peer *peerConn, env gossip.Envelope) {
 
 func (n *Node) handleSupernodeStatus(peer *peerConn, env gossip.Envelope, relayCapable bool) {
 	env.AdvertisedRelayCapable = relayCapable
-	if !verifySupernodeEnvelope(env) {
+	if !verifySupernodeStatusEnvelope(env) {
 		if peer != nil {
 			n.scoring.PenalizeInvalid(peer.id)
 		}
@@ -1176,7 +1176,7 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 	if env.AdvertisedPeerID == "" || env.AdvertisedAddr == "" || env.AdvertisedPeerID == n.localPeerID() {
 		return
 	}
-	trustCapabilities := verifySupernodeEnvelope(env)
+	trustCapabilities := verifySupernodeStatusEnvelope(env)
 	changed := false
 	n.mu.Lock()
 	current, ok := n.knownPeers[env.AdvertisedPeerID]

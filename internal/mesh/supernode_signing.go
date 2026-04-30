@@ -41,3 +41,10 @@ func verifySupernodeEnvelope(env gossip.Envelope) bool {
 	}
 	return mcrypto.Verify(publicKey, supernodeSignaturePayload(env), env.AdvertisedSignature)
 }
+
+func verifySupernodeStatusEnvelope(env gossip.Envelope) bool {
+	if env.Type != gossip.TypeSupernodeAnnounce && env.Type != gossip.TypeSupernodeRevoke {
+		return false
+	}
+	return verifySupernodeEnvelope(env)
+}
