@@ -2,7 +2,10 @@ package transport
 
 import (
 	"context"
+	"encoding/binary"
+	"encoding/json"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -122,6 +125,47 @@ func TestHandshakeFailsOnMeshMismatch(t *testing.T) {
 	}
 	if err := <-serverCh; err == nil {
 		t.Fatal("server handshake unexpectedly succeeded")
+	}
+}
+
+func TestReadFrameRejectsOversizedFrame(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		header := make([]byte, 4)
+		binary.BigEndian.PutUint32(header, maxHandshakeFrameSize+1)
+		_, err := clientConn.Write(header)
+		errCh <- err
+	}()
+
+	_, err := readFrame(t.Context(), serverConn)
+	if err == nil || !strings.Contains(err.Error(), "handshake frame too large") {
+		t.Fatalf("expected oversized frame error, got %v", err)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("write oversized frame header failed: %v", err)
+	}
+}
+
+func TestVerifyIdentityPayloadRejectsInvalidSignatureLength(t *testing.T) {
+	identity, err := mcrypto.NewIdentity()
+	if err != nil {
+		t.Fatalf("NewIdentity failed: %v", err)
+	}
+	raw, err := json.Marshal(identityPayload{
+		IdentityPub: identity.PublicKeyBytes(),
+		Signature:   make([]byte, 63),
+	})
+	if err != nil {
+		t.Fatalf("marshal identity payload failed: %v", err)
+	}
+	var out [32]byte
+	err = verifyIdentityPayload(raw, "mesh-invalid-signature", identity.NoiseStaticPublic(), &out)
+	if err == nil || !strings.Contains(err.Error(), "invalid identity signature length") {
+		t.Fatalf("expected invalid signature length error, got %v", err)
 	}
 }
 
