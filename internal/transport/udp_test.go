@@ -162,6 +162,77 @@ func TestUDPReconnectUsesIKWithCachedRemoteStatic(t *testing.T) {
 	}
 }
 
+func TestUDPIKRejectsEmptyHandshakeDone(t *testing.T) {
+	clientIdentity, err := mcrypto.NewIdentity()
+	if err != nil {
+		t.Fatalf("client identity failed: %v", err)
+	}
+	serverIdentity, err := mcrypto.NewIdentity()
+	if err != nil {
+		t.Fatalf("server identity failed: %v", err)
+	}
+	serverListener, port, err := ListenUDP(0, HandshakeConfig{
+		MeshID:   "mesh-udp-ik-done",
+		Identity: serverIdentity,
+	})
+	if err != nil {
+		t.Fatalf("ListenUDP server failed: %v", err)
+	}
+	defer serverListener.Close()
+
+	clientConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatalf("ListenUDP client socket failed: %v", err)
+	}
+	defer clientConn.Close()
+
+	remote := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: port}
+	hs, err := newHandshakeState(HandshakeConfig{
+		MeshID:       "mesh-udp-ik-done",
+		Identity:     clientIdentity,
+		RemoteStatic: serverIdentity.NoiseStaticPublic(),
+	}, true, HandshakeModeIK)
+	if err != nil {
+		t.Fatalf("newHandshakeState failed: %v", err)
+	}
+	payload1, err := marshalIdentityPayload(HandshakeConfig{
+		MeshID:   "mesh-udp-ik-done",
+		Identity: clientIdentity,
+	})
+	if err != nil {
+		t.Fatalf("marshalIdentityPayload failed: %v", err)
+	}
+	msg1, _, _, err := hs.WriteMessage(nil, payload1)
+	if err != nil {
+		t.Fatalf("WriteMessage failed: %v", err)
+	}
+	initPacket := append([]byte{udpMessageHandshakeInit, HandshakeModeIK}, msg1...)
+	if _, err := clientConn.WriteToUDP(initPacket, remote); err != nil {
+		t.Fatalf("handshake init write failed: %v", err)
+	}
+	if err := clientConn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline failed: %v", err)
+	}
+	buf := make([]byte, 2048)
+	n, _, err := clientConn.ReadFromUDP(buf)
+	if err != nil {
+		t.Fatalf("handshake response read failed: %v", err)
+	}
+	if n == 0 || buf[0] != udpMessageHandshakeResp {
+		t.Fatalf("expected handshake response, got %x", buf[:n])
+	}
+	if _, err := clientConn.WriteToUDP([]byte{udpMessageHandshakeDone}, remote); err != nil {
+		t.Fatalf("empty handshake done write failed: %v", err)
+	}
+
+	select {
+	case session := <-serverListener.acceptC:
+		_ = session.Close()
+		t.Fatal("server accepted IK session with empty handshake done")
+	case <-time.After(150 * time.Millisecond):
+	}
+}
+
 func TestUDPObserveContextReportsObservedEndpoint(t *testing.T) {
 	identity, err := mcrypto.NewIdentity()
 	if err != nil {
