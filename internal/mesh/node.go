@@ -900,7 +900,7 @@ func (n *Node) shouldRetainPeerLocked(peer *peerConn) bool {
 	if time.Since(peer.connectedAt) < 30*time.Second {
 		return true
 	}
-	if peer.lastRTT > 2*time.Second || n.peerScore(peer.id) < 0 {
+	if peer.pingMisses > 0 || peer.lastRTT > 2*time.Second || n.peerScore(peer.id) < 0 {
 		return false
 	}
 	info := n.knownPeers[peer.id]

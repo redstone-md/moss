@@ -230,3 +230,25 @@ func TestUpdateKnownPeerClearsCooldownsOnEndpointChange(t *testing.T) {
 		t.Fatal("expected direct probe cooldown to be cleared after known peer update")
 	}
 }
+
+func TestShouldRetainPeerRejectsBootstrapPeerWithPingMisses(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Trackers = nil
+	node, err := NewNode("mesh-retain-ping-miss", nil, cfg)
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+
+	peer := &peerConn{
+		id:          "peer-1",
+		bootstrap:   true,
+		connectedAt: time.Now().Add(-time.Minute),
+		lastRTT:     time.Second,
+		pingMisses:  1,
+	}
+	node.knownPeers[peer.id] = knownPeer{id: peer.id, bootstrap: true}
+
+	if node.shouldRetainPeer(peer) {
+		t.Fatal("expected ping misses to prevent bootstrap peer retention")
+	}
+}
