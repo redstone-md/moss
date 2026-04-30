@@ -1538,10 +1538,9 @@ func (n *Node) removePeer(peerID string, session *transport.Session) {
 }
 
 func (n *Node) observeMeshDelivery(channel, messageID, peerID string) {
-	if channel == "" || messageID == "" {
+	if channel == "" || messageID == "" || peerID == "" {
 		return
 	}
-	expected := map[string]struct{}{peerID: {}}
 	if n.isPeerBelowBaseline(peerID) {
 		return
 	}
@@ -1556,14 +1555,13 @@ func (n *Node) observeMeshDelivery(channel, messageID, peerID string) {
 	if obs == nil {
 		obs = &meshDeliveryObservation{
 			due:       due,
-			expected:  expected,
+			expected:  make(map[string]struct{}),
 			delivered: make(map[string]struct{}),
 		}
 		n.meshDeliveries[messageID] = obs
 	}
-	if _, ok := obs.expected[peerID]; ok {
-		obs.delivered[peerID] = struct{}{}
-	}
+	obs.expected[peerID] = struct{}{}
+	obs.delivered[peerID] = struct{}{}
 }
 
 func (n *Node) evaluateMeshDeliveryDeficits(now time.Time) {

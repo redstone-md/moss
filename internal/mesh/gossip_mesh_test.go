@@ -140,6 +140,16 @@ func TestMeshDeliveryDeficitSkipsPeersThatForward(t *testing.T) {
 
 	node.observeMeshDelivery("alpha", "msg-2", "peer-a")
 	node.observeMeshDelivery("alpha", "msg-2", "peer-b")
+	obs := node.meshDeliveries["msg-2"]
+	if obs == nil {
+		t.Fatal("expected mesh delivery observation to be tracked")
+	}
+	if _, ok := obs.delivered["peer-a"]; !ok {
+		t.Fatal("expected peer-a delivery to be tracked")
+	}
+	if _, ok := obs.delivered["peer-b"]; !ok {
+		t.Fatal("expected peer-b delivery to be tracked")
+	}
 	node.evaluateMeshDeliveryDeficits(time.Now().Add(2 * node.config.Heartbeat()))
 
 	if score := node.scoring.Score("peer-a"); score != 0 {
