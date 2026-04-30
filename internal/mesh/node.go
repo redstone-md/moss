@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/netip"
@@ -584,6 +585,12 @@ func (n *Node) acceptUDPLoop(ctx context.Context) {
 
 func (n *Node) handleInbound(ctx context.Context, conn net.Conn) {
 	defer n.wg.Done()
+	defer func() {
+		if r := recover(); r != nil {
+			_ = conn.Close()
+			n.enqueueEvent(EventTrackerFailure, map[string]string{"error": fmt.Sprintf("inbound handshake panic: %v", r)})
+		}
+	}()
 	session, err := transport.ServerHandshake(withTimeout(ctx, n.config.HandshakeTimeout()), conn, transport.HandshakeConfig{
 		MeshID:   n.meshID,
 		PSK:      n.psk,
