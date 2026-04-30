@@ -3658,26 +3658,15 @@ func probeTCPAddress(addr string, timeout time.Duration) bool {
 }
 
 func sameAdvertisedEndpoint(a, b string) bool {
-	aHost, aPort, err := net.SplitHostPort(a)
+	aEndpoint, err := netip.ParseAddrPort(a)
 	if err != nil {
 		return false
 	}
-	bHost, bPort, err := net.SplitHostPort(b)
+	bEndpoint, err := netip.ParseAddrPort(b)
 	if err != nil {
 		return false
 	}
-	if aPort != bPort {
-		return false
-	}
-	aAddr, err := netip.ParseAddr(aHost)
-	if err != nil {
-		return false
-	}
-	bAddr, err := netip.ParseAddr(bHost)
-	if err != nil {
-		return false
-	}
-	return aAddr == bAddr
+	return aEndpoint.Port() == bEndpoint.Port() && aEndpoint.Addr().Unmap() == bEndpoint.Addr().Unmap()
 }
 
 func minDuration(a, b time.Duration) time.Duration {
