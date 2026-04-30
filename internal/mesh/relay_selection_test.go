@@ -176,17 +176,7 @@ func TestPeerAnnounceCannotUpgradeRelayCapabilities(t *testing.T) {
 		natType:      nat.TypeRestrictedCone,
 		relayCapable: false,
 	}
-	node.peers["honest"] = &peerConn{id: "honest", addr: "198.51.100.20:4000"}
-	node.knownPeers["honest"] = knownPeer{
-		id:              "honest",
-		addr:            "198.51.100.20:4000",
-		direct:          true,
-		natType:         nat.TypePublic,
-		publicReachable: true,
-		relayCapable:    true,
-	}
 	node.scoring.SetApplicationScore(attackerID, 100)
-	node.scoring.SetApplicationScore("honest", 1)
 
 	selfSignedAnnounce := attackerNode.signSupernodeEnvelope(gossip.Envelope{
 		Type:                   gossip.TypePeerAnnounce,
@@ -208,6 +198,17 @@ func TestPeerAnnounceCannotUpgradeRelayCapabilities(t *testing.T) {
 	if info.natType != nat.TypeRestrictedCone {
 		t.Fatalf("expected self-signed peer announce to leave NAT type unchanged, got %s", info.natType)
 	}
+
+	node.peers["honest"] = &peerConn{id: "honest", addr: "198.51.100.20:4000"}
+	node.knownPeers["honest"] = knownPeer{
+		id:              "honest",
+		addr:            "198.51.100.20:4000",
+		direct:          true,
+		natType:         nat.TypePublic,
+		publicReachable: true,
+		relayCapable:    true,
+	}
+	node.scoring.SetApplicationScore("honest", 1)
 
 	selected, err := node.selectRelayPeer("target-peer")
 	if err != nil {

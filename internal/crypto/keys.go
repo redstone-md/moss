@@ -74,6 +74,9 @@ func (i *Identity) Sign(msg []byte) []byte {
 }
 
 func Verify(publicKey, msg, sig []byte) bool {
+	if len(publicKey) != ed25519.PublicKeySize || len(sig) != ed25519.SignatureSize {
+		return false
+	}
 	return ed25519.Verify(ed25519.PublicKey(publicKey), msg, sig)
 }
 

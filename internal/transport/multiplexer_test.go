@@ -115,6 +115,27 @@ func TestMalformedFrameIsIgnoredBeforeNextValidPacket(t *testing.T) {
 	}
 }
 
+func TestInboundStreamCreationIsCapped(t *testing.T) {
+	_, receiver, _, _ := newStubSessionPair(t)
+
+	for id := StreamID(2); id <= StreamID(maxInboundStreams+100); id++ {
+		stream := receiver.mux.inboundStream(id)
+		if id <= StreamID(maxInboundStreams) && stream == nil {
+			t.Fatalf("expected stream %d to be accepted before cap", id)
+		}
+		if id > StreamID(maxInboundStreams) && stream != nil {
+			t.Fatalf("expected stream %d to be rejected after cap", id)
+		}
+
+		receiver.mux.mu.RLock()
+		streamCount := len(receiver.mux.streams)
+		receiver.mux.mu.RUnlock()
+		if streamCount > maxInboundStreams {
+			t.Fatalf("expected at most %d inbound streams, got %d", maxInboundStreams, streamCount)
+		}
+	}
+}
+
 func newStubSessionPair(t *testing.T) (*Session, *Session, *stubDatagramCarrier, *stubDatagramCarrier) {
 	t.Helper()
 
