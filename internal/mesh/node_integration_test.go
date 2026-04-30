@@ -1608,6 +1608,60 @@ func TestHandleHolePunchCoordIgnoresUnsolicitedRequest(t *testing.T) {
 	}
 }
 
+func TestHandleHolePunchCoordKeepsPendingRequestAfterMismatchedReply(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Trackers = nil
+	node, err := NewNode("mesh-holepunch-mismatch", nil, cfg)
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+
+	localID := node.localPeerID()
+	node.mu.Lock()
+	node.holePunchWait["req-1"] = holePunchRequest{targetPeerID: "target-peer", relayPeerID: "relay-peer"}
+	node.mu.Unlock()
+
+	node.handleHolePunchCoord(&peerConn{id: "attacker-relay"}, gossip.Envelope{
+		Type:           gossip.TypeHolePunchCoord,
+		RequestID:      "req-1",
+		CoordStage:     "reply",
+		RelaySource:    "attacker-source",
+		RelayTarget:    localID,
+		AdvertisedAddr: "127.0.0.1:6553",
+	})
+
+	node.mu.RLock()
+	_, stillPending := node.holePunchWait["req-1"]
+	_, attackerKnown := node.knownPeers["attacker-source"]
+	node.mu.RUnlock()
+	if !stillPending {
+		t.Fatalf("mismatched reply consumed pending request")
+	}
+	if attackerKnown {
+		t.Fatalf("mismatched reply updated attacker peer")
+	}
+
+	node.handleHolePunchCoord(&peerConn{id: "relay-peer"}, gossip.Envelope{
+		Type:           gossip.TypeHolePunchCoord,
+		RequestID:      "req-1",
+		CoordStage:     "reply",
+		RelaySource:    "target-peer",
+		RelayTarget:    localID,
+		AdvertisedAddr: "127.0.0.1:6554",
+	})
+
+	node.mu.RLock()
+	_, stillPending = node.holePunchWait["req-1"]
+	known := node.knownPeers["target-peer"]
+	node.mu.RUnlock()
+	if stillPending {
+		t.Fatalf("valid reply did not consume pending request")
+	}
+	if known.addr != "127.0.0.1:6554" {
+		t.Fatalf("valid reply did not update target peer: %q", known.addr)
+	}
+}
+
 func TestDirectPeerConnectionMigratesRelaySession(t *testing.T) {
 	cfgRelay := DefaultConfig()
 	cfgRelay.Trackers = nil

@@ -1312,11 +1312,12 @@ func (n *Node) handleHolePunchCoord(peer *peerConn, env gossip.Envelope) {
 		if env.CoordStage == "reply" {
 			n.mu.Lock()
 			request, ok := n.holePunchWait[env.RequestID]
-			if ok {
+			validReply := ok && request.targetPeerID == env.RelaySource && request.relayPeerID == peer.id
+			if validReply {
 				delete(n.holePunchWait, env.RequestID)
 			}
 			n.mu.Unlock()
-			if !ok || request.targetPeerID != env.RelaySource || request.relayPeerID != peer.id {
+			if !validReply {
 				return
 			}
 		}
