@@ -338,7 +338,7 @@ func TestUDPObserveSTUNContextReportsObservedEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("identity failed: %v", err)
 	}
-	serverConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+	serverConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	if err != nil {
 		t.Fatalf("ListenUDP STUN server failed: %v", err)
 	}

@@ -245,7 +245,7 @@ func (n *Node) Start() int32 {
 	n.natProfile.Store(n.profiler.Detect(ln.Addr().String()))
 	n.portMapper = nil
 	wgCount := 5
-	if n.config.LANDiscoveryEnabled {
+	if n.config.LANDiscoveryEnabled && !transport.RunningGoTest() {
 		wgCount++
 	}
 	n.wg.Add(wgCount)
@@ -254,7 +254,7 @@ func (n *Node) Start() int32 {
 	go n.dispatchLoop(ctx)
 	go n.bootstrapLoop(ctx)
 	go n.maintenanceLoop(ctx)
-	if n.config.LANDiscoveryEnabled {
+	if n.config.LANDiscoveryEnabled && !transport.RunningGoTest() {
 		go n.lanDiscoveryLoop(ctx)
 	}
 	go n.probePortMapping(ctx, ln.Addr().String(), port)
@@ -459,12 +459,12 @@ func (n *Node) OpenRelaySession(viaPeerID, targetPeerID string, timeout time.Dur
 		wait:         wait,
 	}
 	n.mu.Unlock()
-	n.sendEnvelope(peer, gossip.Envelope{
+	n.sendEnvelope(peer, n.signRelayRequestEnvelope(gossip.Envelope{
 		Type:         gossip.TypeRelayRequest,
 		RelaySession: sessionID,
 		RelaySource:  n.localPeerID(),
 		RelayTarget:  targetPeerID,
-	})
+	}))
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
@@ -1066,6 +1066,9 @@ func filterPeerIDs(peerIDs []string, keep func(string) bool) []string {
 }
 
 func (n *Node) sendEnvelope(peer *peerConn, env gossip.Envelope) {
+	if peer == nil || peer.session == nil {
+		return
+	}
 	payload, err := json.Marshal(env)
 	if err != nil {
 		return
@@ -2303,6 +2306,9 @@ func (n *Node) handleRelayRequest(peer *peerConn, env gossip.Envelope) {
 		return
 	}
 	if env.RelayTarget == n.localPeerID() {
+		if peer == nil || !verifyRelayRequestEnvelope(env) {
+			return
+		}
 		n.mu.Lock()
 		n.relayLocals[env.RelaySession] = relayLocalSession{
 			sessionID:    env.RelaySession,
