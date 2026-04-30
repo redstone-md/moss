@@ -1176,6 +1176,10 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 	if env.AdvertisedPeerID == "" || env.AdvertisedAddr == "" || env.AdvertisedPeerID == n.localPeerID() {
 		return
 	}
+	if peer != nil && env.AdvertisedPeerID != peer.id {
+		n.scoring.PenalizeInvalid(peer.id)
+		return
+	}
 	changed := false
 	n.mu.Lock()
 	current, ok := n.knownPeers[env.AdvertisedPeerID]
