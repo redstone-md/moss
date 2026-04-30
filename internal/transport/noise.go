@@ -29,6 +29,7 @@ type identityPayload struct {
 const (
 	HandshakeModeXX byte = 1
 	HandshakeModeIK byte = 2
+	maxHandshakeFrameSize = 64 * 1024
 )
 
 func ClientHandshake(ctx context.Context, conn net.Conn, cfg HandshakeConfig) (*Session, error) {
@@ -237,6 +238,9 @@ func verifyIdentityPayload(raw []byte, meshID string, remoteStatic []byte, out *
 	if len(payload.IdentityPub) != len(out) {
 		return errors.New("invalid identity length")
 	}
+	if len(payload.Signature) != 64 {
+		return errors.New("invalid identity signature length")
+	}
 	if !mcrypto.Verify(payload.IdentityPub, signaturePayload(meshID, remoteStatic), payload.Signature) {
 		return errors.New("invalid identity signature")
 	}
@@ -315,6 +319,9 @@ func readFrame(ctx context.Context, conn net.Conn) ([]byte, error) {
 	size := binary.BigEndian.Uint32(header)
 	if size == 0 {
 		return nil, nil
+	}
+	if size > maxHandshakeFrameSize {
+		return nil, errors.New("handshake frame too large")
 	}
 	payload := make([]byte, size)
 	if err := readRaw(ctx, conn, payload); err != nil {
