@@ -3,6 +3,7 @@ package mesh
 import (
 	"testing"
 
+	"moss/internal/gossip"
 	"moss/internal/nat"
 )
 
@@ -153,5 +154,67 @@ func TestSelectRelayPeersPrefersLessLoadedRelay(t *testing.T) {
 	}
 	if candidates[0] != "peer-b" {
 		t.Fatalf("expected less-loaded relay peer-b first, got %v", candidates)
+	}
+}
+
+func TestPeerAnnounceCannotUpgradeRelayCapabilities(t *testing.T) {
+	node, err := NewNode("mesh-relay-announce", nil, DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+	attackerNode, err := NewNode("mesh-relay-announce", nil, DefaultConfig())
+	if err != nil {
+		t.Fatalf("attacker NewNode failed: %v", err)
+	}
+	attackerID := attackerNode.localPeerID()
+
+	node.peers[attackerID] = &peerConn{id: attackerID, addr: "203.0.113.10:4000"}
+	node.knownPeers[attackerID] = knownPeer{
+		id:           attackerID,
+		addr:         "203.0.113.10:4000",
+		direct:       true,
+		natType:      nat.TypeRestrictedCone,
+		relayCapable: false,
+	}
+	node.scoring.SetApplicationScore(attackerID, 100)
+
+	selfSignedAnnounce := attackerNode.signSupernodeEnvelope(gossip.Envelope{
+		Type:                   gossip.TypePeerAnnounce,
+		AdvertisedPeerID:       attackerID,
+		AdvertisedAddr:         "203.0.113.10:4000",
+		AdvertisedNATType:      string(nat.TypePublic),
+		AdvertisedReachable:    true,
+		AdvertisedRelayCapable: true,
+	})
+	node.handlePeerAnnounce(node.peers[attackerID], selfSignedAnnounce)
+
+	info := node.knownPeers[attackerID]
+	if info.relayCapable {
+		t.Fatalf("expected self-signed peer announce to leave relay capability unchanged")
+	}
+	if info.publicReachable {
+		t.Fatalf("expected self-signed peer announce to leave reachability unchanged")
+	}
+	if info.natType != nat.TypeRestrictedCone {
+		t.Fatalf("expected self-signed peer announce to leave NAT type unchanged, got %s", info.natType)
+	}
+
+	node.peers["honest"] = &peerConn{id: "honest", addr: "198.51.100.20:4000"}
+	node.knownPeers["honest"] = knownPeer{
+		id:              "honest",
+		addr:            "198.51.100.20:4000",
+		direct:          true,
+		natType:         nat.TypePublic,
+		publicReachable: true,
+		relayCapable:    true,
+	}
+	node.scoring.SetApplicationScore("honest", 1)
+
+	selected, err := node.selectRelayPeer("target-peer")
+	if err != nil {
+		t.Fatalf("selectRelayPeer failed: %v", err)
+	}
+	if selected != "honest" {
+		t.Fatalf("expected honest relay-capable peer to be selected, got %s", selected)
 	}
 }

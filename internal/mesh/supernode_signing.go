@@ -8,12 +8,7 @@ import (
 	"moss/internal/gossip"
 )
 
-const (
-	peerAnnouncementSignatureDomain = "moss-peer-announce"
-	supernodeSignatureDomain        = "moss-supernode-status"
-)
-
-func advertisedPeerSignaturePayload(domain string, env gossip.Envelope) []byte {
+func advertisedSignaturePayload(domain string, env gossip.Envelope) []byte {
 	payload := make([]byte, 0, 256)
 	payload = append(payload, []byte(domain)...)
 	payload = append(payload, 0)
@@ -31,12 +26,20 @@ func advertisedPeerSignaturePayload(domain string, env gossip.Envelope) []byte {
 	return payload
 }
 
-func peerAnnouncementSignaturePayload(env gossip.Envelope) []byte {
-	return advertisedPeerSignaturePayload(peerAnnouncementSignatureDomain, env)
+func supernodeSignaturePayload(env gossip.Envelope) []byte {
+	return advertisedSignaturePayload("moss-supernode-status", env)
 }
 
-func supernodeSignaturePayload(env gossip.Envelope) []byte {
-	return advertisedPeerSignaturePayload(supernodeSignatureDomain, env)
+func peerAnnouncementSignaturePayload(env gossip.Envelope) []byte {
+	payload := make([]byte, 0, 160)
+	payload = append(payload, []byte("moss-peer-announcement")...)
+	payload = append(payload, 0)
+	payload = append(payload, []byte(string(env.Type))...)
+	payload = append(payload, 0)
+	payload = append(payload, []byte(env.AdvertisedPeerID)...)
+	payload = append(payload, 0)
+	payload = append(payload, []byte(env.AdvertisedAddr)...)
+	return payload
 }
 
 func (n *Node) signPeerAnnouncementEnvelope(env gossip.Envelope) gossip.Envelope {
@@ -66,4 +69,11 @@ func verifyPeerAnnouncementEnvelope(env gossip.Envelope) bool {
 
 func verifySupernodeEnvelope(env gossip.Envelope) bool {
 	return verifyAdvertisedPeerEnvelope(env, supernodeSignaturePayload)
+}
+
+func verifySupernodeStatusEnvelope(env gossip.Envelope) bool {
+	if env.Type != gossip.TypeSupernodeAnnounce && env.Type != gossip.TypeSupernodeRevoke {
+		return false
+	}
+	return verifySupernodeEnvelope(env)
 }

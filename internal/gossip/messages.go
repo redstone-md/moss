@@ -35,6 +35,7 @@ type Envelope struct {
 	RelaySession           string       `json:"relay_session,omitempty"`
 	RelaySource            string       `json:"relay_source,omitempty"`
 	RelayTarget            string       `json:"relay_target,omitempty"`
+	RelaySignature         []byte       `json:"relay_signature,omitempty"`
 	RequestID              string       `json:"request_id,omitempty"`
 	CoordStage             string       `json:"coord_stage,omitempty"`
 	CoordAt                int64        `json:"coord_at,omitempty"`
