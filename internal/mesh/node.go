@@ -1176,6 +1176,7 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 	if env.AdvertisedPeerID == "" || env.AdvertisedAddr == "" || env.AdvertisedPeerID == n.localPeerID() {
 		return
 	}
+	trustCapabilities := verifySupernodeEnvelope(env)
 	changed := false
 	n.mu.Lock()
 	current, ok := n.knownPeers[env.AdvertisedPeerID]
@@ -1189,7 +1190,15 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 		addr = current.addr
 	}
 	lan := current.lan && knownPeerAddrRank(addr) <= 1
-	if !ok || current.addr != addr || !current.direct || current.natType != nat.Type(env.AdvertisedNATType) || current.publicReachable != env.AdvertisedReachable || current.relayCapable != env.AdvertisedRelayCapable {
+	natType := current.natType
+	publicReachable := current.publicReachable
+	relayCapable := current.relayCapable
+	if trustCapabilities {
+		natType = nat.Type(env.AdvertisedNATType)
+		publicReachable = env.AdvertisedReachable
+		relayCapable = env.AdvertisedRelayCapable
+	}
+	if !ok || current.addr != addr || !current.direct || current.natType != natType || current.publicReachable != publicReachable || current.relayCapable != relayCapable {
 		direct := false
 		if ok && current.direct {
 			direct = true
@@ -1204,9 +1213,9 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 			direct:          direct,
 			bootstrap:       bootstrap,
 			lan:             lan,
-			natType:         nat.Type(env.AdvertisedNATType),
-			publicReachable: env.AdvertisedReachable,
-			relayCapable:    env.AdvertisedRelayCapable,
+			natType:         natType,
+			publicReachable: publicReachable,
+			relayCapable:    relayCapable,
 			lastSeen:        time.Now(),
 			observations:    appendObservation(current.observations, env.AdvertisedAddr),
 			noiseStatic:     append([]byte(nil), current.noiseStatic...),
@@ -1223,9 +1232,9 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 			Type:                   forwardType,
 			AdvertisedPeerID:       env.AdvertisedPeerID,
 			AdvertisedAddr:         env.AdvertisedAddr,
-			AdvertisedNATType:      env.AdvertisedNATType,
-			AdvertisedReachable:    env.AdvertisedReachable,
-			AdvertisedRelayCapable: env.AdvertisedRelayCapable,
+			AdvertisedNATType:      string(natType),
+			AdvertisedReachable:    publicReachable,
+			AdvertisedRelayCapable: relayCapable,
 		}, peer.id)
 	}
 }
