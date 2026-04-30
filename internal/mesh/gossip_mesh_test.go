@@ -1,6 +1,7 @@
 package mesh
 
 import (
+	"strconv"
 	"testing"
 	"time"
 
@@ -108,6 +109,44 @@ func TestPublishBelowThresholdIsDropped(t *testing.T) {
 
 	if _, ok := node.cache.Get("msg-1"); ok {
 		t.Fatal("expected low-scored publish to be dropped before cache store")
+	}
+}
+
+func TestInboundPublishOverMaxMessageSizeDropped(t *testing.T) {
+	node, err := NewNode("mesh-publish-max-size", nil, DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+	node.pubsub.Subscribe("alpha")
+	node.config.Security.MaxMessageSizeBytes = 8
+
+	peerID := "peer-large-message"
+	node.handleEnvelope(&peerConn{id: peerID}, gossip.Envelope{
+		Type:      gossip.TypePublish,
+		Channel:   "alpha",
+		MessageID: "msg-large",
+		Payload:   []byte("payload-too-large"),
+	})
+
+	if _, ok := node.cache.Get("msg-large"); ok {
+		t.Fatal("expected oversized publish to be dropped before cache store")
+	}
+}
+
+func TestRememberSuppressionCapsEntriesPerPeer(t *testing.T) {
+	node, err := NewNode("mesh-suppress-cap", nil, DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+	ids := make([]string, 0, maxSuppressionEntriesPerPeer+10)
+	for i := 0; i < cap(ids); i++ {
+		ids = append(ids, "msg-"+strconv.Itoa(i))
+	}
+
+	node.rememberSuppression("peer-a", ids, "")
+
+	if got := len(node.suppress["peer-a"]); got != maxSuppressionEntriesPerPeer {
+		t.Fatalf("expected suppression map capped at %d entries, got %d", maxSuppressionEntriesPerPeer, got)
 	}
 }
 
