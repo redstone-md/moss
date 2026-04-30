@@ -94,3 +94,18 @@ func TestHandleSupernodeStatusRejectsInvalidSignature(t *testing.T) {
 		t.Fatalf("expected invalid supernode announce to penalize sender, base=%f new=%f", base, score)
 	}
 }
+
+func TestVerifySupernodeEnvelopeRejectsWrongPublicKeyLength(t *testing.T) {
+	env := gossip.Envelope{
+		Type:                   gossip.TypeSupernodeAnnounce,
+		AdvertisedPeerID:       "00",
+		AdvertisedAddr:         "192.168.1.50:41030",
+		AdvertisedNATType:      string(nat.TypePublic),
+		AdvertisedReachable:    true,
+		AdvertisedRelayCapable: true,
+		AdvertisedSignature:    []byte{1},
+	}
+	if verifySupernodeEnvelope(env) {
+		t.Fatal("expected envelope with invalid advertised public key length to be rejected")
+	}
+}

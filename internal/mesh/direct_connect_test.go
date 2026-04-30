@@ -273,3 +273,62 @@ func TestDiscoveredPeerTargetsRetriesDisconnectedVerifiedPeers(t *testing.T) {
 		t.Fatalf("expected peer-1 to be retried, got %q", targets[0].peerID)
 	}
 }
+
+func TestShouldRetainPeerRejectsBootstrapPeerWithPingMisses(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Trackers = nil
+	node, err := NewNode("mesh-retain-ping-miss", nil, cfg)
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+
+	peer := &peerConn{
+		id:          "peer-1",
+		bootstrap:   true,
+		connectedAt: time.Now().Add(-time.Minute),
+		lastRTT:     time.Second,
+		pingMisses:  1,
+	}
+	node.knownPeers[peer.id] = knownPeer{id: peer.id, bootstrap: true}
+
+	if node.shouldRetainPeer(peer) {
+		t.Fatal("expected ping misses to prevent bootstrap peer retention")
+	}
+}
+
+func TestNormalizeHolePunchCoordAtDefaultsWhenZero(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	got := normalizeHolePunchCoordAt(0, now)
+	want := now.Add(600 * time.Millisecond)
+	if !got.Equal(want) {
+		t.Fatalf("expected default coordAt %s, got %s", want, got)
+	}
+}
+
+func TestNormalizeHolePunchCoordAtClampsOutOfWindow(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	farFuture := now.Add(24 * time.Hour).UnixMilli()
+	got := normalizeHolePunchCoordAt(farFuture, now)
+	want := now.Add(600 * time.Millisecond)
+	if !got.Equal(want) {
+		t.Fatalf("expected out-of-window coordAt to clamp to %s, got %s", want, got)
+	}
+}
+
+func TestNormalizeHolePunchCoordAtPreservesNearFutureCoord(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	nearFuture := now.Add(150 * time.Millisecond)
+	got := normalizeHolePunchCoordAt(nearFuture.UnixMilli(), now)
+	if !got.Equal(nearFuture) {
+		t.Fatalf("expected near-future coordAt to be preserved, want %s got %s", nearFuture, got)
+	}
+}
+
+func TestNormalizeHolePunchCoordAtPreservesValidWindow(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	valid := now.Add(1200 * time.Millisecond)
+	got := normalizeHolePunchCoordAt(valid.UnixMilli(), now)
+	if !got.Equal(valid) {
+		t.Fatalf("expected in-window coordAt to be preserved, want %s got %s", valid, got)
+	}
+}

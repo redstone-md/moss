@@ -24,11 +24,13 @@ type HandshakeConfig struct {
 type identityPayload struct {
 	IdentityPub []byte `json:"identity_pub"`
 	Signature   []byte `json:"signature"`
+	Challenge   []byte `json:"challenge,omitempty"`
 }
 
 const (
-	HandshakeModeXX byte = 1
-	HandshakeModeIK byte = 2
+	HandshakeModeXX       byte = 1
+	HandshakeModeIK       byte = 2
+	maxHandshakeFrameSize      = 64 * 1024
 )
 
 func ClientHandshake(ctx context.Context, conn net.Conn, cfg HandshakeConfig) (*Session, error) {
@@ -222,26 +224,39 @@ func newHandshakeState(cfg HandshakeConfig, initiator bool, mode byte) (*noise.H
 }
 
 func marshalIdentityPayload(cfg HandshakeConfig) ([]byte, error) {
+	return marshalIdentityPayloadWithChallenge(cfg, nil)
+}
+
+func marshalIdentityPayloadWithChallenge(cfg HandshakeConfig, challenge []byte) ([]byte, error) {
 	payload := identityPayload{
 		IdentityPub: cfg.Identity.PublicKeyBytes(),
 		Signature:   cfg.Identity.Sign(signaturePayload(cfg.MeshID, cfg.Identity.NoiseStaticPublic())),
+		Challenge:   append([]byte(nil), challenge...),
 	}
 	return json.Marshal(payload)
 }
 
 func verifyIdentityPayload(raw []byte, meshID string, remoteStatic []byte, out *[32]byte) error {
+	_, err := verifyIdentityPayloadChallenge(raw, meshID, remoteStatic, out)
+	return err
+}
+
+func verifyIdentityPayloadChallenge(raw []byte, meshID string, remoteStatic []byte, out *[32]byte) ([]byte, error) {
 	var payload identityPayload
 	if err := json.Unmarshal(raw, &payload); err != nil {
-		return err
+		return nil, err
 	}
 	if len(payload.IdentityPub) != len(out) {
-		return errors.New("invalid identity length")
+		return nil, errors.New("invalid identity length")
+	}
+	if len(payload.Signature) != 64 {
+		return nil, errors.New("invalid identity signature length")
 	}
 	if !mcrypto.Verify(payload.IdentityPub, signaturePayload(meshID, remoteStatic), payload.Signature) {
-		return errors.New("invalid identity signature")
+		return nil, errors.New("invalid identity signature")
 	}
 	copy(out[:], payload.IdentityPub)
-	return nil
+	return append([]byte(nil), payload.Challenge...), nil
 }
 
 func signaturePayload(meshID string, noiseStaticPublic []byte) []byte {
@@ -315,6 +330,9 @@ func readFrame(ctx context.Context, conn net.Conn) ([]byte, error) {
 	size := binary.BigEndian.Uint32(header)
 	if size == 0 {
 		return nil, nil
+	}
+	if size > maxHandshakeFrameSize {
+		return nil, errors.New("handshake frame too large")
 	}
 	payload := make([]byte, size)
 	if err := readRaw(ctx, conn, payload); err != nil {
