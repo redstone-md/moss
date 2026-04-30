@@ -132,6 +132,7 @@ type knownPeer struct {
 	id              string
 	addr            string
 	direct          bool
+	verified        bool
 	bootstrap       bool
 	lan             bool
 	natType         nat.Type
@@ -804,6 +805,7 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 		id:              peerID,
 		addr:            knownAddr,
 		direct:          true,
+		verified:        true,
 		bootstrap:       current.bootstrap || bootstrapSeed,
 		lan:             current.lan,
 		natType:         current.natType,
@@ -1139,7 +1141,7 @@ func (n *Node) broadcastPeerAnnouncement(info knownPeer, excludePeerID string) {
 }
 
 func (n *Node) peerAnnouncementEnvelope(info knownPeer) gossip.Envelope {
-	return gossip.Envelope{
+	env := gossip.Envelope{
 		Type:                   gossip.TypePeerAnnounce,
 		AdvertisedPeerID:       info.id,
 		AdvertisedAddr:         info.addr,
@@ -1147,6 +1149,10 @@ func (n *Node) peerAnnouncementEnvelope(info knownPeer) gossip.Envelope {
 		AdvertisedReachable:    info.publicReachable,
 		AdvertisedRelayCapable: info.relayCapable,
 	}
+	if info.id == n.localPeerID() {
+		return n.signPeerAnnouncementEnvelope(env)
+	}
+	return env
 }
 
 func (n *Node) localKnownPeer() knownPeer {
@@ -1155,6 +1161,7 @@ func (n *Node) localKnownPeer() knownPeer {
 		id:              n.localPeerID(),
 		addr:            n.advertisedListenAddr(),
 		direct:          true,
+		verified:        true,
 		bootstrap:       false,
 		lan:             false,
 		natType:         profile.Type,
@@ -1165,7 +1172,7 @@ func (n *Node) localKnownPeer() knownPeer {
 }
 
 func (n *Node) handlePeerAnnounce(peer *peerConn, env gossip.Envelope) {
-	n.handleKnownPeerEnvelope(peer, env, gossip.TypePeerAnnounce)
+	n.handleKnownPeerEnvelope(peer, env, gossip.TypePeerAnnounce, verifyPeerAnnouncementEnvelope(env))
 }
 
 func (n *Node) handleSupernodeStatus(peer *peerConn, env gossip.Envelope, relayCapable bool) {
@@ -1176,10 +1183,10 @@ func (n *Node) handleSupernodeStatus(peer *peerConn, env gossip.Envelope, relayC
 		}
 		return
 	}
-	n.handleKnownPeerEnvelope(peer, env, env.Type)
+	n.handleKnownPeerEnvelope(peer, env, env.Type, true)
 }
 
-func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forwardType gossip.EnvelopeType) {
+func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forwardType gossip.EnvelopeType, verifiedEnvelope bool) {
 	if env.AdvertisedPeerID == "" || env.AdvertisedAddr == "" || env.AdvertisedPeerID == n.localPeerID() {
 		return
 	}
@@ -1196,7 +1203,8 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 		addr = current.addr
 	}
 	lan := current.lan && knownPeerAddrRank(addr) <= 1
-	if !ok || current.addr != addr || !current.direct || current.natType != nat.Type(env.AdvertisedNATType) || current.publicReachable != env.AdvertisedReachable || current.relayCapable != env.AdvertisedRelayCapable {
+	verified := current.verified || verifiedEnvelope || (peer != nil && env.AdvertisedPeerID == peer.id)
+	if !ok || current.addr != addr || !current.direct || current.verified != verified || current.natType != nat.Type(env.AdvertisedNATType) || current.publicReachable != env.AdvertisedReachable || current.relayCapable != env.AdvertisedRelayCapable {
 		direct := false
 		if ok && current.direct {
 			direct = true
@@ -1209,6 +1217,7 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 			id:              env.AdvertisedPeerID,
 			addr:            addr,
 			direct:          direct,
+			verified:        verified,
 			bootstrap:       bootstrap,
 			lan:             lan,
 			natType:         nat.Type(env.AdvertisedNATType),
@@ -1233,6 +1242,7 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 			AdvertisedNATType:      env.AdvertisedNATType,
 			AdvertisedReachable:    env.AdvertisedReachable,
 			AdvertisedRelayCapable: env.AdvertisedRelayCapable,
+			AdvertisedSignature:    append([]byte(nil), env.AdvertisedSignature...),
 		}, peer.id)
 	}
 }
@@ -1989,6 +1999,9 @@ func (n *Node) discoveredPeerTargets() []discoveredPeerTarget {
 	targets := make([]discoveredPeerTarget, 0, len(n.knownPeers))
 	for peerID, info := range n.knownPeers {
 		if peerID == n.localPeerID() || info.addr == "" {
+			continue
+		}
+		if !info.verified {
 			continue
 		}
 		if _, connected := n.peers[peerID]; connected {
@@ -2886,7 +2899,7 @@ func preferredKnownPeerAddr(current knownPeer, candidate string) string {
 }
 
 func shouldFreezeDirectKnownPeerAddr(current knownPeer, candidate, liveSessionAddr string) bool {
-	if !current.direct || current.addr == "" {
+	if (!current.direct && !current.verified) || current.addr == "" {
 		return false
 	}
 	currentRank := knownPeerAddrRank(current.addr)
@@ -3280,6 +3293,7 @@ func (n *Node) updateKnownPeer(peerID, addr string, direct bool) {
 		id:              peerID,
 		addr:            addr,
 		direct:          direct,
+		verified:        current.verified || direct,
 		bootstrap:       current.bootstrap,
 		lan:             current.lan && knownPeerAddrRank(addr) <= 1,
 		natType:         current.natType,

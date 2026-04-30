@@ -240,6 +240,7 @@ func (n *Node) handleLANBeacon(src *net.UDPAddr, beacon lanBeacon) {
 		id:              beacon.PeerID,
 		addr:            chosenAddr,
 		direct:          current.direct,
+		verified:        current.verified,
 		lan:             lan,
 		natType:         nat.Type(beacon.NATType),
 		publicReachable: beacon.PublicReachable,

@@ -362,7 +362,7 @@ func TestDirectPeerAnnouncementDoesNotOverwriteSessionAddress(t *testing.T) {
 		AdvertisedPeerID:  peerID,
 		AdvertisedAddr:    "10.123.45.67:41030",
 		AdvertisedNATType: string(nat.TypePublic),
-	}, gossip.TypePeerAnnounce)
+	}, gossip.TypePeerAnnounce, false)
 
 	nodeB.mu.RLock()
 	got := nodeB.knownPeers[peerID].addr
