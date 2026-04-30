@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/netip"
@@ -584,6 +585,12 @@ func (n *Node) acceptUDPLoop(ctx context.Context) {
 
 func (n *Node) handleInbound(ctx context.Context, conn net.Conn) {
 	defer n.wg.Done()
+	defer func() {
+		if r := recover(); r != nil {
+			_ = conn.Close()
+			n.enqueueEvent(EventTrackerFailure, map[string]string{"error": fmt.Sprintf("inbound handshake panic: %v", r)})
+		}
+	}()
 	session, err := transport.ServerHandshake(withTimeout(ctx, n.config.HandshakeTimeout()), conn, transport.HandshakeConfig{
 		MeshID:   n.meshID,
 		PSK:      n.psk,
@@ -1293,14 +1300,27 @@ func (n *Node) handleReachabilityResponse(env gossip.Envelope) {
 	}
 }
 
+func normalizeHolePunchCoordAt(coordAtMillis int64, now time.Time) time.Time {
+	const (
+		offset  = 600 * time.Millisecond
+		maxLead = 2 * time.Second
+	)
+	if coordAtMillis == 0 {
+		return now.Add(offset)
+	}
+	coordAt := time.UnixMilli(coordAtMillis)
+	lead := coordAt.Sub(now)
+	if lead > maxLead {
+		return now.Add(offset)
+	}
+	return coordAt
+}
+
 func (n *Node) handleHolePunchCoord(peer *peerConn, env gossip.Envelope) {
 	if env.RelaySource == "" || env.RelayTarget == "" || env.AdvertisedAddr == "" {
 		return
 	}
-	coordAt := time.UnixMilli(env.CoordAt)
-	if env.CoordAt == 0 || time.Until(coordAt) < 300*time.Millisecond {
-		coordAt = time.Now().Add(600 * time.Millisecond)
-	}
+	coordAt := normalizeHolePunchCoordAt(env.CoordAt, time.Now())
 	if env.RelayTarget == n.localPeerID() {
 		n.updateKnownPeer(env.RelaySource, env.AdvertisedAddr, false)
 		if env.CoordStage == "offer" {

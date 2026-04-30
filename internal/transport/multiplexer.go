@@ -11,6 +11,7 @@ import (
 type StreamID uint32
 
 const DefaultStream StreamID = 1
+const maxInboundStreams = 1024
 
 var errUnknownStream = errors.New("transport: unknown stream")
 
@@ -70,12 +71,29 @@ func (m *Multiplexer) readLoop() {
 		if err != nil {
 			continue
 		}
-		stream := m.Stream(streamID)
+		stream := m.inboundStream(streamID)
 		if stream == nil {
 			continue
 		}
 		stream.enqueue(payload)
 	}
+}
+
+func (m *Multiplexer) inboundStream(id StreamID) *Stream {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if existing := m.streams[id]; existing != nil {
+		return existing
+	}
+	if m.closed {
+		return nil
+	}
+	if len(m.streams) >= maxInboundStreams {
+		return nil
+	}
+	stream := newStream(id, m)
+	m.streams[id] = stream
+	return stream
 }
 
 func (m *Multiplexer) write(streamID StreamID, payload []byte) error {
