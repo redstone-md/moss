@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"io"
@@ -49,8 +50,12 @@ type udpClientHandshake struct {
 }
 
 type udpServerHandshake struct {
-	hs   *noise.HandshakeState
-	mode byte
+	hs       *noise.HandshakeState
+	mode     byte
+	remoteID [32]byte
+	cs1      *noise.CipherState
+	cs2      *noise.CipherState
+	done     [32]byte
 }
 
 type udpDialResult struct {
@@ -372,24 +377,31 @@ func (l *UDPListener) handleHandshakeInit(remote *net.UDPAddr, payload []byte) {
 		if err := verifyIdentityPayload(payload1, l.cfg.MeshID, hs.PeerStatic(), &remoteID); err != nil {
 			return
 		}
-		payload2, cs1, cs2, err := hs.WriteMessage(nil, mustMarshalIdentityPayload(l.cfg))
+		done, err := newUDPHandshakeToken()
+		if err != nil {
+			return
+		}
+		identityPayload, err := marshalIdentityPayloadWithChallenge(l.cfg, done[:])
+		if err != nil {
+			return
+		}
+		payload2, cs1, cs2, err := hs.WriteMessage(nil, identityPayload)
 		if err != nil {
 			return
 		}
 		if err := l.writeDatagram(remote, udpMessageHandshakeResp, payload2); err != nil {
 			return
 		}
-		remoteKey := peerStaticArray(hs.PeerStatic())
-		sendCipher, recvCipher := splitCipherStates(false, cs1, cs2)
-		session, err := l.establishSession(remote, sendCipher, recvCipher, remoteID, remoteKey, mode)
-		if err != nil {
-			return
+		l.mu.Lock()
+		l.servers[key] = &udpServerHandshake{
+			hs:       hs,
+			mode:     mode,
+			remoteID: remoteID,
+			cs1:      cs1,
+			cs2:      cs2,
+			done:     done,
 		}
-		select {
-		case l.acceptC <- session:
-		case <-l.closed:
-			_ = session.Close()
-		}
+		l.mu.Unlock()
 	default:
 		return
 	}
@@ -410,7 +422,8 @@ func (l *UDPListener) handleHandshakeResp(remote *net.UDPAddr, payload []byte) {
 		return
 	}
 	remoteKey := peerStaticArray(pending.hs.PeerStatic())
-	if err := verifyIdentityPayload(payload2, l.cfg.MeshID, remoteKey[:], &remoteID); err != nil {
+	done, err := verifyIdentityPayloadChallenge(payload2, l.cfg.MeshID, remoteKey[:], &remoteID)
+	if err != nil {
 		l.finishDial(key, pending, udpDialResult{err: err})
 		return
 	}
@@ -426,6 +439,15 @@ func (l *UDPListener) handleHandshakeResp(remote *net.UDPAddr, payload []byte) {
 			return
 		}
 		sendCipher, recvCipher = splitCipherStates(true, cs1, cs2)
+	} else if pending.mode == HandshakeModeIK {
+		if len(done) != 32 {
+			l.finishDial(key, pending, udpDialResult{err: errors.New("invalid udp ik handshake challenge")})
+			return
+		}
+		if err := l.writeDatagram(remote, udpMessageHandshakeDone, done); err != nil {
+			l.finishDial(key, pending, udpDialResult{err: err})
+			return
+		}
 	}
 	session, err := l.establishSession(remote, sendCipher, recvCipher, remoteID, remoteKey, pending.mode)
 	l.finishDial(key, pending, udpDialResult{session: session, err: err})
@@ -439,22 +461,45 @@ func (l *UDPListener) handleHandshakeDone(remote *net.UDPAddr, payload []byte) {
 	if pending == nil {
 		return
 	}
-	var remoteID [32]byte
-	payload3, cs1, cs2, err := pending.hs.ReadMessage(nil, payload)
-	if err != nil {
+	var (
+		remoteID               [32]byte
+		sendCipher, recvCipher *noise.CipherState
+		remoteKey              [32]byte
+		err                    error
+	)
+	switch pending.mode {
+	case HandshakeModeXX:
+		payload3, cs1, cs2, readErr := pending.hs.ReadMessage(nil, payload)
+		if readErr != nil {
+			l.mu.Lock()
+			delete(l.servers, key)
+			l.mu.Unlock()
+			return
+		}
+		remoteKey = peerStaticArray(pending.hs.PeerStatic())
+		if err := verifyIdentityPayload(payload3, l.cfg.MeshID, remoteKey[:], &remoteID); err != nil {
+			l.mu.Lock()
+			delete(l.servers, key)
+			l.mu.Unlock()
+			return
+		}
+		sendCipher, recvCipher = splitCipherStates(false, cs1, cs2)
+	case HandshakeModeIK:
+		remoteKey = peerStaticArray(pending.hs.PeerStatic())
+		if len(payload) != len(pending.done) || subtle.ConstantTimeCompare(payload, pending.done[:]) != 1 {
+			l.mu.Lock()
+			delete(l.servers, key)
+			l.mu.Unlock()
+			return
+		}
+		remoteID = pending.remoteID
+		sendCipher, recvCipher = splitCipherStates(false, pending.cs1, pending.cs2)
+	default:
 		l.mu.Lock()
 		delete(l.servers, key)
 		l.mu.Unlock()
 		return
 	}
-	remoteKey := peerStaticArray(pending.hs.PeerStatic())
-	if err := verifyIdentityPayload(payload3, l.cfg.MeshID, remoteKey[:], &remoteID); err != nil {
-		l.mu.Lock()
-		delete(l.servers, key)
-		l.mu.Unlock()
-		return
-	}
-	sendCipher, recvCipher := splitCipherStates(false, cs1, cs2)
 	session, err := l.establishSession(remote, sendCipher, recvCipher, remoteID, remoteKey, pending.mode)
 	l.mu.Lock()
 	delete(l.servers, key)
@@ -650,4 +695,10 @@ func newObserveToken() ([]byte, error) {
 		return nil, fmt.Errorf("read observe token: %w", err)
 	}
 	return token, nil
+}
+
+func newUDPHandshakeToken() ([32]byte, error) {
+	var token [32]byte
+	_, err := rand.Read(token[:])
+	return token, err
 }
