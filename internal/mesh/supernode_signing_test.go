@@ -34,6 +34,32 @@ func TestSupernodeEnvelopeSignatureRoundTrip(t *testing.T) {
 	}
 }
 
+func TestPeerAnnouncementSignatureRoundTrip(t *testing.T) {
+	node, err := NewNode("mesh-peer-sign", nil, DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+	env := gossip.Envelope{
+		Type:                   gossip.TypePeerAnnounce,
+		AdvertisedPeerID:       node.localPeerID(),
+		AdvertisedAddr:         "192.168.1.50:41030",
+		AdvertisedNATType:      string(nat.TypePublic),
+		AdvertisedReachable:    true,
+		AdvertisedRelayCapable: false,
+	}
+	signed := node.signPeerAnnouncementEnvelope(env)
+	if len(signed.AdvertisedSignature) == 0 {
+		t.Fatal("expected signed peer announcement to have signature")
+	}
+	if !verifyPeerAnnouncementEnvelope(signed) {
+		t.Fatal("expected valid peer announcement signature to verify")
+	}
+	signed.AdvertisedAddr = "192.168.1.99:41030"
+	if verifyPeerAnnouncementEnvelope(signed) {
+		t.Fatal("expected modified peer announcement to fail verification")
+	}
+}
+
 func TestHandleSupernodeStatusRejectsInvalidSignature(t *testing.T) {
 	nodeA, err := NewNode("mesh-supernode-invalid", nil, DefaultConfig())
 	if err != nil {

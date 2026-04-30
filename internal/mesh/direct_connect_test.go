@@ -90,7 +90,7 @@ func TestHandleKnownPeerEnvelopeDoesNotOverwritePublicAddrWithPrivateAnnounce(t 
 		AdvertisedNATType:      string(nat.TypeRestrictedCone),
 		AdvertisedReachable:    false,
 		AdvertisedRelayCapable: false,
-	}, gossip.TypePeerAnnounce)
+	}, gossip.TypePeerAnnounce, false)
 
 	node.mu.RLock()
 	defer node.mu.RUnlock()
@@ -123,7 +123,7 @@ func TestHandleKnownPeerEnvelopeUpdatesDirectPeerAddrOnSelfAnnouncedPublicChange
 		AdvertisedNATType:      string(nat.TypeRestrictedCone),
 		AdvertisedReachable:    false,
 		AdvertisedRelayCapable: false,
-	}, gossip.TypePeerAnnounce)
+	}, gossip.TypePeerAnnounce, false)
 
 	node.mu.RLock()
 	defer node.mu.RUnlock()
@@ -154,7 +154,7 @@ func TestHandleKnownPeerEnvelopeRefreshesStalePrivateDirectAddrOnSelfAnnounce(t 
 		AdvertisedNATType:      string(nat.TypeUnknown),
 		AdvertisedReachable:    false,
 		AdvertisedRelayCapable: false,
-	}, gossip.TypePeerAnnounce)
+	}, gossip.TypePeerAnnounce, false)
 
 	node.mu.RLock()
 	defer node.mu.RUnlock()
@@ -189,7 +189,7 @@ func TestHandleKnownPeerEnvelopeClearsDialCooldownOnEndpointChange(t *testing.T)
 		AdvertisedNATType:      string(nat.TypeRestrictedCone),
 		AdvertisedReachable:    false,
 		AdvertisedRelayCapable: false,
-	}, gossip.TypePeerAnnounce)
+	}, gossip.TypePeerAnnounce, false)
 
 	node.mu.RLock()
 	defer node.mu.RUnlock()
@@ -231,7 +231,7 @@ func TestUpdateKnownPeerClearsCooldownsOnEndpointChange(t *testing.T) {
 	}
 }
 
-func TestDiscoveredPeerTargetsSkipsNonDirectKnownPeers(t *testing.T) {
+func TestDiscoveredPeerTargetsSkipsUnverifiedKnownPeers(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Trackers = nil
 	node, err := NewNode("mesh-known-peer", nil, cfg)
@@ -240,15 +240,36 @@ func TestDiscoveredPeerTargetsSkipsNonDirectKnownPeers(t *testing.T) {
 	}
 
 	node.mu.Lock()
-	node.knownPeers["peer-direct"] = knownPeer{id: "peer-direct", addr: "127.0.0.1:41030", direct: true}
-	node.knownPeers["peer-relayed"] = knownPeer{id: "peer-relayed", addr: "127.0.0.1:41031", direct: false}
+	node.knownPeers["peer-verified"] = knownPeer{id: "peer-verified", addr: "127.0.0.1:41030", verified: true}
+	node.knownPeers["peer-unverified"] = knownPeer{id: "peer-unverified", addr: "127.0.0.1:41031"}
 	node.mu.Unlock()
 
 	targets := node.discoveredPeerTargets()
 	if len(targets) != 1 {
-		t.Fatalf("expected only direct known peer to be selected, got %d targets", len(targets))
+		t.Fatalf("expected only verified known peer to be selected, got %d targets", len(targets))
 	}
-	if targets[0].peerID != "peer-direct" {
-		t.Fatalf("expected direct known peer to be selected, got %q", targets[0].peerID)
+	if targets[0].peerID != "peer-verified" {
+		t.Fatalf("expected verified known peer to be selected, got %q", targets[0].peerID)
+	}
+}
+
+func TestDiscoveredPeerTargetsRetriesDisconnectedVerifiedPeers(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Trackers = nil
+	node, err := NewNode("mesh-known-peer", nil, cfg)
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+
+	node.mu.Lock()
+	node.knownPeers["peer-1"] = knownPeer{id: "peer-1", addr: "127.0.0.1:41030", verified: true}
+	node.mu.Unlock()
+
+	targets := node.discoveredPeerTargets()
+	if len(targets) != 1 {
+		t.Fatalf("expected disconnected verified peer to be retried, got %d targets", len(targets))
+	}
+	if targets[0].peerID != "peer-1" {
+		t.Fatalf("expected peer-1 to be retried, got %q", targets[0].peerID)
 	}
 }
