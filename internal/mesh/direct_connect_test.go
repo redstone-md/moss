@@ -231,6 +231,28 @@ func TestUpdateKnownPeerClearsCooldownsOnEndpointChange(t *testing.T) {
 	}
 }
 
+func TestShouldRetainPeerRejectsBootstrapPeerWithPingMisses(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Trackers = nil
+	node, err := NewNode("mesh-retain-ping-miss", nil, cfg)
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+
+	peer := &peerConn{
+		id:          "peer-1",
+		bootstrap:   true,
+		connectedAt: time.Now().Add(-time.Minute),
+		lastRTT:     time.Second,
+		pingMisses:  1,
+	}
+	node.knownPeers[peer.id] = knownPeer{id: peer.id, bootstrap: true}
+
+	if node.shouldRetainPeer(peer) {
+		t.Fatal("expected ping misses to prevent bootstrap peer retention")
+	}
+}
+
 func TestNormalizeHolePunchCoordAtDefaultsWhenZero(t *testing.T) {
 	now := time.Unix(1700000000, 0)
 	got := normalizeHolePunchCoordAt(0, now)

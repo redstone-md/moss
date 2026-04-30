@@ -904,14 +904,14 @@ func (n *Node) shouldRetainPeerLocked(peer *peerConn) bool {
 	if peer == nil {
 		return false
 	}
-	if peer.bootstrap {
-		return true
-	}
 	if time.Since(peer.connectedAt) < 30*time.Second {
 		return true
 	}
+	if peer.pingMisses > 0 || peer.lastRTT > 2*time.Second || n.peerScore(peer.id) < 0 {
+		return false
+	}
 	info := n.knownPeers[peer.id]
-	return info.bootstrap || info.relayCapable || info.publicReachable
+	return peer.bootstrap || info.bootstrap
 }
 
 func shouldReplaceDuplicatePeer(localPeerID, remotePeerID string, existingOutbound, newOutbound bool) bool {
