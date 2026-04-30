@@ -27,6 +27,10 @@ const (
 
 var errUDPAlreadyConnected = errors.New("udp peer is already connected")
 
+const maxPendingUDPServerHandshakes = 1024
+
+var pendingUDPServerHandshakeTTL = 5 * time.Second
+
 type UDPListener struct {
 	conn    *net.UDPConn
 	cfg     HandshakeConfig
@@ -50,12 +54,13 @@ type udpClientHandshake struct {
 }
 
 type udpServerHandshake struct {
-	hs       *noise.HandshakeState
-	mode     byte
-	remoteID [32]byte
-	cs1      *noise.CipherState
-	cs2      *noise.CipherState
-	done     [32]byte
+	hs        *noise.HandshakeState
+	mode      byte
+	remoteID  [32]byte
+	cs1       *noise.CipherState
+	cs2       *noise.CipherState
+	done      [32]byte
+	createdAt time.Time
 }
 
 type udpDialResult struct {
@@ -357,6 +362,8 @@ func (l *UDPListener) handleHandshakeInit(remote *net.UDPAddr, payload []byte) {
 	body := payload[1:]
 	switch mode {
 	case HandshakeModeXX:
+		now := time.Now()
+		l.prunePendingServerHandshakes(now)
 		if _, _, _, err := hs.ReadMessage(nil, body); err != nil {
 			return
 		}
@@ -365,7 +372,11 @@ func (l *UDPListener) handleHandshakeInit(remote *net.UDPAddr, payload []byte) {
 			return
 		}
 		l.mu.Lock()
-		l.servers[key] = &udpServerHandshake{hs: hs, mode: mode}
+		if _, exists := l.servers[key]; !exists && len(l.servers) >= maxPendingUDPServerHandshakes {
+			l.mu.Unlock()
+			return
+		}
+		l.servers[key] = &udpServerHandshake{hs: hs, mode: mode, createdAt: now}
 		l.mu.Unlock()
 		_ = l.writeDatagram(remote, udpMessageHandshakeResp, payload2)
 	case HandshakeModeIK:
@@ -392,18 +403,35 @@ func (l *UDPListener) handleHandshakeInit(remote *net.UDPAddr, payload []byte) {
 		if err := l.writeDatagram(remote, udpMessageHandshakeResp, payload2); err != nil {
 			return
 		}
+		now := time.Now()
+		l.prunePendingServerHandshakes(now)
 		l.mu.Lock()
+		if _, exists := l.servers[key]; !exists && len(l.servers) >= maxPendingUDPServerHandshakes {
+			l.mu.Unlock()
+			return
+		}
 		l.servers[key] = &udpServerHandshake{
-			hs:       hs,
-			mode:     mode,
-			remoteID: remoteID,
-			cs1:      cs1,
-			cs2:      cs2,
-			done:     done,
+			hs:        hs,
+			mode:      mode,
+			remoteID:  remoteID,
+			cs1:       cs1,
+			cs2:       cs2,
+			done:      done,
+			createdAt: now,
 		}
 		l.mu.Unlock()
 	default:
 		return
+	}
+}
+
+func (l *UDPListener) prunePendingServerHandshakes(now time.Time) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for key, pending := range l.servers {
+		if now.Sub(pending.createdAt) > pendingUDPServerHandshakeTTL {
+			delete(l.servers, key)
+		}
 	}
 }
 
