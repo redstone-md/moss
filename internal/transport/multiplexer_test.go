@@ -115,6 +115,27 @@ func TestMalformedFrameIsIgnoredBeforeNextValidPacket(t *testing.T) {
 	}
 }
 
+func TestInboundStreamCreationIsCapped(t *testing.T) {
+	sender, receiver, senderCarrier, receiverCarrier := newStubSessionPair(t)
+
+	for id := StreamID(2); id <= StreamID(maxInboundStreams+100); id++ {
+		if err := sender.Stream(id).WritePacket([]byte("x")); err != nil {
+			t.Fatalf("WritePacket stream %d failed: %v", id, err)
+		}
+		receiverCarrier.incoming <- senderCarrier.writes[len(senderCarrier.writes)-1]
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	receiver.mux.mu.RLock()
+	streamCount := len(receiver.mux.streams)
+	receiver.mux.mu.RUnlock()
+
+	if streamCount != maxInboundStreams {
+		t.Fatalf("expected at most %d inbound streams, got %d", maxInboundStreams, streamCount)
+	}
+}
+
 func newStubSessionPair(t *testing.T) (*Session, *Session, *stubDatagramCarrier, *stubDatagramCarrier) {
 	t.Helper()
 
