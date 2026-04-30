@@ -233,6 +233,65 @@ func TestUDPIKRejectsEmptyHandshakeDone(t *testing.T) {
 	}
 }
 
+func TestUDPHandshakeInitAllowsTrackedPeerRetryWhenPendingTableFull(t *testing.T) {
+	clientIdentity, err := mcrypto.NewIdentity()
+	if err != nil {
+		t.Fatalf("client identity failed: %v", err)
+	}
+	serverIdentity, err := mcrypto.NewIdentity()
+	if err != nil {
+		t.Fatalf("server identity failed: %v", err)
+	}
+	serverListener, _, err := ListenUDP(0, HandshakeConfig{
+		MeshID:   "mesh-udp-retry-cap",
+		Identity: serverIdentity,
+	})
+	if err != nil {
+		t.Fatalf("ListenUDP server failed: %v", err)
+	}
+	defer serverListener.Close()
+
+	clientCfg := HandshakeConfig{
+		MeshID:   "mesh-udp-retry-cap",
+		Identity: clientIdentity,
+	}
+	hs, err := newHandshakeState(clientCfg, true, HandshakeModeXX)
+	if err != nil {
+		t.Fatalf("newHandshakeState failed: %v", err)
+	}
+	msg1, _, _, err := hs.WriteMessage(nil, nil)
+	if err != nil {
+		t.Fatalf("WriteMessage failed: %v", err)
+	}
+	payload := append([]byte{HandshakeModeXX}, msg1...)
+	remote := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 9000}
+	key := remote.String()
+	original := &udpServerHandshake{createdAt: time.Now()}
+
+	serverListener.mu.Lock()
+	serverListener.servers[key] = original
+	for i := 0; len(serverListener.servers) < maxPendingUDPServerHandshakes; i++ {
+		serverListener.servers["127.0.0.1:"+strconv.Itoa(10000+i)] = &udpServerHandshake{createdAt: time.Now()}
+	}
+	serverListener.mu.Unlock()
+
+	serverListener.handleHandshakeInit(remote, payload)
+
+	serverListener.mu.Lock()
+	updated := serverListener.servers[key]
+	count := len(serverListener.servers)
+	serverListener.mu.Unlock()
+	if count != maxPendingUDPServerHandshakes {
+		t.Fatalf("expected pending table to stay capped at %d, got %d", maxPendingUDPServerHandshakes, count)
+	}
+	if updated == original {
+		t.Fatal("expected tracked peer retry to refresh pending handshake")
+	}
+	if updated == nil || updated.hs == nil {
+		t.Fatal("expected refreshed pending handshake state")
+	}
+}
+
 func TestUDPObserveContextReportsObservedEndpoint(t *testing.T) {
 	identity, err := mcrypto.NewIdentity()
 	if err != nil {
