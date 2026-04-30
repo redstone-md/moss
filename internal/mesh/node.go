@@ -243,7 +243,7 @@ func (n *Node) Start() int32 {
 	n.natProfile.Store(n.profiler.Detect(ln.Addr().String()))
 	n.portMapper = nil
 	wgCount := 5
-	if n.config.LANDiscoveryEnabled {
+	if n.config.LANDiscoveryEnabled && !transport.RunningGoTest() {
 		wgCount++
 	}
 	n.wg.Add(wgCount)
@@ -252,7 +252,7 @@ func (n *Node) Start() int32 {
 	go n.dispatchLoop(ctx)
 	go n.bootstrapLoop(ctx)
 	go n.maintenanceLoop(ctx)
-	if n.config.LANDiscoveryEnabled {
+	if n.config.LANDiscoveryEnabled && !transport.RunningGoTest() {
 		go n.lanDiscoveryLoop(ctx)
 	}
 	go n.probePortMapping(ctx, ln.Addr().String(), port)

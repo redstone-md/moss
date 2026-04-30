@@ -67,7 +67,7 @@ type udpCarrier struct {
 }
 
 func ListenUDP(port int, cfg HandshakeConfig) (*UDPListener, int, error) {
-	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: port})
+	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: listenIP(), Port: port})
 	if err != nil {
 		return nil, 0, err
 	}
