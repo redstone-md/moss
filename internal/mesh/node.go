@@ -1979,6 +1979,9 @@ func (n *Node) discoveredPeerTargets() []discoveredPeerTarget {
 		if peerID == n.localPeerID() || info.addr == "" {
 			continue
 		}
+		if !info.direct {
+			continue
+		}
 		if _, connected := n.peers[peerID]; connected {
 			continue
 		}

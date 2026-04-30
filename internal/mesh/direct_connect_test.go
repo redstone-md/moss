@@ -230,3 +230,25 @@ func TestUpdateKnownPeerClearsCooldownsOnEndpointChange(t *testing.T) {
 		t.Fatal("expected direct probe cooldown to be cleared after known peer update")
 	}
 }
+
+func TestDiscoveredPeerTargetsSkipsNonDirectKnownPeers(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Trackers = nil
+	node, err := NewNode("mesh-known-peer", nil, cfg)
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+
+	node.mu.Lock()
+	node.knownPeers["peer-direct"] = knownPeer{id: "peer-direct", addr: "127.0.0.1:41030", direct: true}
+	node.knownPeers["peer-relayed"] = knownPeer{id: "peer-relayed", addr: "127.0.0.1:41031", direct: false}
+	node.mu.Unlock()
+
+	targets := node.discoveredPeerTargets()
+	if len(targets) != 1 {
+		t.Fatalf("expected only direct known peer to be selected, got %d targets", len(targets))
+	}
+	if targets[0].peerID != "peer-direct" {
+		t.Fatalf("expected direct known peer to be selected, got %q", targets[0].peerID)
+	}
+}
