@@ -1286,6 +1286,9 @@ func (n *Node) handleReachabilityRequest(peer *peerConn, env gossip.Envelope) {
 	if env.RequestID == "" || env.AdvertisedAddr == "" {
 		return
 	}
+	if peer == nil || !sameAdvertisedEndpoint(env.AdvertisedAddr, peer.addr) {
+		return
+	}
 	reachable := probeTCPAddress(env.AdvertisedAddr, minDuration(500*time.Millisecond, n.config.HandshakeTimeout()))
 	n.sendEnvelope(peer, gossip.Envelope{
 		Type:      gossip.TypeReachabilityResponse,
@@ -3678,6 +3681,18 @@ func probeTCPAddress(addr string, timeout time.Duration) bool {
 	}
 	_ = conn.Close()
 	return true
+}
+
+func sameAdvertisedEndpoint(a, b string) bool {
+	aEndpoint, err := netip.ParseAddrPort(a)
+	if err != nil {
+		return false
+	}
+	bEndpoint, err := netip.ParseAddrPort(b)
+	if err != nil {
+		return false
+	}
+	return aEndpoint.Port() == bEndpoint.Port() && aEndpoint.Addr().Unmap() == bEndpoint.Addr().Unmap()
 }
 
 func minDuration(a, b time.Duration) time.Duration {

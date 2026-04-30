@@ -2,6 +2,30 @@ package mesh
 
 import "testing"
 
+func TestSameAdvertisedEndpoint(t *testing.T) {
+	tests := []struct {
+		name string
+		a    string
+		b    string
+		want bool
+	}{
+		{name: "same IPv4 endpoint", a: "198.51.100.10:41030", b: "198.51.100.10:41030", want: true},
+		{name: "IPv4 mapped IPv6 endpoint", a: "[::ffff:198.51.100.10]:41030", b: "198.51.100.10:41030", want: true},
+		{name: "different port", a: "198.51.100.10:41030", b: "198.51.100.10:41031"},
+		{name: "different host", a: "198.51.100.10:41030", b: "198.51.100.11:41030"},
+		{name: "advertised hostname rejected", a: "example.com:41030", b: "198.51.100.10:41030"},
+		{name: "peer hostname rejected", a: "198.51.100.10:41030", b: "example.com:41030"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sameAdvertisedEndpoint(tt.a, tt.b); got != tt.want {
+				t.Fatalf("sameAdvertisedEndpoint(%q, %q) = %t, want %t", tt.a, tt.b, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestReachabilityProbePeerIDsExcludeFreshPrivatePeer(t *testing.T) {
 	node := &Node{
 		peers: map[string]*peerConn{
