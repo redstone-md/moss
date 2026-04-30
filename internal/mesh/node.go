@@ -1541,14 +1541,8 @@ func (n *Node) observeMeshDelivery(channel, messageID, peerID string) {
 	if channel == "" || messageID == "" {
 		return
 	}
-	expected := make(map[string]struct{})
-	for _, meshPeerID := range n.pubsub.MeshPeers(channel) {
-		if n.isPeerBelowBaseline(meshPeerID) {
-			continue
-		}
-		expected[meshPeerID] = struct{}{}
-	}
-	if len(expected) == 0 {
+	expected := map[string]struct{}{peerID: {}}
+	if n.isPeerBelowBaseline(peerID) {
 		return
 	}
 	due := time.Now().Add(n.config.Heartbeat())

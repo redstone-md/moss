@@ -111,7 +111,7 @@ func TestPublishBelowThresholdIsDropped(t *testing.T) {
 	}
 }
 
-func TestMeshDeliveryDeficitPenalizesSilentMeshPeers(t *testing.T) {
+func TestMeshDeliveryDeficitDoesNotPenalizeOtherMeshPeers(t *testing.T) {
 	node, err := NewNode("mesh-delivery-deficit", nil, DefaultConfig())
 	if err != nil {
 		t.Fatalf("NewNode failed: %v", err)
@@ -125,8 +125,8 @@ func TestMeshDeliveryDeficitPenalizesSilentMeshPeers(t *testing.T) {
 	if score := node.scoring.Score("peer-a"); score != 0 {
 		t.Fatalf("expected delivering peer to avoid deficit penalty, got %f", score)
 	}
-	if score := node.scoring.Score("peer-b"); score != -0.5 {
-		t.Fatalf("expected silent mesh peer to receive deficit penalty, got %f", score)
+	if score := node.scoring.Score("peer-b"); score != 0 {
+		t.Fatalf("expected non-delivering mesh peer to avoid deficit penalty, got %f", score)
 	}
 }
 
