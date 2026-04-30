@@ -1571,6 +1571,43 @@ func TestTryHolePunchDialEstablishesDirectPeer(t *testing.T) {
 	waitForDirectPeer(t, nodeB, hex.EncodeToString(sourcePub[:]))
 }
 
+func TestHandleHolePunchCoordIgnoresUnsolicitedRequest(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Trackers = nil
+	node, err := NewNode("mesh-holepunch-unsolicited", nil, cfg)
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+
+	localID := node.localPeerID()
+	peer := &peerConn{id: "relay-peer"}
+
+	node.mu.RLock()
+	before, hadBefore := node.knownPeers["attacker-source"]
+	node.mu.RUnlock()
+
+	node.handleHolePunchCoord(peer, gossip.Envelope{
+		Type:           gossip.TypeHolePunchCoord,
+		RequestID:      "attacker-request",
+		CoordStage:     "reply",
+		RelaySource:    "attacker-source",
+		RelayTarget:    localID,
+		AdvertisedAddr: "127.0.0.1:6553",
+	})
+
+	node.mu.RLock()
+	after, hadAfter := node.knownPeers["attacker-source"]
+	_, pending := node.holePunchWait["attacker-request"]
+	node.mu.RUnlock()
+
+	if hadAfter != hadBefore || after.addr != before.addr {
+		t.Fatalf("unexpected known peer update for unsolicited request")
+	}
+	if pending {
+		t.Fatalf("unexpected pending hole punch request for unsolicited request")
+	}
+}
+
 func TestDirectPeerConnectionMigratesRelaySession(t *testing.T) {
 	cfgRelay := DefaultConfig()
 	cfgRelay.Trackers = nil

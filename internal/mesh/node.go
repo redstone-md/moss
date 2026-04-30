@@ -70,6 +70,7 @@ type Node struct {
 	trackerSeeds     map[string]time.Time
 	bindingWait      map[string]chan string
 	reachabilityWait map[string]chan bool
+	holePunchWait    map[string]holePunchRequest
 	scoringMu        sync.RWMutex
 	scoringCB        func(peerID [32]byte, baseScore float64) float64
 	messageCB        MessageCallback
@@ -119,6 +120,11 @@ type relayLocalSession struct {
 	remotePeerID string
 	established  bool
 	wait         chan struct{}
+}
+
+type holePunchRequest struct {
+	targetPeerID string
+	relayPeerID  string
 }
 
 type meshDeliveryObservation struct {
@@ -212,6 +218,7 @@ func NewNodeWithIdentity(meshID string, psk []byte, cfg Config, identity *mcrypt
 		trackerSeeds:     make(map[string]time.Time),
 		bindingWait:      make(map[string]chan string),
 		reachabilityWait: make(map[string]chan bool),
+		holePunchWait:    make(map[string]holePunchRequest),
 		dispatchSem:      make(chan struct{}, 500),
 		dispatchCh:       make(chan any, 1024),
 	}
@@ -1302,6 +1309,17 @@ func (n *Node) handleHolePunchCoord(peer *peerConn, env gossip.Envelope) {
 		coordAt = time.Now().Add(600 * time.Millisecond)
 	}
 	if env.RelayTarget == n.localPeerID() {
+		if env.CoordStage == "reply" {
+			n.mu.Lock()
+			request, ok := n.holePunchWait[env.RequestID]
+			if ok {
+				delete(n.holePunchWait, env.RequestID)
+			}
+			n.mu.Unlock()
+			if !ok || request.targetPeerID != env.RelaySource || request.relayPeerID != peer.id {
+				return
+			}
+		}
 		n.updateKnownPeer(env.RelaySource, env.AdvertisedAddr, false)
 		if env.CoordStage == "offer" {
 			replyAddr := n.freshObservedUDPAddr(peer.id, minDuration(750*time.Millisecond, n.config.HandshakeTimeout()/2))
@@ -3150,6 +3168,14 @@ func (n *Node) attemptHolePunch(targetPeerID string, timeout time.Duration) bool
 	sourceAddr := n.freshObservedUDPAddr(viaPeerID, minDuration(750*time.Millisecond, timeout/3))
 	coordAt := time.Now().Add(750 * time.Millisecond)
 	go n.tryHolePunchDialAt(targetPeerID, targetInfo.addr, coordAt)
+	n.mu.Lock()
+	n.holePunchWait[requestID] = holePunchRequest{targetPeerID: targetPeerID, relayPeerID: viaPeerID}
+	n.mu.Unlock()
+	defer func() {
+		n.mu.Lock()
+		delete(n.holePunchWait, requestID)
+		n.mu.Unlock()
+	}()
 	n.sendEnvelope(viaPeer, gossip.Envelope{
 		Type:           gossip.TypeHolePunchCoord,
 		RequestID:      requestID,
