@@ -30,6 +30,9 @@ func TestSetMeshPeerRemoveDoesNotCreateChannel(t *testing.T) {
 
 	manager.SetMeshPeer("attacker-channel", "peer-1", false)
 
+	if hasMeshChannel(manager, "attacker-channel") {
+		t.Fatal("remove on unknown channel allocated mesh channel")
+	}
 	if got := manager.MeshPeers("attacker-channel"); len(got) != 0 {
 		t.Fatalf("unexpected mesh peers for unknown channel: %#v", got)
 	}
@@ -41,12 +44,25 @@ func TestRemovePeerCleansUpEmptyMeshChannel(t *testing.T) {
 
 	manager.RemovePeer("peer-1")
 
+	if hasMeshChannel(manager, "alpha") {
+		t.Fatal("expected mesh channel entry to be removed")
+	}
 	if got := manager.MeshPeers("alpha"); len(got) != 0 {
 		t.Fatalf("expected mesh channel to be cleaned, got: %#v", got)
 	}
 
 	manager.SetMeshPeer("alpha", "peer-2", false)
+	if hasMeshChannel(manager, "alpha") {
+		t.Fatal("remove on unknown channel allocated mesh channel")
+	}
 	if got := manager.MeshPeers("alpha"); len(got) != 0 {
 		t.Fatalf("remove on unknown channel should not allocate: %#v", got)
 	}
+}
+
+func hasMeshChannel(manager *Manager, channel string) bool {
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+	_, ok := manager.meshPeers[channel]
+	return ok
 }
