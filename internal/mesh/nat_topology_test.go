@@ -82,11 +82,19 @@ func TestSymmetricNATPeersRelayWithinFiveSeconds(t *testing.T) {
 	sourceID := hex.EncodeToString(sourcePub[:])
 	waitForKnownPeer(t, nodeA, targetID)
 	waitForKnownPeer(t, nodeB, sourceID)
+	relayPub := relayNode.PublicKey()
+	relayID := hex.EncodeToString(relayPub[:])
 
 	nodeA.natProfile.Store(nat.Profile{Type: nat.TypeSymmetric})
 	nodeB.natProfile.Store(nat.Profile{Type: nat.TypeSymmetric})
 
 	nodeA.mu.Lock()
+	relayInfo := nodeA.knownPeers[relayID]
+	relayInfo.natType = nat.TypePublic
+	relayInfo.natTrusted = true
+	relayInfo.publicReachable = true
+	relayInfo.relayCapable = true
+	nodeA.knownPeers[relayID] = relayInfo
 	infoA := nodeA.knownPeers[targetID]
 	infoA.natType = nat.TypeSymmetric
 	infoA.natTrusted = true

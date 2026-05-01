@@ -536,6 +536,16 @@ func TestRelaySendToAutoOpensRelaySession(t *testing.T) {
 	waitForPeerCount(t, relayNode, 2)
 	waitForPeerCount(t, nodeA, 1)
 	waitForPeerCount(t, nodeB, 1)
+	relayPub := relayNode.PublicKey()
+	relayID := hex.EncodeToString(relayPub[:])
+	nodeA.mu.Lock()
+	relayInfo := nodeA.knownPeers[relayID]
+	relayInfo.natType = nat.TypePublic
+	relayInfo.natTrusted = true
+	relayInfo.publicReachable = true
+	relayInfo.relayCapable = true
+	nodeA.knownPeers[relayID] = relayInfo
+	nodeA.mu.Unlock()
 
 	received := make(chan []byte, 1)
 	nodeB.SetRelayCallback(func(senderID [32]byte, data []byte) {
@@ -1064,9 +1074,17 @@ func TestRelaySendToFallsBackAfterDirectDialFailure(t *testing.T) {
 	waitForPeerCount(t, relayNode, 2)
 	targetPub := nodeB.PublicKey()
 	targetID := hex.EncodeToString(targetPub[:])
+	relayPub := relayNode.PublicKey()
+	relayID := hex.EncodeToString(relayPub[:])
 	waitForKnownPeer(t, nodeA, targetID)
 
 	nodeA.mu.Lock()
+	relayInfo := nodeA.knownPeers[relayID]
+	relayInfo.natType = nat.TypePublic
+	relayInfo.natTrusted = true
+	relayInfo.publicReachable = true
+	relayInfo.relayCapable = true
+	nodeA.knownPeers[relayID] = relayInfo
 	info := nodeA.knownPeers[targetID]
 	info.addr = "127.0.0.1:1"
 	nodeA.knownPeers[targetID] = info
@@ -1170,11 +1188,13 @@ func TestRelaySendToFallsBackToSecondaryRelayPeer(t *testing.T) {
 	info1.relayCapable = true
 	info1.publicReachable = true
 	info1.natType = nat.TypePublic
+	info1.natTrusted = true
 	nodeA.knownPeers[relay1ID] = info1
 	info2 := nodeA.knownPeers[relay2ID]
 	info2.relayCapable = true
 	info2.publicReachable = true
 	info2.natType = nat.TypePublic
+	info2.natTrusted = true
 	nodeA.knownPeers[relay2ID] = info2
 	nodeA.mu.Unlock()
 	nodeA.scoring.SetApplicationScore(relay1ID, 10)
@@ -1282,11 +1302,13 @@ func TestRelaySessionAnyPrefersLessLoadedRelayPeer(t *testing.T) {
 	info1.relayCapable = true
 	info1.publicReachable = true
 	info1.natType = nat.TypePublic
+	info1.natTrusted = true
 	nodeA.knownPeers[relay1ID] = info1
 	info2 := nodeA.knownPeers[relay2ID]
 	info2.relayCapable = true
 	info2.publicReachable = true
 	info2.natType = nat.TypePublic
+	info2.natTrusted = true
 	nodeA.knownPeers[relay2ID] = info2
 	nodeA.relayLocals["existing-1"] = relayLocalSession{sessionID: "existing-1", viaPeerID: relay1ID, remotePeerID: "other-1", established: true}
 	nodeA.relayLocals["existing-2"] = relayLocalSession{sessionID: "existing-2", viaPeerID: relay1ID, remotePeerID: "other-2", established: true}

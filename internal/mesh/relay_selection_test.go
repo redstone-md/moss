@@ -26,6 +26,7 @@ func TestSelectRelayPeerPrefersRelayCapablePeer(t *testing.T) {
 		id:              "peer-public",
 		addr:            "198.51.100.20:4000",
 		natType:         nat.TypePublic,
+		natTrusted:      true,
 		publicReachable: true,
 		relayCapable:    true,
 	}
@@ -53,6 +54,7 @@ func TestSelectRelayPeerFallsBackToScoreWhenCapabilityMatches(t *testing.T) {
 		id:              "peer-a",
 		addr:            "198.51.100.30:4000",
 		natType:         nat.TypePublic,
+		natTrusted:      true,
 		publicReachable: true,
 		relayCapable:    true,
 	}
@@ -60,6 +62,7 @@ func TestSelectRelayPeerFallsBackToScoreWhenCapabilityMatches(t *testing.T) {
 		id:              "peer-b",
 		addr:            "203.0.113.30:4000",
 		natType:         nat.TypePublic,
+		natTrusted:      true,
 		publicReachable: true,
 		relayCapable:    true,
 	}
@@ -88,6 +91,7 @@ func TestSelectRelayPeersReturnsOrderedCandidates(t *testing.T) {
 		id:              "peer-a",
 		addr:            "198.51.100.10:4000",
 		natType:         nat.TypePublic,
+		natTrusted:      true,
 		publicReachable: true,
 		relayCapable:    true,
 	}
@@ -95,6 +99,7 @@ func TestSelectRelayPeersReturnsOrderedCandidates(t *testing.T) {
 		id:              "peer-b",
 		addr:            "198.51.100.11:4000",
 		natType:         nat.TypePublic,
+		natTrusted:      true,
 		publicReachable: true,
 		relayCapable:    true,
 	}
@@ -113,8 +118,8 @@ func TestSelectRelayPeersReturnsOrderedCandidates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("selectRelayPeers failed: %v", err)
 	}
-	if len(candidates) != 3 {
-		t.Fatalf("expected 3 relay candidates, got %d", len(candidates))
+	if len(candidates) != 2 {
+		t.Fatalf("expected 2 relay candidates, got %d", len(candidates))
 	}
 	if candidates[0] != "peer-b" || candidates[1] != "peer-a" {
 		t.Fatalf("unexpected relay candidate order: %v", candidates)
@@ -133,6 +138,7 @@ func TestSelectRelayPeersPrefersLessLoadedRelay(t *testing.T) {
 		id:              "peer-a",
 		addr:            "198.51.100.10:4000",
 		natType:         nat.TypePublic,
+		natTrusted:      true,
 		publicReachable: true,
 		relayCapable:    true,
 	}
@@ -140,6 +146,7 @@ func TestSelectRelayPeersPrefersLessLoadedRelay(t *testing.T) {
 		id:              "peer-b",
 		addr:            "198.51.100.11:4000",
 		natType:         nat.TypePublic,
+		natTrusted:      true,
 		publicReachable: true,
 		relayCapable:    true,
 	}
@@ -169,6 +176,7 @@ func TestSelectRelayPeersKeepsScoreAheadOfLoad(t *testing.T) {
 		id:              "trusted-relay",
 		addr:            "198.51.100.10:4000",
 		natType:         nat.TypePublic,
+		natTrusted:      true,
 		publicReachable: true,
 		relayCapable:    true,
 	}
@@ -176,6 +184,7 @@ func TestSelectRelayPeersKeepsScoreAheadOfLoad(t *testing.T) {
 		id:              "risky-relay",
 		addr:            "198.51.100.11:4000",
 		natType:         nat.TypePublic,
+		natTrusted:      true,
 		publicReachable: true,
 		relayCapable:    true,
 	}
@@ -240,6 +249,7 @@ func TestPeerAnnounceCannotUpgradeRelayCapabilities(t *testing.T) {
 		addr:            "198.51.100.20:4000",
 		direct:          true,
 		natType:         nat.TypePublic,
+		natTrusted:      true,
 		publicReachable: true,
 		relayCapable:    true,
 	}
@@ -251,5 +261,25 @@ func TestPeerAnnounceCannotUpgradeRelayCapabilities(t *testing.T) {
 	}
 	if selected != "honest" {
 		t.Fatalf("expected honest relay-capable peer to be selected, got %s", selected)
+	}
+}
+
+func TestSelectRelayPeersRejectsUntrustedRelayCapablePeer(t *testing.T) {
+	node, err := NewNode("mesh-relay-untrusted", nil, DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+	node.peers["untrusted"] = &peerConn{id: "untrusted"}
+	node.knownPeers["untrusted"] = knownPeer{
+		id:              "untrusted",
+		addr:            "198.51.100.99:4000",
+		natType:         nat.TypePublic,
+		publicReachable: true,
+		relayCapable:    true,
+	}
+	node.scoring.SetApplicationScore("untrusted", 100)
+
+	if _, err := node.selectRelayPeers("target-peer"); err == nil {
+		t.Fatal("expected untrusted relay-capable peer to be rejected")
 	}
 }

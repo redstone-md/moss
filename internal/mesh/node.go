@@ -2469,12 +2469,12 @@ func (n *Node) handleRelayRequest(peer *peerConn, env gossip.Envelope) {
 			established:  true,
 		}
 		n.mu.Unlock()
-		n.sendEnvelope(peer, gossip.Envelope{
+		n.sendEnvelope(peer, n.signRelayAcceptEnvelope(gossip.Envelope{
 			Type:         gossip.TypeRelayAccept,
 			RelaySession: env.RelaySession,
 			RelaySource:  env.RelayTarget,
 			RelayTarget:  env.RelaySource,
-		})
+		}))
 		return
 	}
 	n.mu.RLock()
@@ -2498,6 +2498,12 @@ func (n *Node) handleRelayAccept(peer *peerConn, env gossip.Envelope) {
 		return
 	}
 	if env.RelayTarget == n.localPeerID() {
+		if peer == nil {
+			return
+		}
+		if !verifyRelayAcceptEnvelope(env) {
+			return
+		}
 		n.mu.Lock()
 		session, ok := n.relayLocals[env.RelaySession]
 		if ok && session.viaPeerID == peer.id && session.remotePeerID == env.RelaySource {
@@ -3625,6 +3631,9 @@ func (n *Node) selectRelayPeers(targetPeerID string) ([]string, error) {
 		if peerID == targetPeerID {
 			continue
 		}
+		if !n.isTrustedRelayCandidateLocked(peerID) {
+			continue
+		}
 		candidates = append(candidates, peerID)
 	}
 	if len(candidates) == 0 {
@@ -3649,6 +3658,11 @@ func (n *Node) selectRelayPeers(targetPeerID string) ([]string, error) {
 		return candidates[i] < candidates[j]
 	})
 	return candidates, nil
+}
+
+func (n *Node) isTrustedRelayCandidateLocked(peerID string) bool {
+	info, ok := n.knownPeers[peerID]
+	return ok && info.natTrusted && info.relayCapable && info.publicReachable
 }
 
 func (n *Node) relaySessionCountViaLocked(peerID string) int {
