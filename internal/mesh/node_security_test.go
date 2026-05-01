@@ -2,9 +2,11 @@ package mesh
 
 import (
 	"testing"
+	"time"
 
 	mcrypto "moss/internal/crypto"
 	"moss/internal/gossip"
+	"moss/internal/nat"
 )
 
 func TestHandleRelayRequestRejectsSpoofedLocalRelaySource(t *testing.T) {
@@ -68,5 +70,47 @@ func TestVerifyRelayRequestAllowsForwardedSender(t *testing.T) {
 	env.RelaySource = "spoofed-peer-id"
 	if verifyRelayRequestEnvelope(env) {
 		t.Fatalf("expected tampered relay source to be rejected")
+	}
+}
+
+func TestHandleRelayDataRejectsUnroutedPayloadBeforeOverload(t *testing.T) {
+	identity, err := mcrypto.NewIdentity()
+	if err != nil {
+		t.Fatalf("new identity: %v", err)
+	}
+	const targetPeerID = "target-peer-id"
+	node := &Node{
+		identity:      identity,
+		config:        DefaultConfig(),
+		peers:         map[string]*peerConn{targetPeerID: {id: targetPeerID}},
+		relayRoutes:   map[string]relayRoute{},
+		relayBuckets:  map[string]*nat.TokenBucket{},
+		relaySessions: nat.NewSessionManager(1, time.Minute),
+		dispatchCh:    make(chan any, 1),
+	}
+	peer := &peerConn{id: "attacker-peer-id"}
+	env := gossip.Envelope{
+		Type:         gossip.TypeRelayData,
+		RelaySession: "forged-session",
+		RelaySource:  peer.id,
+		RelayTarget:  targetPeerID,
+		Payload:      make([]byte, 2048),
+	}
+
+	node.handleRelayData(peer, env)
+
+	node.mu.RLock()
+	overloadedUntil := node.overloadedUntil
+	bucketCount := len(node.relayBuckets)
+	routeCount := len(node.relayRoutes)
+	node.mu.RUnlock()
+	if !overloadedUntil.IsZero() {
+		t.Fatalf("expected forged relay data to be rejected before overload, got %v", overloadedUntil)
+	}
+	if bucketCount != 0 {
+		t.Fatalf("expected forged relay data to avoid relay bucket accounting, got %d buckets", bucketCount)
+	}
+	if routeCount != 0 || node.relaySessions.Count() != 0 {
+		t.Fatalf("expected no relay route/session state, got routes=%d sessions=%d", routeCount, node.relaySessions.Count())
 	}
 }
