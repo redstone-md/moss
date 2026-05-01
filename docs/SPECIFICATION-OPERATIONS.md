@@ -57,7 +57,11 @@ moss/
 │   │   ├── noise.go             # Noise XX/IK handshake (flynn/noise)
 │   │   ├── conn.go              # Encrypted connection wrapper (net.Conn)
 │   │   ├── multiplexer.go       # Stream multiplexing over single connection
-│   │   └── listener.go          # UDP/TCP listener with accept logic
+│   │   ├── listener.go          # TCP listener with accept logic
+│   │   ├── udp.go               # UDP listener public surface and shared state
+│   │   ├── udp_handshake.go     # UDP Noise handshake packet flow
+│   │   ├── udp_observe.go       # UDP/STUN endpoint observation helpers
+│   │   └── udp_session.go       # UDP carrier/session lifecycle
 │   ├── nat/
 │   │   ├── profiler.go          # NAT type classification
 │   │   ├── upnp.go              # UPnP IGD port mapping
@@ -71,7 +75,17 @@ moss/
 │   │   ├── messages.go          # GRAFT, PRUNE, IHAVE, IWANT, IDONTWANT
 │   │   └── cache.go             # Message ID cache (deduplication)
 │   ├── mesh/
-│   │   ├── node.go              # Core Moss node orchestrator
+│   │   ├── node_types.go        # Core Node state and private helper structs
+│   │   ├── node_lifecycle.go    # construction, start/stop, public Node API
+│   │   ├── node_accept.go       # inbound/outbound peer connection lifecycle
+│   │   ├── node_advertise.go    # local address and announce-port selection
+│   │   ├── node_envelope.go     # gossip envelope delivery and flood publish
+│   │   ├── node_gossip_control.go # IHAVE/IWANT/IDONTWANT control flow
+│   │   ├── node_peer_*.go       # peer announcement, discovery, topic mesh upkeep
+│   │   ├── node_relay_*.go      # relay API, selection, and relay control flow
+│   │   ├── node_nat_control.go  # binding, reachability, and hole-punch messages
+│   │   ├── node_reachability.go # external address and reachability probes
+│   │   ├── node_maintenance.go  # latency probing, pruning, and housekeeping
 │   │   ├── config.go            # JSON config parsing + defaults
 │   │   └── events.go            # Event bus (peer join/leave, supernode, etc.)
 │   └── crypto/
@@ -93,6 +107,18 @@ moss/
 ├── go.sum
 └── README.md
 ```
+
+### 6.1 Package Slicing Rules
+
+Go package boundaries should follow encapsulation boundaries, not individual files. `internal/mesh` intentionally remains a single package because the `Node` coordinator owns tightly coupled peer, relay, NAT, scoring, and pubsub state. Splitting these files into child packages would force private state to become exported or introduce broad interfaces that only exist to cross directory boundaries.
+
+Preferred slicing inside `internal/mesh`:
+
+- keep `node_types.go` as the private state map for `Node` and closely related structs
+- keep public lifecycle and API methods in `node_lifecycle.go` and `node_relay_api.go`
+- group private behavior by capability using `node_<capability>.go`
+- keep integration tests grouped by scenario, not by implementation file
+- create a new package only when the code can expose a small stable API and stop depending on `Node` internals
 
 ---
 
