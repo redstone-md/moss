@@ -26,6 +26,7 @@ const (
 )
 
 var errUDPAlreadyConnected = errors.New("udp peer is already connected")
+var errUDPObserveRequiresSession = errors.New("udp observe requires established session")
 
 const maxPendingUDPServerHandshakes = 1024
 
@@ -201,6 +202,9 @@ func (l *UDPListener) ObserveContext(ctx context.Context, addr string) (string, 
 	remote, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil {
 		return "", err
+	}
+	if !l.hasSession(remote) {
+		return "", errUDPObserveRequiresSession
 	}
 	token, err := newObserveToken()
 	if err != nil {
@@ -561,10 +565,19 @@ func (l *UDPListener) handleObserveReq(remote *net.UDPAddr, payload []byte) {
 	if len(payload) != 16 {
 		return
 	}
+	if !l.hasSession(remote) {
+		return
+	}
 	response := make([]byte, 16+len(remote.String()))
 	copy(response, payload)
 	copy(response[16:], remote.String())
 	_ = l.writeDatagram(remote, udpMessageObserveResp, response)
+}
+
+func (l *UDPListener) hasSession(remote *net.UDPAddr) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.sessions[remote.String()] != nil
 }
 
 func (l *UDPListener) handleObserveResp(payload []byte) {
