@@ -3,7 +3,10 @@ package transport
 import (
 	"errors"
 	"net"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -12,7 +15,7 @@ type Listener struct {
 }
 
 func Listen(port int) (*Listener, int, error) {
-	addr := "0.0.0.0:" + strconv.Itoa(port)
+	addr := listenAddr(port)
 	ln, err := net.Listen("tcp4", addr)
 	if err != nil {
 		return nil, 0, err
@@ -63,4 +66,27 @@ func ListenPair(port int, cfg HandshakeConfig) (*Listener, *UDPListener, int, er
 		lastErr = errors.New("failed to bind tcp/udp listener pair")
 	}
 	return nil, nil, 0, lastErr
+}
+
+func listenHost() string {
+	if host := os.Getenv("MOSS_LISTEN_HOST"); host != "" {
+		return host
+	}
+	if RunningGoTest() {
+		return "127.0.0.1"
+	}
+	return "0.0.0.0"
+}
+
+func listenAddr(port int) string {
+	return net.JoinHostPort(listenHost(), strconv.Itoa(port))
+}
+
+func listenUDPAddr(port int) (*net.UDPAddr, error) {
+	return net.ResolveUDPAddr("udp4", listenAddr(port))
+}
+
+func RunningGoTest() bool {
+	name := strings.ToLower(filepath.Base(os.Args[0]))
+	return strings.HasSuffix(name, ".test") || strings.HasSuffix(name, ".test.exe")
 }

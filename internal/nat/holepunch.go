@@ -2,6 +2,7 @@ package nat
 
 import (
 	"net"
+	"net/netip"
 	"strconv"
 )
 
@@ -47,7 +48,7 @@ func predictedEndpoints(base string, observations []string, attempts int) []stri
 		return repeatEndpoint(base, attempts)
 	}
 	basePort, err := strconv.Atoi(port)
-	if err != nil {
+	if err != nil || !validPort(basePort) || !predictableHost(host, observations) {
 		return repeatEndpoint(base, attempts)
 	}
 	step := predictPortStep(observations)
@@ -57,7 +58,11 @@ func predictedEndpoints(base string, observations []string, attempts int) []stri
 	out := make([]string, 0, attempts)
 	seen := make(map[string]struct{}, attempts)
 	for i := 0; i < attempts; i++ {
-		candidate := net.JoinHostPort(host, strconv.Itoa(basePort+(step*i)))
+		candidatePort := basePort + (step * i)
+		if !validPort(candidatePort) {
+			continue
+		}
+		candidate := net.JoinHostPort(host, strconv.Itoa(candidatePort))
 		if _, ok := seen[candidate]; ok {
 			continue
 		}
@@ -68,6 +73,44 @@ func predictedEndpoints(base string, observations []string, attempts int) []stri
 		out = append(out, out[len(out)-1])
 	}
 	return out
+}
+
+func predictableHost(host string, observations []string) bool {
+	base, ok := publicHost(host)
+	if !ok {
+		return false
+	}
+	for _, observed := range observations {
+		observedHost, _, err := net.SplitHostPort(observed)
+		if err != nil {
+			continue
+		}
+		current, ok := publicHost(observedHost)
+		if ok && current == base {
+			return true
+		}
+	}
+	return false
+}
+
+func publicHost(host string) (netip.Addr, bool) {
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	addr = addr.Unmap()
+	if !addr.IsGlobalUnicast() || addr.IsPrivate() || addr.IsLoopback() || addr.IsLinkLocalUnicast() || isCarrierGradeAddr(addr) {
+		return netip.Addr{}, false
+	}
+	return addr, true
+}
+
+func validPort(port int) bool {
+	return port > 0 && port <= 65535
+}
+
+func isCarrierGradeAddr(addr netip.Addr) bool {
+	return addr.Is4() && addr.Compare(netip.MustParseAddr("100.64.0.0")) >= 0 && addr.Compare(netip.MustParseAddr("100.127.255.255")) <= 0
 }
 
 func predictPortStep(observations []string) int {

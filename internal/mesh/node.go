@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/netip"
@@ -63,6 +64,8 @@ type Node struct {
 	directProbes     map[string]time.Time
 	peerDials        map[string]time.Time
 	bootstrapDials   map[string]time.Time
+	lanBeaconBuckets map[string]*lanBeaconRateBucket
+	lanBeaconGlobal  *nat.TokenBucket
 	meshDeliveries   map[string]*meshDeliveryObservation
 	overloadedUntil  time.Time
 	bindingHistory   []string
@@ -70,6 +73,7 @@ type Node struct {
 	trackerSeeds     map[string]time.Time
 	bindingWait      map[string]chan string
 	reachabilityWait map[string]chan bool
+	holePunchWait    map[string]holePunchRequest
 	scoringMu        sync.RWMutex
 	scoringCB        func(peerID [32]byte, baseScore float64) float64
 	messageCB        MessageCallback
@@ -86,6 +90,7 @@ type peerConn struct {
 	bootstrap   bool
 	connectedAt time.Time
 	lastRTT     time.Duration
+	meshBlocked time.Time
 	pingSentAt  time.Time
 	pingPending string
 	pingMisses  int
@@ -114,12 +119,27 @@ type relayRoute struct {
 	target    string
 }
 
+func (r relayRoute) allows(source, target string) bool {
+	return (r.initiator == source && r.target == target) ||
+		(r.initiator == target && r.target == source)
+}
+
 type relayLocalSession struct {
 	sessionID    string
 	viaPeerID    string
 	remotePeerID string
 	established  bool
 	wait         chan struct{}
+}
+
+const (
+	maxInboundControlMessageIDs  = 256
+	maxSuppressionEntriesPerPeer = 1024
+)
+
+type holePunchRequest struct {
+	targetPeerID string
+	relayPeerID  string
 }
 
 type meshDeliveryObservation struct {
@@ -129,17 +149,22 @@ type meshDeliveryObservation struct {
 }
 
 type knownPeer struct {
-	id              string
-	addr            string
-	direct          bool
-	bootstrap       bool
-	lan             bool
-	natType         nat.Type
-	publicReachable bool
-	relayCapable    bool
-	lastSeen        time.Time
-	observations    []string
-	noiseStatic     []byte
+	id                     string
+	addr                   string
+	direct                 bool
+	verified               bool
+	bootstrap              bool
+	lan                    bool
+	natType                nat.Type
+	natTrusted             bool
+	publicReachable        bool
+	relayCapable           bool
+	lastSeen               time.Time
+	observations           []string
+	predictionObservations []string
+	noiseStatic            []byte
+	signature              []byte
+	thirdPartyDialable     bool
 }
 
 type meshInfo struct {
@@ -155,6 +180,13 @@ type meshInfo struct {
 	PublicKey      string   `json:"public_key"`
 	SupernodeReady bool     `json:"supernode_ready"`
 }
+
+const (
+	peerLatencyPruneThreshold = 2 * time.Second
+	peerPingTimeout           = 5 * time.Second
+	peerDisconnectMissLimit   = 6
+	peerProbeIntervalFloor    = 30 * time.Second
+)
 
 func NewNode(meshID string, psk []byte, cfg Config) (*Node, error) {
 	return NewNodeWithIdentity(meshID, psk, cfg, nil)
@@ -200,12 +232,15 @@ func NewNodeWithIdentity(meshID string, psk []byte, cfg Config, identity *mcrypt
 		directProbes:     make(map[string]time.Time),
 		peerDials:        make(map[string]time.Time),
 		bootstrapDials:   make(map[string]time.Time),
+		lanBeaconBuckets: make(map[string]*lanBeaconRateBucket),
+		lanBeaconGlobal:  nat.NewTokenBucket(lanBeaconGlobalBurst, lanBeaconGlobalRate),
 		meshDeliveries:   make(map[string]*meshDeliveryObservation),
 		bindingHistory:   make([]string, 0, 4),
 		knownPeers:       make(map[string]knownPeer),
 		trackerSeeds:     make(map[string]time.Time),
 		bindingWait:      make(map[string]chan string),
 		reachabilityWait: make(map[string]chan bool),
+		holePunchWait:    make(map[string]holePunchRequest),
 		dispatchSem:      make(chan struct{}, 500),
 		dispatchCh:       make(chan any, 1024),
 	}
@@ -237,7 +272,7 @@ func (n *Node) Start() int32 {
 	n.natProfile.Store(n.profiler.Detect(ln.Addr().String()))
 	n.portMapper = nil
 	wgCount := 5
-	if n.config.LANDiscoveryEnabled {
+	if n.config.LANDiscoveryEnabled && !transport.RunningGoTest() {
 		wgCount++
 	}
 	n.wg.Add(wgCount)
@@ -246,7 +281,7 @@ func (n *Node) Start() int32 {
 	go n.dispatchLoop(ctx)
 	go n.bootstrapLoop(ctx)
 	go n.maintenanceLoop(ctx)
-	if n.config.LANDiscoveryEnabled {
+	if n.config.LANDiscoveryEnabled && !transport.RunningGoTest() {
 		go n.lanDiscoveryLoop(ctx)
 	}
 	go n.probePortMapping(ctx, ln.Addr().String(), port)
@@ -413,6 +448,10 @@ func (n *Node) ListenPort() int {
 	return n.listenPort
 }
 
+func (n *Node) MaxMessageSizeBytes() int {
+	return n.config.Security.MaxMessageSizeBytes
+}
+
 func (n *Node) Connect(addr string) int32 {
 	n.mu.RLock()
 	started := n.started
@@ -451,12 +490,12 @@ func (n *Node) OpenRelaySession(viaPeerID, targetPeerID string, timeout time.Dur
 		wait:         wait,
 	}
 	n.mu.Unlock()
-	n.sendEnvelope(peer, gossip.Envelope{
+	n.sendEnvelope(peer, n.signRelayRequestEnvelope(gossip.Envelope{
 		Type:         gossip.TypeRelayRequest,
 		RelaySession: sessionID,
 		RelaySource:  n.localPeerID(),
 		RelayTarget:  targetPeerID,
-	})
+	}))
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
@@ -578,6 +617,12 @@ func (n *Node) acceptUDPLoop(ctx context.Context) {
 
 func (n *Node) handleInbound(ctx context.Context, conn net.Conn) {
 	defer n.wg.Done()
+	defer func() {
+		if r := recover(); r != nil {
+			_ = conn.Close()
+			n.enqueueEvent(EventTrackerFailure, map[string]string{"error": fmt.Sprintf("inbound handshake panic: %v", r)})
+		}
+	}()
 	session, err := transport.ServerHandshake(withTimeout(ctx, n.config.HandshakeTimeout()), conn, transport.HandshakeConfig{
 		MeshID:   n.meshID,
 		PSK:      n.psk,
@@ -676,7 +721,7 @@ func (n *Node) kickBootstrapPeers(ctx context.Context, peers []string) {
 		go func(addr string) {
 			attemptCtx, cancel := context.WithTimeout(ctx, n.config.HandshakeTimeout())
 			defer cancel()
-			_ = n.connectBootstrapPeer(attemptCtx, addr)
+			_ = n.connectBootstrapSeed(attemptCtx, addr)
 		}(peer)
 	}
 }
@@ -788,17 +833,20 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 	}
 	n.peers[peerID] = peer
 	n.knownPeers[peerID] = knownPeer{
-		id:              peerID,
-		addr:            knownAddr,
-		direct:          true,
-		bootstrap:       current.bootstrap || bootstrapSeed,
-		lan:             current.lan,
-		natType:         current.natType,
-		publicReachable: current.publicReachable,
-		relayCapable:    current.relayCapable,
-		lastSeen:        time.Now(),
-		observations:    appendObservation(current.observations, knownAddr),
-		noiseStatic:     append([]byte(nil), remoteStatic[:]...),
+		id:                     peerID,
+		addr:                   knownAddr,
+		direct:                 true,
+		verified:               true,
+		bootstrap:              current.bootstrap || bootstrapSeed,
+		lan:                    current.lan,
+		natType:                current.natType,
+		natTrusted:             current.natTrusted,
+		publicReachable:        current.publicReachable,
+		relayCapable:           current.relayCapable,
+		lastSeen:               time.Now(),
+		observations:           appendObservation(current.observations, knownAddr),
+		predictionObservations: appendObservation(current.predictionObservations, knownAddr),
+		noiseStatic:            append([]byte(nil), remoteStatic[:]...),
 	}
 	n.scoring.Ensure(peerID)
 	n.mu.Unlock()
@@ -806,6 +854,8 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 		_ = replacedPeer.session.Close()
 	}
 	n.recalculateIPColocationPenalties()
+	n.wg.Add(1)
+	go n.readPeer(peer)
 	n.sendKnownPeerSnapshot(peer)
 	n.broadcastPeerAnnouncement(n.localKnownPeer(), peerID)
 	go n.refreshExternalAddress(time.Now().Add(n.config.HandshakeTimeout()))
@@ -820,8 +870,6 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 	if replacedPeer == nil {
 		n.enqueueEvent(EventPeerJoined, map[string]string{"peer": peerID, "addr": addr})
 	}
-	n.wg.Add(1)
-	go n.readPeer(peer)
 }
 
 func (n *Node) selectOverflowPrunePeerLocked() *peerConn {
@@ -891,14 +939,14 @@ func (n *Node) shouldRetainPeerLocked(peer *peerConn) bool {
 	if peer == nil {
 		return false
 	}
-	if peer.bootstrap {
-		return true
-	}
 	if time.Since(peer.connectedAt) < 30*time.Second {
 		return true
 	}
+	if peer.pingMisses > 0 || peer.lastRTT > 2*time.Second || n.peerScore(peer.id) < 0 {
+		return false
+	}
 	info := n.knownPeers[peer.id]
-	return info.bootstrap || info.relayCapable || info.publicReachable
+	return peer.bootstrap || info.bootstrap
 }
 
 func shouldReplaceDuplicatePeer(localPeerID, remotePeerID string, existingOutbound, newOutbound bool) bool {
@@ -934,9 +982,11 @@ func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 	switch env.Type {
 	case gossip.TypeGraft:
 		n.pubsub.SetPeerSubscription(peer.id, env.Channel, true)
-		if n.pubsub.IsLocalSubscriber(env.Channel) {
+		if n.pubsub.IsLocalSubscriber(env.Channel) && n.eligibleForMeshCandidate(peer.id) {
 			n.pubsub.SetMeshPeer(env.Channel, peer.id, true)
 			n.sendRecentIHave(peer, env.Channel)
+		} else if peer != nil {
+			n.sendEnvelope(peer, gossip.Envelope{Type: gossip.TypePrune, Channel: env.Channel})
 		}
 	case gossip.TypePrune:
 		n.pubsub.SetMeshPeer(env.Channel, peer.id, false)
@@ -981,6 +1031,10 @@ func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 			n.scoring.PenalizeInvalid(peer.id)
 			return
 		}
+		if len(env.Payload) > n.config.Security.MaxMessageSizeBytes {
+			n.scoring.PenalizeInvalid(peer.id)
+			return
+		}
 		n.observeMeshDelivery(env.Channel, env.MessageID, peer.id)
 		if !n.cache.StoreIfNew(env) {
 			return
@@ -1018,20 +1072,25 @@ func (n *Node) broadcastEnvelope(env gossip.Envelope, excludePeerID string) bool
 		return false
 	}
 	return n.sendToPeers(filterPeerIDs(targets, func(peerID string) bool {
-		return peerID != excludePeerID && !n.isPeerBelowPublishThreshold(peerID)
+		return peerID != excludePeerID && n.canGossipWithPeer(peerID)
 	}), env)
 }
 
 func (n *Node) broadcastFloodPublish(env gossip.Envelope, excludePeerID string) bool {
-	n.mu.RLock()
-	targets := make([]string, 0, len(n.peers))
-	for peerID := range n.peers {
-		if peerID == excludePeerID || n.isPeerBelowPublishThreshold(peerID) {
+	meshPeers := n.pubsub.MeshPeers(env.Channel)
+	nonMeshSubscribers := n.pubsub.NonMeshSubscribers(env.Channel)
+	targets := make([]string, 0, len(meshPeers)+len(nonMeshSubscribers))
+	seen := make(map[string]struct{}, len(meshPeers)+len(nonMeshSubscribers))
+	for _, peerID := range append(meshPeers, nonMeshSubscribers...) {
+		if peerID == excludePeerID || !n.canGossipWithPeer(peerID) {
 			continue
 		}
+		if _, ok := seen[peerID]; ok {
+			continue
+		}
+		seen[peerID] = struct{}{}
 		targets = append(targets, peerID)
 	}
-	n.mu.RUnlock()
 	if len(targets) == 0 {
 		return false
 	}
@@ -1048,15 +1107,24 @@ func filterPeerIDs(peerIDs []string, keep func(string) bool) []string {
 	return filtered
 }
 
-func (n *Node) sendEnvelope(peer *peerConn, env gossip.Envelope) {
+func (n *Node) sendEnvelope(peer *peerConn, env gossip.Envelope) bool {
+	if peer == nil || peer.session == nil {
+		return false
+	}
+	if n.isPeerGraylisted(peer.id) {
+		return false
+	}
 	payload, err := json.Marshal(env)
 	if err != nil {
-		return
+		return false
 	}
-	_ = peer.session.WritePacket(payload)
+	return peer.session.WritePacket(payload) == nil
 }
 
 func (n *Node) sendKnownPeerSnapshot(peer *peerConn) {
+	if peer == nil || !n.canSharePeerExchangeWithPeer(peer.id) {
+		return
+	}
 	n.sendEnvelope(peer, n.peerAnnouncementEnvelope(n.localKnownPeer()))
 
 	n.mu.RLock()
@@ -1085,12 +1153,15 @@ func (n *Node) announceLocalSubscription(channel string) {
 	}
 	n.mu.RUnlock()
 	for _, peer := range peers {
+		if !n.canGossipWithPeer(peer.id) {
+			continue
+		}
 		n.sendEnvelope(peer, gossip.Envelope{Type: gossip.TypeGraft, Channel: channel})
 	}
 }
 
 func (n *Node) announceLocalSubscriptionsToPeer(peer *peerConn) {
-	if peer == nil {
+	if peer == nil || !n.canGossipWithPeer(peer.id) {
 		return
 	}
 	for _, channel := range n.pubsub.SnapshotLocal() {
@@ -1098,6 +1169,21 @@ func (n *Node) announceLocalSubscriptionsToPeer(peer *peerConn) {
 			continue
 		}
 		n.sendEnvelope(peer, gossip.Envelope{Type: gossip.TypeGraft, Channel: channel})
+	}
+}
+
+func (n *Node) refreshLocalSubscriptions() {
+	n.mu.RLock()
+	peers := make([]*peerConn, 0, len(n.peers))
+	for _, peer := range n.peers {
+		peers = append(peers, peer)
+	}
+	n.mu.RUnlock()
+	if len(peers) == 0 {
+		return
+	}
+	for _, peer := range peers {
+		n.announceLocalSubscriptionsToPeer(peer)
 	}
 }
 
@@ -1109,7 +1195,7 @@ func (n *Node) broadcastPeerAnnouncement(info knownPeer, excludePeerID string) {
 }
 
 func (n *Node) peerAnnouncementEnvelope(info knownPeer) gossip.Envelope {
-	return gossip.Envelope{
+	env := gossip.Envelope{
 		Type:                   gossip.TypePeerAnnounce,
 		AdvertisedPeerID:       info.id,
 		AdvertisedAddr:         info.addr,
@@ -1117,6 +1203,11 @@ func (n *Node) peerAnnouncementEnvelope(info knownPeer) gossip.Envelope {
 		AdvertisedReachable:    info.publicReachable,
 		AdvertisedRelayCapable: info.relayCapable,
 	}
+	if info.id == n.localPeerID() {
+		return n.signPeerAnnouncementEnvelope(env)
+	}
+	env.AdvertisedSignature = append([]byte(nil), info.signature...)
+	return env
 }
 
 func (n *Node) localKnownPeer() knownPeer {
@@ -1125,9 +1216,11 @@ func (n *Node) localKnownPeer() knownPeer {
 		id:              n.localPeerID(),
 		addr:            n.advertisedListenAddr(),
 		direct:          true,
+		verified:        true,
 		bootstrap:       false,
 		lan:             false,
 		natType:         profile.Type,
+		natTrusted:      true,
 		publicReachable: profile.PublicReachable,
 		relayCapable:    n.supernodeReady(profile),
 		lastSeen:        time.Now(),
@@ -1135,33 +1228,73 @@ func (n *Node) localKnownPeer() knownPeer {
 }
 
 func (n *Node) handlePeerAnnounce(peer *peerConn, env gossip.Envelope) {
-	n.handleKnownPeerEnvelope(peer, env, gossip.TypePeerAnnounce)
+	verified := directSenderMatches(peer, env) && verifyPeerAnnouncementEnvelope(env)
+	n.handleKnownPeerEnvelope(peer, env, gossip.TypePeerAnnounce, verified)
 }
 
 func (n *Node) handleSupernodeStatus(peer *peerConn, env gossip.Envelope, relayCapable bool) {
 	env.AdvertisedRelayCapable = relayCapable
-	if !verifySupernodeEnvelope(env) {
+	if !verifySupernodeStatusEnvelope(env) {
 		if peer != nil {
 			n.scoring.PenalizeInvalid(peer.id)
 		}
 		return
 	}
-	n.handleKnownPeerEnvelope(peer, env, env.Type)
+	n.handleKnownPeerEnvelope(peer, env, env.Type, directSenderMatches(peer, env))
 }
 
-func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forwardType gossip.EnvelopeType) {
+func directSenderMatches(peer *peerConn, env gossip.Envelope) bool {
+	return peer != nil && env.AdvertisedPeerID == peer.id
+}
+
+func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forwardType gossip.EnvelopeType, verifiedEnvelope bool) {
 	if env.AdvertisedPeerID == "" || env.AdvertisedAddr == "" || env.AdvertisedPeerID == n.localPeerID() {
 		return
 	}
+	trustedSelfAnnouncement := peer != nil && env.AdvertisedPeerID == peer.id
+	validSignedAnnouncement := false
+	if forwardType == gossip.TypePeerAnnounce {
+		validSignedAnnouncement = verifyPeerAnnouncementEnvelope(env)
+		if !trustedSelfAnnouncement && !verifiedEnvelope && !validSignedAnnouncement {
+			return
+		}
+	}
+	trustCapabilities := verifySupernodeStatusEnvelope(env)
 	changed := false
 	n.mu.Lock()
 	current, ok := n.knownPeers[env.AdvertisedPeerID]
 	addr := preferredKnownPeerAddr(current, env.AdvertisedAddr)
-	if current.direct && current.addr != "" {
+	liveSessionAddr := ""
+	if peer != nil && env.AdvertisedPeerID == peer.id {
+		liveSessionAddr = peer.addr
+	}
+	if shouldFreezeDirectKnownPeerAddr(current, env.AdvertisedAddr, liveSessionAddr) {
 		addr = current.addr
 	}
 	lan := current.lan && knownPeerAddrRank(addr) <= 1
-	if !ok || current.addr != addr || !current.direct || current.natType != nat.Type(env.AdvertisedNATType) || current.publicReachable != env.AdvertisedReachable || current.relayCapable != env.AdvertisedRelayCapable {
+	verified := current.verified || verifiedEnvelope || (peer != nil && env.AdvertisedPeerID == peer.id)
+	thirdPartyDialable := current.thirdPartyDialable && current.addr == addr
+	if verified {
+		thirdPartyDialable = true
+	} else if validSignedAnnouncement && !trustedSelfAnnouncement && env.AdvertisedAddr == addr {
+		thirdPartyDialable = thirdPartyAnnouncementDialable(peer, env.AdvertisedAddr)
+	}
+	natType := current.natType
+	natTrusted := current.natTrusted
+	publicReachable := current.publicReachable
+	relayCapable := current.relayCapable
+	if trustCapabilities {
+		natType = nat.Type(env.AdvertisedNATType)
+		natTrusted = true
+		publicReachable = env.AdvertisedReachable
+		relayCapable = env.AdvertisedRelayCapable
+	}
+	signature := knownPeerSignature(current, addr, env, verifiedEnvelope || validSignedAnnouncement)
+	predictionObservations := current.predictionObservations
+	if peer != nil && env.AdvertisedPeerID == peer.id {
+		predictionObservations = appendObservation(predictionObservations, liveSessionAddr)
+	}
+	if !ok || current.addr != addr || !current.direct || current.verified != verified || current.thirdPartyDialable != thirdPartyDialable || current.natType != natType || current.natTrusted != natTrusted || current.publicReachable != publicReachable || current.relayCapable != relayCapable || !equalBytes(current.signature, signature) {
 		direct := false
 		if ok && current.direct {
 			direct = true
@@ -1171,31 +1304,93 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 			bootstrap = true
 		}
 		n.knownPeers[env.AdvertisedPeerID] = knownPeer{
-			id:              env.AdvertisedPeerID,
-			addr:            addr,
-			direct:          direct,
-			bootstrap:       bootstrap,
-			lan:             lan,
-			natType:         nat.Type(env.AdvertisedNATType),
-			publicReachable: env.AdvertisedReachable,
-			relayCapable:    env.AdvertisedRelayCapable,
-			lastSeen:        time.Now(),
-			observations:    appendObservation(current.observations, env.AdvertisedAddr),
-			noiseStatic:     append([]byte(nil), current.noiseStatic...),
+			id:                     env.AdvertisedPeerID,
+			addr:                   addr,
+			direct:                 direct,
+			verified:               verified,
+			bootstrap:              bootstrap,
+			lan:                    lan,
+			natType:                natType,
+			natTrusted:             natTrusted,
+			publicReachable:        publicReachable,
+			relayCapable:           relayCapable,
+			lastSeen:               time.Now(),
+			observations:           appendObservation(current.observations, env.AdvertisedAddr),
+			predictionObservations: predictionObservations,
+			noiseStatic:            append([]byte(nil), current.noiseStatic...),
+			signature:              signature,
+			thirdPartyDialable:     thirdPartyDialable,
 		}
 		changed = true
 	}
 	n.mu.Unlock()
 	if changed {
+		advertisedSignature := append([]byte(nil), env.AdvertisedSignature...)
+		if forwardType != gossip.TypePeerAnnounce && (nat.Type(env.AdvertisedNATType) != natType || env.AdvertisedReachable != publicReachable || env.AdvertisedRelayCapable != relayCapable) {
+			advertisedSignature = nil
+		}
 		n.broadcastToAll(gossip.Envelope{
 			Type:                   forwardType,
 			AdvertisedPeerID:       env.AdvertisedPeerID,
 			AdvertisedAddr:         env.AdvertisedAddr,
-			AdvertisedNATType:      env.AdvertisedNATType,
-			AdvertisedReachable:    env.AdvertisedReachable,
-			AdvertisedRelayCapable: env.AdvertisedRelayCapable,
+			AdvertisedNATType:      string(natType),
+			AdvertisedReachable:    publicReachable,
+			AdvertisedRelayCapable: relayCapable,
+			AdvertisedSignature:    advertisedSignature,
 		}, peer.id)
 	}
+}
+
+func knownPeerSignature(current knownPeer, addr string, env gossip.Envelope, valid bool) []byte {
+	if valid && env.AdvertisedAddr == addr {
+		return append([]byte(nil), env.AdvertisedSignature...)
+	}
+	if current.addr == addr {
+		return append([]byte(nil), current.signature...)
+	}
+	return nil
+}
+
+func thirdPartyAnnouncementDialable(peer *peerConn, addr string) bool {
+	if knownPeerAddrRank(addr) >= 3 {
+		return true
+	}
+	if peer == nil || peer.addr == "" {
+		return false
+	}
+	return sameHostPortHost(peer.addr, addr)
+}
+
+func sameHostPortHost(a, b string) bool {
+	aHost, _, err := net.SplitHostPort(a)
+	if err != nil {
+		return false
+	}
+	bHost, _, err := net.SplitHostPort(b)
+	if err != nil {
+		return false
+	}
+	aIP, err := netip.ParseAddr(aHost)
+	if err != nil {
+		return false
+	}
+	bIP, err := netip.ParseAddr(bHost)
+	if err != nil {
+		return false
+	}
+	return aIP.Unmap() == bIP.Unmap()
+}
+
+func equalBytes(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (n *Node) handleBindingRequest(peer *peerConn, env gossip.Envelope) {
@@ -1237,6 +1432,9 @@ func (n *Node) handleReachabilityRequest(peer *peerConn, env gossip.Envelope) {
 	if env.RequestID == "" || env.AdvertisedAddr == "" {
 		return
 	}
+	if peer == nil || !sameAdvertisedEndpoint(env.AdvertisedAddr, peer.addr) {
+		return
+	}
 	reachable := probeTCPAddress(env.AdvertisedAddr, minDuration(500*time.Millisecond, n.config.HandshakeTimeout()))
 	n.sendEnvelope(peer, gossip.Envelope{
 		Type:      gossip.TypeReachabilityResponse,
@@ -1261,15 +1459,40 @@ func (n *Node) handleReachabilityResponse(env gossip.Envelope) {
 	}
 }
 
+func normalizeHolePunchCoordAt(coordAtMillis int64, now time.Time) time.Time {
+	const (
+		offset  = 600 * time.Millisecond
+		maxLead = 2 * time.Second
+	)
+	if coordAtMillis == 0 {
+		return now.Add(offset)
+	}
+	coordAt := time.UnixMilli(coordAtMillis)
+	lead := coordAt.Sub(now)
+	if lead > maxLead {
+		return now.Add(offset)
+	}
+	return coordAt
+}
+
 func (n *Node) handleHolePunchCoord(peer *peerConn, env gossip.Envelope) {
 	if env.RelaySource == "" || env.RelayTarget == "" || env.AdvertisedAddr == "" {
 		return
 	}
-	coordAt := time.UnixMilli(env.CoordAt)
-	if env.CoordAt == 0 || time.Until(coordAt) < 300*time.Millisecond {
-		coordAt = time.Now().Add(600 * time.Millisecond)
-	}
+	coordAt := normalizeHolePunchCoordAt(env.CoordAt, time.Now())
 	if env.RelayTarget == n.localPeerID() {
+		if env.CoordStage == "reply" {
+			n.mu.Lock()
+			request, ok := n.holePunchWait[env.RequestID]
+			validReply := ok && request.targetPeerID == env.RelaySource && request.relayPeerID == peer.id
+			if validReply {
+				delete(n.holePunchWait, env.RequestID)
+			}
+			n.mu.Unlock()
+			if !validReply {
+				return
+			}
+		}
 		n.updateKnownPeer(env.RelaySource, env.AdvertisedAddr, false)
 		if env.CoordStage == "offer" {
 			replyAddr := n.freshObservedUDPAddr(peer.id, minDuration(750*time.Millisecond, n.config.HandshakeTimeout()/2))
@@ -1333,8 +1556,12 @@ func (n *Node) handleIHave(peer *peerConn, env gossip.Envelope) {
 	if env.Channel == "" || len(env.MessageIDs) == 0 || !n.pubsub.IsLocalSubscriber(env.Channel) {
 		return
 	}
-	missing := make([]string, 0, len(env.MessageIDs))
-	for _, id := range env.MessageIDs {
+	ids := env.MessageIDs
+	if len(ids) > maxInboundControlMessageIDs {
+		ids = ids[:maxInboundControlMessageIDs]
+	}
+	missing := make([]string, 0, len(ids))
+	for _, id := range ids {
 		if !n.cache.Seen(id) {
 			missing = append(missing, id)
 		}
@@ -1353,7 +1580,11 @@ func (n *Node) handleIWant(peer *peerConn, env gossip.Envelope) {
 	if peer == nil || !n.canGossipWithPeer(peer.id) {
 		return
 	}
-	for _, id := range env.MessageIDs {
+	ids := env.MessageIDs
+	if len(ids) > maxInboundControlMessageIDs {
+		ids = ids[:maxInboundControlMessageIDs]
+	}
+	for _, id := range ids {
 		if n.isSuppressed(peer.id, id) {
 			continue
 		}
@@ -1389,22 +1620,17 @@ func (n *Node) broadcastIDontWant(channel string, ids []string, excludePeerID st
 }
 
 func (n *Node) broadcastToAll(env gossip.Envelope, excludePeerID string) bool {
-	payload, err := json.Marshal(env)
-	if err != nil {
-		return false
-	}
 	n.mu.RLock()
-	defer n.mu.RUnlock()
-	sent := false
+	peerIDs := make([]string, 0, len(n.peers))
 	for peerID, peer := range n.peers {
-		if peerID == excludePeerID {
+		if peer == nil || peerID == excludePeerID {
 			continue
 		}
-		if err := peer.session.WritePacket(payload); err == nil {
-			sent = true
-		}
+		peerIDs = append(peerIDs, peerID)
 	}
-	return sent
+	n.mu.RUnlock()
+	targets := filterPeerIDs(peerIDs, n.canSharePeerExchangeWithPeer)
+	return n.sendToPeers(targets, env)
 }
 
 func (n *Node) broadcastToNonMesh(channel string, env gossip.Envelope, excludePeerID string) bool {
@@ -1432,6 +1658,12 @@ func (n *Node) broadcastToNonMesh(channel string, env gossip.Envelope, excludePe
 }
 
 func (n *Node) sendToPeers(peerIDs []string, env gossip.Envelope) bool {
+	if len(peerIDs) == 0 {
+		return false
+	}
+	peerIDs = filterPeerIDs(peerIDs, func(peerID string) bool {
+		return !n.isPeerGraylisted(peerID)
+	})
 	if len(peerIDs) == 0 {
 		return false
 	}
@@ -1487,6 +1719,19 @@ func (n *Node) removePeer(peerID string, session *transport.Session) {
 	delete(n.relayBuckets, peerID)
 	delete(n.directProbes, peerID)
 	delete(n.peerDials, peerID)
+	for sessionID, relaySession := range n.relayLocals {
+		if relaySession.viaPeerID == peerID || relaySession.remotePeerID == peerID {
+			delete(n.relayLocals, sessionID)
+			delete(n.directProbes, relaySession.remotePeerID)
+		}
+	}
+	for sessionID, route := range n.relayRoutes {
+		if route.initiator != peerID && route.target != peerID {
+			continue
+		}
+		delete(n.relayRoutes, sessionID)
+		n.relaySessions.Release(sessionID)
+	}
 	if info, ok := n.knownPeers[peerID]; ok {
 		info.direct = false
 		info.lastSeen = time.Now()
@@ -1501,7 +1746,13 @@ func (n *Node) removePeer(peerID string, session *transport.Session) {
 }
 
 func (n *Node) observeMeshDelivery(channel, messageID, peerID string) {
-	if channel == "" || messageID == "" {
+	if channel == "" || messageID == "" || peerID == "" {
+		return
+	}
+	if !n.pubsub.InMesh(channel, peerID) {
+		return
+	}
+	if n.isPeerBelowBaseline(peerID) {
 		return
 	}
 	expected := make(map[string]struct{})
@@ -1510,9 +1761,6 @@ func (n *Node) observeMeshDelivery(channel, messageID, peerID string) {
 			continue
 		}
 		expected[meshPeerID] = struct{}{}
-	}
-	if len(expected) == 0 {
-		return
 	}
 	due := time.Now().Add(n.config.Heartbeat())
 	if n.config.Heartbeat() <= 0 {
@@ -1567,7 +1815,11 @@ func (n *Node) handlePong(peer *peerConn, env gossip.Envelope) {
 	if current == nil || current.pingPending != env.RequestID || current.pingSentAt.IsZero() {
 		return
 	}
-	current.lastRTT = time.Since(current.pingSentAt)
+	rtt := time.Since(current.pingSentAt)
+	if rtt <= 0 {
+		rtt = time.Nanosecond
+	}
+	current.lastRTT = rtt
 	current.pingPending = ""
 	current.pingSentAt = time.Time{}
 	current.pingMisses = 0
@@ -1578,14 +1830,11 @@ func (n *Node) probePeerLatency(now time.Time) {
 		peer      *peerConn
 		requestID string
 	}
-	interval := 30 * time.Second
-	if heartbeat := n.config.Heartbeat(); heartbeat > 0 && heartbeat < interval {
-		interval = heartbeat
-	}
+	interval := n.peerProbeInterval()
 	targets := make([]pingTarget, 0)
 	n.mu.Lock()
 	for _, peer := range n.peers {
-		if peer.pingPending != "" && now.Sub(peer.pingSentAt) <= 2*time.Second {
+		if peer.pingPending != "" {
 			continue
 		}
 		if peer.pingPending == "" && !peer.pingSentAt.IsZero() && now.Sub(peer.pingSentAt) < interval {
@@ -1600,33 +1849,52 @@ func (n *Node) probePeerLatency(now time.Time) {
 		targets = append(targets, pingTarget{peer: peer, requestID: requestID})
 	}
 	n.mu.Unlock()
+	failed := make([]pingTarget, 0)
 	for _, target := range targets {
-		n.sendEnvelope(target.peer, gossip.Envelope{Type: gossip.TypePing, RequestID: target.requestID})
+		ok := n.sendEnvelope(target.peer, gossip.Envelope{Type: gossip.TypePing, RequestID: target.requestID})
+		if ok {
+			continue
+		}
+		failed = append(failed, target)
+	}
+	if len(failed) == 0 {
+		return
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	for _, target := range failed {
+		current := n.peers[target.peer.id]
+		if current == target.peer && current.pingPending == target.requestID {
+			current.pingPending = ""
+			current.pingSentAt = time.Time{}
+		}
 	}
 }
 
 func (n *Node) pruneHighLatencyPeers() {
 	now := time.Now()
 	ids := make([]string, 0, len(n.peers))
+	pruneOnly := make([]string, 0, len(n.peers))
 	n.mu.Lock()
 	for id, peer := range n.peers {
-		if n.shouldRetainPeerLocked(peer) {
+		if peer.lastRTT > peerLatencyPruneThreshold {
+			pruneOnly = append(pruneOnly, id)
 			continue
 		}
-		if peer.lastRTT > 2*time.Second {
-			ids = append(ids, id)
-			continue
-		}
-		if peer.pingPending != "" && now.Sub(peer.pingSentAt) > 2*time.Second {
+		if peer.pingPending != "" && now.Sub(peer.pingSentAt) > peerPingTimeout {
 			peer.pingPending = ""
 			peer.pingSentAt = time.Time{}
 			peer.pingMisses++
-			if peer.pingMisses >= 3 {
+			pruneOnly = append(pruneOnly, id)
+			if !n.shouldRetainPeerLocked(peer) && peer.pingMisses >= peerDisconnectMissLimit {
 				ids = append(ids, id)
 			}
 		}
 	}
 	n.mu.Unlock()
+	for _, id := range pruneOnly {
+		n.prunePeerFromAllMeshes(id)
+	}
 	for _, id := range ids {
 		n.mu.RLock()
 		peer := n.peers[id]
@@ -1655,6 +1923,7 @@ func (n *Node) maintenanceLoop(ctx context.Context) {
 			n.connectKnownPeers()
 			n.connectBootstrapSeeds(ctx)
 			n.promoteRelayPeers()
+			n.refreshLocalSubscriptions()
 			for _, channel := range n.pubsub.SnapshotLocal() {
 				n.maintainTopicMesh(channel)
 			}
@@ -1666,23 +1935,52 @@ func (n *Node) maintenanceLoop(ctx context.Context) {
 func (n *Node) pruneLowScoringPeers() {
 	n.mu.RLock()
 	ids := make([]string, 0, len(n.peers))
-	for id, peer := range n.peers {
-		if n.shouldRetainPeerLocked(peer) {
-			continue
-		}
+	for id := range n.peers {
 		if n.peerScore(id) < 0 {
 			ids = append(ids, id)
 		}
 	}
 	n.mu.RUnlock()
 	for _, id := range ids {
+		n.prunePeerFromAllMeshes(id)
+	}
+}
+
+func (n *Node) prunePeerFromAllMeshes(peerID string) {
+	until := time.Now().Add(n.peerPruneBackoff())
+	n.mu.Lock()
+	if peer := n.peers[peerID]; peer != nil && until.After(peer.meshBlocked) {
+		peer.meshBlocked = until
+	}
+	n.mu.Unlock()
+	for _, channel := range n.pubsub.SnapshotLocal() {
+		if !n.pubsub.InMesh(channel, peerID) {
+			continue
+		}
+		n.pubsub.SetMeshPeer(channel, peerID, false)
 		n.mu.RLock()
-		peer := n.peers[id]
+		peer := n.peers[peerID]
 		n.mu.RUnlock()
 		if peer != nil {
-			_ = peer.session.Close()
+			n.sendEnvelope(peer, gossip.Envelope{Type: gossip.TypePrune, Channel: channel})
 		}
 	}
+}
+
+func (n *Node) peerProbeInterval() time.Duration {
+	interval := peerProbeIntervalFloor
+	if heartbeat := n.config.Heartbeat(); heartbeat > interval {
+		interval = heartbeat
+	}
+	return interval
+}
+
+func (n *Node) peerPruneBackoff() time.Duration {
+	backoff := n.peerProbeInterval()
+	if backoff < 30*time.Second {
+		return 30 * time.Second
+	}
+	return backoff
 }
 
 func (n *Node) dispatchLoop(ctx context.Context) {
@@ -1822,7 +2120,7 @@ func (n *Node) connectBootstrapSeeds(ctx context.Context) {
 		go func(seed string) {
 			attemptCtx, cancel := context.WithTimeout(ctx, n.config.HandshakeTimeout())
 			defer cancel()
-			_ = n.connectBootstrapPeer(attemptCtx, seed)
+			_ = n.connectBootstrapSeed(attemptCtx, seed)
 		}(addr)
 	}
 }
@@ -1908,9 +2206,12 @@ func (n *Node) discoveredPeerTargets() []discoveredPeerTarget {
 		return nil
 	}
 
-	targets := make([]discoveredPeerTarget, 0, len(n.knownPeers))
+	targets := make([]discoveredPeerTarget, 0, min(len(n.knownPeers), n.config.MaxPeers))
 	for peerID, info := range n.knownPeers {
 		if peerID == n.localPeerID() || info.addr == "" {
+			continue
+		}
+		if !info.verified && !info.thirdPartyDialable {
 			continue
 		}
 		if _, connected := n.peers[peerID]; connected {
@@ -1992,6 +2293,9 @@ func (n *Node) rememberSuppression(peerID string, ids []string, fallback string)
 	}
 	now := time.Now()
 	for _, id := range ids {
+		if _, ok := entry[id]; !ok && len(entry) >= maxSuppressionEntriesPerPeer {
+			continue
+		}
 		entry[id] = now
 	}
 }
@@ -2120,7 +2424,7 @@ func (n *Node) selectMeshCandidates(channel string, limit int) []string {
 	})
 	filtered := make([]string, 0, len(candidates))
 	for _, peerID := range candidates {
-		if n.isPeerBelowBaseline(peerID) {
+		if !n.eligibleForMeshCandidate(peerID) {
 			continue
 		}
 		filtered = append(filtered, peerID)
@@ -2160,7 +2464,7 @@ func (n *Node) selectHighScoringCandidates(channel string, limit int, threshold 
 	candidates := n.selectMeshCandidates(channel, n.config.MaxPeers)
 	filtered := make([]string, 0, len(candidates))
 	for _, peerID := range candidates {
-		if n.isPeerBelowBaseline(peerID) {
+		if !n.eligibleForMeshCandidate(peerID) {
 			continue
 		}
 		if n.peerScore(peerID) <= threshold {
@@ -2196,6 +2500,9 @@ func (n *Node) handleRelayRequest(peer *peerConn, env gossip.Envelope) {
 		return
 	}
 	if env.RelayTarget == n.localPeerID() {
+		if peer == nil || !verifyRelayRequestEnvelope(env) {
+			return
+		}
 		n.mu.Lock()
 		n.relayLocals[env.RelaySession] = relayLocalSession{
 			sessionID:    env.RelaySession,
@@ -2204,12 +2511,12 @@ func (n *Node) handleRelayRequest(peer *peerConn, env gossip.Envelope) {
 			established:  true,
 		}
 		n.mu.Unlock()
-		n.sendEnvelope(peer, gossip.Envelope{
+		n.sendEnvelope(peer, n.signRelayAcceptEnvelope(gossip.Envelope{
 			Type:         gossip.TypeRelayAccept,
 			RelaySession: env.RelaySession,
 			RelaySource:  env.RelayTarget,
 			RelayTarget:  env.RelaySource,
-		})
+		}))
 		return
 	}
 	n.mu.RLock()
@@ -2229,13 +2536,19 @@ func (n *Node) handleRelayRequest(peer *peerConn, env gossip.Envelope) {
 }
 
 func (n *Node) handleRelayAccept(peer *peerConn, env gossip.Envelope) {
-	if env.RelaySession == "" {
+	if env.RelaySession == "" || env.RelaySource == "" || env.RelayTarget == "" {
 		return
 	}
 	if env.RelayTarget == n.localPeerID() {
+		if peer == nil {
+			return
+		}
+		if !verifyRelayAcceptEnvelope(env) {
+			return
+		}
 		n.mu.Lock()
 		session, ok := n.relayLocals[env.RelaySession]
-		if ok {
+		if ok && session.viaPeerID == peer.id && session.remotePeerID == env.RelaySource {
 			session.established = true
 			n.relayLocals[env.RelaySession] = session
 			if session.wait != nil {
@@ -2256,10 +2569,16 @@ func (n *Node) handleRelayAccept(peer *peerConn, env gossip.Envelope) {
 }
 
 func (n *Node) handleRelayData(peer *peerConn, env gossip.Envelope) {
-	if env.RelaySession == "" || env.RelayTarget == "" {
+	if env.RelaySession == "" || env.RelaySource == "" || env.RelayTarget == "" {
 		return
 	}
 	if env.RelayTarget == n.localPeerID() {
+		n.mu.RLock()
+		session, ok := n.relayLocals[env.RelaySession]
+		n.mu.RUnlock()
+		if !ok || !session.established || session.viaPeerID != peer.id || session.remotePeerID != env.RelaySource {
+			return
+		}
 		var sender [32]byte
 		raw, err := hex.DecodeString(env.RelaySource)
 		if err == nil {
@@ -2269,8 +2588,15 @@ func (n *Node) handleRelayData(peer *peerConn, env gossip.Envelope) {
 		return
 	}
 	n.mu.RLock()
+	route, hasRoute := n.relayRoutes[env.RelaySession]
 	targetPeer := n.peers[env.RelayTarget]
 	n.mu.RUnlock()
+	if !hasRoute || !route.allows(env.RelaySource, env.RelayTarget) {
+		return
+	}
+	if peer.id != env.RelaySource {
+		return
+	}
 	if targetPeer == nil {
 		return
 	}
@@ -2807,6 +3133,25 @@ func preferredKnownPeerAddr(current knownPeer, candidate string) string {
 	return candidate
 }
 
+func shouldFreezeDirectKnownPeerAddr(current knownPeer, candidate, liveSessionAddr string) bool {
+	if (!current.direct && !current.verified) || current.addr == "" {
+		return false
+	}
+	currentRank := knownPeerAddrRank(current.addr)
+	candidateRank := knownPeerAddrRank(candidate)
+	if candidateRank < currentRank {
+		return true
+	}
+	selfAnnounced := liveSessionAddr != ""
+	if !selfAnnounced {
+		return true
+	}
+	if currentRank < 3 || candidateRank < 3 {
+		return current.addr == liveSessionAddr || liveSessionAddr == ""
+	}
+	return false
+}
+
 func knownPeerAddrRank(addr string) int {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -3001,25 +3346,6 @@ func (n *Node) requestBindingObservation(peerID string, timeout time.Duration) (
 	}
 }
 
-func (n *Node) confirmReachability(addr string, deadline time.Time) bool {
-	n.mu.RLock()
-	peerIDs := make([]string, 0, len(n.peers))
-	for peerID := range n.peers {
-		peerIDs = append(peerIDs, peerID)
-	}
-	n.mu.RUnlock()
-	for _, peerID := range peerIDs {
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			return false
-		}
-		if n.requestReachabilityProbe(peerID, addr, remaining) {
-			return true
-		}
-	}
-	return false
-}
-
 func (n *Node) requestReachabilityProbe(peerID, addr string, timeout time.Duration) bool {
 	requestID, err := newRelaySessionID()
 	if err != nil {
@@ -3084,6 +3410,14 @@ func (n *Node) attemptHolePunch(targetPeerID string, timeout time.Duration) bool
 	sourceAddr := n.freshObservedUDPAddr(viaPeerID, minDuration(750*time.Millisecond, timeout/3))
 	coordAt := time.Now().Add(750 * time.Millisecond)
 	go n.tryHolePunchDialAt(targetPeerID, targetInfo.addr, coordAt)
+	n.mu.Lock()
+	n.holePunchWait[requestID] = holePunchRequest{targetPeerID: targetPeerID, relayPeerID: viaPeerID}
+	n.mu.Unlock()
+	defer func() {
+		n.mu.Lock()
+		delete(n.holePunchWait, requestID)
+		n.mu.Unlock()
+	}()
 	n.sendEnvelope(viaPeer, gossip.Envelope{
 		Type:           gossip.TypeHolePunchCoord,
 		RequestID:      requestID,
@@ -3128,7 +3462,7 @@ func (n *Node) tryHolePunchDialAt(targetPeerID, addr string, at time.Time) {
 	n.mu.RLock()
 	localHistory := append([]string(nil), n.bindingHistory...)
 	targetInfo := n.knownPeers[targetPeerID]
-	remoteHistory := append([]string(nil), targetInfo.observations...)
+	remoteHistory := append([]string(nil), targetInfo.predictionObservations...)
 	enablePrediction := n.config.NAT.PortPredictionEnabled
 	n.mu.RUnlock()
 	plan := nat.Coordinator{
@@ -3198,17 +3532,20 @@ func (n *Node) updateKnownPeer(peerID, addr string, direct bool) {
 	}
 	addr = preferredKnownPeerAddr(current, addr)
 	n.knownPeers[peerID] = knownPeer{
-		id:              peerID,
-		addr:            addr,
-		direct:          direct,
-		bootstrap:       current.bootstrap,
-		lan:             current.lan && knownPeerAddrRank(addr) <= 1,
-		natType:         current.natType,
-		publicReachable: current.publicReachable,
-		relayCapable:    current.relayCapable,
-		lastSeen:        time.Now(),
-		observations:    appendObservation(current.observations, addr),
-		noiseStatic:     append([]byte(nil), current.noiseStatic...),
+		id:                     peerID,
+		addr:                   addr,
+		direct:                 direct,
+		verified:               current.verified || direct,
+		bootstrap:              current.bootstrap,
+		lan:                    current.lan && knownPeerAddrRank(addr) <= 1,
+		natType:                current.natType,
+		natTrusted:             current.natTrusted,
+		publicReachable:        current.publicReachable,
+		relayCapable:           current.relayCapable,
+		lastSeen:               time.Now(),
+		observations:           appendObservation(current.observations, addr),
+		predictionObservations: append([]string(nil), current.predictionObservations...),
+		noiseStatic:            append([]byte(nil), current.noiseStatic...),
 	}
 }
 
@@ -3280,6 +3617,13 @@ func (n *Node) connectBootstrapPeer(ctx context.Context, addr string) error {
 	return nil
 }
 
+func (n *Node) connectBootstrapSeed(ctx context.Context, addr string) error {
+	if knownPeerAddrRank(addr) < 3 {
+		return n.connectPeer(ctx, addr)
+	}
+	return n.connectBootstrapPeer(ctx, addr)
+}
+
 func (n *Node) relayBucketFor(peerID string) *nat.TokenBucket {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -3329,6 +3673,9 @@ func (n *Node) selectRelayPeers(targetPeerID string) ([]string, error) {
 		if peerID == targetPeerID {
 			continue
 		}
+		if !n.isTrustedRelayCandidateLocked(peerID) {
+			continue
+		}
 		candidates = append(candidates, peerID)
 	}
 	if len(candidates) == 0 {
@@ -3340,19 +3687,24 @@ func (n *Node) selectRelayPeers(targetPeerID string) ([]string, error) {
 		if rankI, rankJ := relayCandidateRank(infoI), relayCandidateRank(infoJ); rankI != rankJ {
 			return rankI > rankJ
 		}
+		scoreI := n.peerScore(candidates[i])
+		scoreJ := n.peerScore(candidates[j])
+		if scoreI != scoreJ {
+			return scoreI > scoreJ
+		}
 		loadI := n.relaySessionCountViaLocked(candidates[i])
 		loadJ := n.relaySessionCountViaLocked(candidates[j])
 		if loadI != loadJ {
 			return loadI < loadJ
 		}
-		scoreI := n.peerScore(candidates[i])
-		scoreJ := n.peerScore(candidates[j])
-		if scoreI == scoreJ {
-			return candidates[i] < candidates[j]
-		}
-		return scoreI > scoreJ
+		return candidates[i] < candidates[j]
 	})
 	return candidates, nil
+}
+
+func (n *Node) isTrustedRelayCandidateLocked(peerID string) bool {
+	info, ok := n.knownPeers[peerID]
+	return ok && info.natTrusted && info.relayCapable && info.publicReachable
 }
 
 func (n *Node) relaySessionCountViaLocked(peerID string) int {
@@ -3373,9 +3725,11 @@ func relayCandidateRank(info knownPeer) int {
 	if info.publicReachable {
 		rank += 2
 	}
-	switch info.natType {
-	case nat.TypePublic, nat.TypeFullCone:
-		rank++
+	if info.natTrusted {
+		switch info.natType {
+		case nat.TypePublic, nat.TypeFullCone:
+			rank++
+		}
 	}
 	return rank
 }
@@ -3399,6 +3753,9 @@ func (n *Node) shouldPreferRelayForTarget(targetPeerID string) bool {
 	if !ok {
 		return false
 	}
+	if !targetInfo.natTrusted {
+		return false
+	}
 	return shouldPreferRelayBetween(localProfile.Type, targetInfo.natType)
 }
 
@@ -3412,6 +3769,26 @@ func (n *Node) isPeerBelowBaseline(peerID string) bool {
 	return n.peerScore(peerID) < gossip.BaselineThreshold
 }
 
+func (n *Node) eligibleForMeshCandidate(peerID string) bool {
+	if n.isPeerBelowBaseline(peerID) {
+		return false
+	}
+	now := time.Now()
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	peer := n.peers[peerID]
+	if peer == nil {
+		return false
+	}
+	if now.Before(peer.meshBlocked) {
+		return false
+	}
+	if peer.lastRTT > peerLatencyPruneThreshold {
+		return false
+	}
+	return peer.pingMisses == 0
+}
+
 func (n *Node) canGossipWithPeer(peerID string) bool {
 	return n.peerScore(peerID) >= gossip.GossipThreshold
 }
@@ -3422,6 +3799,10 @@ func (n *Node) isPeerBelowPublishThreshold(peerID string) bool {
 
 func (n *Node) isPeerGraylisted(peerID string) bool {
 	return n.peerScore(peerID) < gossip.GraylistThreshold
+}
+
+func (n *Node) canSharePeerExchangeWithPeer(peerID string) bool {
+	return n.peerScore(peerID) >= gossip.BaselineThreshold
 }
 
 func (n *Node) meshGossipPeers(channel, excludePeerID string) []string {
@@ -3473,7 +3854,11 @@ func (n *Node) medianMeshScore(peers []string) float64 {
 		scores = append(scores, n.peerScore(peerID))
 	}
 	sort.Float64s(scores)
-	return scores[len(scores)/2]
+	middle := len(scores) / 2
+	if len(scores)%2 == 1 {
+		return scores[middle]
+	}
+	return (scores[middle-1] + scores[middle]) / 2
 }
 
 func decodePeerID(peerID string) [32]byte {
@@ -3554,6 +3939,18 @@ func probeTCPAddress(addr string, timeout time.Duration) bool {
 	}
 	_ = conn.Close()
 	return true
+}
+
+func sameAdvertisedEndpoint(a, b string) bool {
+	aEndpoint, err := netip.ParseAddrPort(a)
+	if err != nil {
+		return false
+	}
+	bEndpoint, err := netip.ParseAddrPort(b)
+	if err != nil {
+		return false
+	}
+	return aEndpoint.Port() == bEndpoint.Port() && aEndpoint.Addr().Unmap() == bEndpoint.Addr().Unmap()
 }
 
 func minDuration(a, b time.Duration) time.Duration {

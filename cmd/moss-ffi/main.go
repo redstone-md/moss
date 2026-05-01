@@ -56,6 +56,7 @@ import "C"
 
 import (
 	"errors"
+	"math"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -83,6 +84,9 @@ var (
 		if size == 0 {
 			return nil, nil
 		}
+		if err := validateKeystoreProbeSize(uint32(size)); err != nil {
+			return nil, err
+		}
 		buffer := C.malloc(C.size_t(size))
 		if buffer == nil {
 			return nil, errors.New("keystore load allocation failed")
@@ -91,6 +95,9 @@ var (
 		read := C.callKeyStoreLoad(load, (*C.uint8_t)(buffer), size)
 		if read == 0 {
 			return nil, nil
+		}
+		if err := validateKeystoreReadSize(uint32(read), uint32(size)); err != nil {
+			return nil, err
 		}
 		return C.GoBytes(buffer, C.int(read)), nil
 	}
@@ -107,6 +114,23 @@ var (
 		return nil
 	}
 )
+
+func validateKeystoreProbeSize(size uint32) error {
+	if size > uint32(mcrypto.IdentityEncodedSize) {
+		return errors.New("keystore load size exceeds identity encoding size")
+	}
+	return nil
+}
+
+func validateKeystoreReadSize(read, capacity uint32) error {
+	if read > capacity {
+		return errors.New("keystore load read exceeds buffer capacity")
+	}
+	if read > uint32(mcrypto.IdentityEncodedSize) {
+		return errors.New("keystore load read exceeds identity encoding size")
+	}
+	return nil
+}
 
 func main() {}
 
@@ -172,6 +196,9 @@ func Moss_Unsubscribe(handle C.MossHandle, channel *C.char) C.int32_t {
 func Moss_Publish(handle C.MossHandle, channel *C.char, data *C.uint8_t, length C.uint32_t) C.int32_t {
 	node, code := getNode(int64(handle))
 	if code != mesh.MOSS_OK {
+		return C.int32_t(code)
+	}
+	if code := validatePublishPayloadPointer(unsafe.Pointer(data), uint32(length), node.MaxMessageSizeBytes()); code != mesh.MOSS_OK {
 		return C.int32_t(code)
 	}
 	payload := bytesFromPointer(data, int(length))
@@ -310,6 +337,19 @@ func bytesFromPointer(data *C.uint8_t, length int) []byte {
 		return nil
 	}
 	return C.GoBytes(unsafe.Pointer(data), C.int(length))
+}
+
+func validatePublishPayloadPointer(data unsafe.Pointer, length uint32, maxLength int) int32 {
+	if length == 0 {
+		return mesh.MOSS_OK
+	}
+	if data == nil {
+		return mesh.MOSS_ERR_CONFIG_INVALID
+	}
+	if length > uint32(maxLength) || length > uint32(math.MaxInt32) {
+		return mesh.MOSS_ERR_MESSAGE_TOO_LARGE
+	}
+	return mesh.MOSS_OK
 }
 
 func initNode(meshID string, psk []byte, config string) int64 {

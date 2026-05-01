@@ -3,7 +3,9 @@
 [![CI Main](https://github.com/redstone-md/moss/actions/workflows/ci-main.yml/badge.svg)](https://github.com/redstone-md/moss/actions/workflows/ci-main.yml)
 [![CI Dev](https://github.com/redstone-md/moss/actions/workflows/ci-dev.yml/badge.svg)](https://github.com/redstone-md/moss/actions/workflows/ci-dev.yml)
 
-Moss is an embeddable P2P mesh core written in Go and exported through CGO as a C-shared library. The project in this repository follows the `PRD.md` scope with a pragmatic v1 implementation:
+Moss is an embeddable P2P mesh core written in Go and exported through CGO as a C-shared library. This repository is the runtime layer, not the end-user chat application.
+
+The current implementation follows the public technical specification in [docs/SPECIFICATION.md](docs/SPECIFICATION.md) with a pragmatic v1 runtime:
 
 - tracker-based bootstrapping via BEP 15 UDP and BEP 3 HTTP announces
 - encrypted peer transport with Noise XX (`25519_ChaChaPoly_BLAKE2s`) plus identity binding
@@ -12,12 +14,25 @@ Moss is an embeddable P2P mesh core written in Go and exported through CGO as a 
 - C FFI surface with examples for C, C++, Python (`ctypes`), and Rust
 - unit, integration, and shared-library smoke tests
 
-Desktop chat clients now live in the separate [MOSH](https://github.com/redstone-md/mosh) repository, which consumes `MOSS` through the shared runtime and a Git submodule pin for compatibility.
+Desktop clients now live in the separate [MOSH](https://github.com/redstone-md/mosh) repository, which consumes `MOSS` through the shared runtime and a Git submodule pin for compatibility.
+
+## Repository role
+
+- `MOSS` = runtime, protocol, NAT/relay logic, FFI, examples
+- `MOSH` = desktop chat client built on top of `MOSS`
 
 FFI docs:
 
 - API reference: [docs/API.md](docs/API.md)
 - Shared integration guide: [docs/SHARED_INTEGRATION.md](docs/SHARED_INTEGRATION.md)
+- Known limitations: [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md)
+
+Repository policy:
+
+- License: [MIT](LICENSE)
+- Security reporting: [SECURITY.md](SECURITY.md)
+- Contribution guide: [CONTRIBUTING.md](CONTRIBUTING.md)
+- Conduct: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
 
 ## Layout
 
@@ -48,6 +63,19 @@ CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
 ```
 
 The generated header is emitted next to the shared library as `moss.h` or `libmoss.h`, depending on the output name.
+
+## Quick Start
+
+Build the shared runtime:
+
+```bash
+go build -buildmode=c-shared -o moss.dll ./cmd/moss-ffi
+```
+
+Then integrate it from your host application through the FFI surface described in:
+
+- [docs/API.md](docs/API.md)
+- [docs/SHARED_INTEGRATION.md](docs/SHARED_INTEGRATION.md)
 
 GitHub Actions publishes release artifacts only from tags.
 
@@ -91,6 +119,12 @@ Current exported functions:
 - `Moss_Free`
 
 See [docs/API.md](docs/API.md) for signatures, config fields, event IDs, and error codes.
+
+## Stability Notes
+
+- The repository is public-ready as a runtime/core project.
+- NAT traversal and relay fallback are implemented and tested, but network behavior still depends on real-world topology.
+- Public client-facing UX issues should go to [MOSH](https://github.com/redstone-md/mosh).
 
 ## Local integration example
 

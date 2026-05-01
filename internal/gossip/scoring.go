@@ -11,6 +11,7 @@ const (
 	PublishThreshold            = -100.0
 	GraylistThreshold           = -10000.0
 	OpportunisticGraftThreshold = 1.0
+	ipColocationPenaltyWeight   = -5.0
 )
 
 type PeerScore struct {
@@ -71,8 +72,8 @@ func (e *Engine) ApplyIPColocationPenalty(peerID string, count int) {
 	defer e.mu.Unlock()
 	peer := e.ensureLocked(peerID)
 	peer.IPColocationPenalty = 0
-	if count > 2 {
-		peer.IPColocationPenalty = -1.0 * float64(count-2)
+	if count > 1 {
+		peer.IPColocationPenalty = ipColocationPenaltyWeight * float64(count-1)
 	}
 }
 

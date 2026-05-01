@@ -285,9 +285,9 @@ Top-level config schema:
     "heartbeat_ms": 1000
   },
   "nat": {
-    "upnp_enabled": true,
-    "natpmp_enabled": true,
-    "pcp_enabled": true,
+    "upnp_enabled": false,
+    "natpmp_enabled": false,
+    "pcp_enabled": false,
     "supernode_min_uptime_sec": 300,
     "relay_max_bandwidth_kbps": 256,
     "relay_max_sessions": 50,

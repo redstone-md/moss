@@ -20,6 +20,9 @@ const (
 	identityEncodedSize     = 1 + ed25519.PrivateKeySize + 32 + 32
 )
 
+// IdentityEncodedSize is the fixed byte length returned by Identity.Encode.
+const IdentityEncodedSize = identityEncodedSize
+
 func NewIdentity() (*Identity, error) {
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -74,6 +77,9 @@ func (i *Identity) Sign(msg []byte) []byte {
 }
 
 func Verify(publicKey, msg, sig []byte) bool {
+	if len(publicKey) != ed25519.PublicKeySize || len(sig) != ed25519.SignatureSize {
+		return false
+	}
 	return ed25519.Verify(ed25519.PublicKey(publicKey), msg, sig)
 }
 

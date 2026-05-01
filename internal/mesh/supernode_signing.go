@@ -8,9 +8,9 @@ import (
 	"moss/internal/gossip"
 )
 
-func supernodeSignaturePayload(env gossip.Envelope) []byte {
+func advertisedSignaturePayload(domain string, env gossip.Envelope) []byte {
 	payload := make([]byte, 0, 256)
-	payload = append(payload, []byte("moss-supernode-status")...)
+	payload = append(payload, []byte(domain)...)
 	payload = append(payload, 0)
 	payload = append(payload, []byte(string(env.Type))...)
 	payload = append(payload, 0)
@@ -26,12 +26,33 @@ func supernodeSignaturePayload(env gossip.Envelope) []byte {
 	return payload
 }
 
+func supernodeSignaturePayload(env gossip.Envelope) []byte {
+	return advertisedSignaturePayload("moss-supernode-status", env)
+}
+
+func peerAnnouncementSignaturePayload(env gossip.Envelope) []byte {
+	payload := make([]byte, 0, 160)
+	payload = append(payload, []byte("moss-peer-announcement")...)
+	payload = append(payload, 0)
+	payload = append(payload, []byte(string(env.Type))...)
+	payload = append(payload, 0)
+	payload = append(payload, []byte(env.AdvertisedPeerID)...)
+	payload = append(payload, 0)
+	payload = append(payload, []byte(env.AdvertisedAddr)...)
+	return payload
+}
+
+func (n *Node) signPeerAnnouncementEnvelope(env gossip.Envelope) gossip.Envelope {
+	env.AdvertisedSignature = n.identity.Sign(peerAnnouncementSignaturePayload(env))
+	return env
+}
+
 func (n *Node) signSupernodeEnvelope(env gossip.Envelope) gossip.Envelope {
 	env.AdvertisedSignature = n.identity.Sign(supernodeSignaturePayload(env))
 	return env
 }
 
-func verifySupernodeEnvelope(env gossip.Envelope) bool {
+func verifyAdvertisedPeerEnvelope(env gossip.Envelope, payload func(gossip.Envelope) []byte) bool {
 	if env.AdvertisedPeerID == "" || len(env.AdvertisedSignature) == 0 {
 		return false
 	}
@@ -39,5 +60,20 @@ func verifySupernodeEnvelope(env gossip.Envelope) bool {
 	if err != nil {
 		return false
 	}
-	return mcrypto.Verify(publicKey, supernodeSignaturePayload(env), env.AdvertisedSignature)
+	return mcrypto.Verify(publicKey, payload(env), env.AdvertisedSignature)
+}
+
+func verifyPeerAnnouncementEnvelope(env gossip.Envelope) bool {
+	return verifyAdvertisedPeerEnvelope(env, peerAnnouncementSignaturePayload)
+}
+
+func verifySupernodeEnvelope(env gossip.Envelope) bool {
+	return verifyAdvertisedPeerEnvelope(env, supernodeSignaturePayload)
+}
+
+func verifySupernodeStatusEnvelope(env gossip.Envelope) bool {
+	if env.Type != gossip.TypeSupernodeAnnounce && env.Type != gossip.TypeSupernodeRevoke {
+		return false
+	}
+	return verifySupernodeEnvelope(env)
 }

@@ -30,3 +30,20 @@ func TestParseConfigPreservesPartialNestedOverrides(t *testing.T) {
 		t.Fatalf("expected default max message size, got %d", cfg.Security.MaxMessageSizeBytes)
 	}
 }
+
+func TestDefaultConfigDoesNotEnableActivePortMapping(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.NAT.UPnPEnabled || cfg.NAT.NATPMPEnabled || cfg.NAT.PCPEnabled {
+		t.Fatalf("expected active router port mapping to default off, got %+v", cfg.NAT)
+	}
+}
+
+func TestParseConfigPreservesExplicitPortMappingOptIn(t *testing.T) {
+	cfg, err := ParseConfig(`{"trackers":[],"nat":{"upnp_enabled":true,"natpmp_enabled":true,"pcp_enabled":true}}`)
+	if err != nil {
+		t.Fatalf("ParseConfig failed: %v", err)
+	}
+	if !cfg.NAT.UPnPEnabled || !cfg.NAT.NATPMPEnabled || !cfg.NAT.PCPEnabled {
+		t.Fatalf("expected explicit router port mapping opt-in, got %+v", cfg.NAT)
+	}
+}

@@ -87,9 +87,6 @@ func DefaultConfig() Config {
 			HeartbeatMS: 1000,
 		},
 		NAT: NATConfig{
-			UPnPEnabled:           true,
-			NATPMPEnabled:         true,
-			PCPEnabled:            true,
 			SuperNodeMinUptimeSec: 300,
 			RelayMaxBandwidthKBPS: 256,
 			RelayMaxSessions:      50,
