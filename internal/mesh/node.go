@@ -1675,6 +1675,9 @@ func (n *Node) observeMeshDelivery(channel, messageID, peerID string) {
 	if channel == "" || messageID == "" || peerID == "" {
 		return
 	}
+	if !n.pubsub.InMesh(channel, peerID) {
+		return
+	}
 	if n.isPeerBelowBaseline(peerID) {
 		return
 	}

@@ -227,6 +227,28 @@ func TestMeshDeliveryDeficitSkipsPeersThatForward(t *testing.T) {
 	}
 }
 
+func TestMeshDeliveryDeficitIgnoresNonMeshPublishers(t *testing.T) {
+	node, err := NewNode("mesh-delivery-non-mesh", nil, DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+	node.pubsub.SetMeshPeer("alpha", "peer-a", true)
+	node.pubsub.SetMeshPeer("alpha", "peer-b", true)
+
+	node.observeMeshDelivery("alpha", "msg-3", "attacker")
+	if obs := node.meshDeliveries["msg-3"]; obs != nil {
+		t.Fatal("expected non-mesh publisher to not create delivery observation")
+	}
+
+	node.evaluateMeshDeliveryDeficits(time.Now().Add(2 * node.config.Heartbeat()))
+	if score := node.scoring.Score("peer-a"); score != 0 {
+		t.Fatalf("expected peer-a to avoid deficit penalty from non-mesh publisher, got %f", score)
+	}
+	if score := node.scoring.Score("peer-b"); score != 0 {
+		t.Fatalf("expected peer-b to avoid deficit penalty from non-mesh publisher, got %f", score)
+	}
+}
+
 func TestSelectMeshCandidatesSkipsHighLatencyPeers(t *testing.T) {
 	node, err := NewNode("mesh-candidate-latency", nil, DefaultConfig())
 	if err != nil {
