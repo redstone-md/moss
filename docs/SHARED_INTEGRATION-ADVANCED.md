@@ -85,10 +85,11 @@ Keep the rest of your app unaware of `MossHandle`, raw buffers, and `Moss_Free`.
 
 Reference examples in this repository:
 
-- C: [`examples/c_example`](/D:/code/moss/examples/c_example)
-- C++: [`examples/cpp_example`](/D:/code/moss/examples/cpp_example)
-- C#: [`examples/csharp_example`](/D:/code/moss/examples/csharp_example)
-- Python: [`examples/python_example`](/D:/code/moss/examples/python_example)
-- Rust: [`examples/rust_example`](/D:/code/moss/examples/rust_example)
+- C: [`examples/c_example`](../examples/c_example)
+- C++: [`examples/cpp_example`](../examples/cpp_example)
+- C#: [`examples/csharp_example`](../examples/csharp_example)
+- Python minimal: [`examples/python_example`](../examples/python_example)
+- Python chat: [`examples/python_chat`](../examples/python_chat)
+- Rust: [`examples/rust_example`](../examples/rust_example)
 
 Use those for exact symbol usage. Use this document for production integration structure.

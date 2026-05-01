@@ -96,9 +96,15 @@ moss/
 │   │   ├── main.c               # C integration example
 │   │   └── Makefile
 │   ├── python_example/
-│   │   └── moss_demo.py         # Python ctypes integration
+│   │   └── moss_demo.py         # Minimal Python ctypes integration
 │   ├── cpp_example/
 │   │   └── main.cpp             # C++ integration example
+│   ├── csharp_example/
+│   │   ├── Program.cs           # C# integration example
+│   │   └── MossDemo.csproj
+│   ├── python_chat/             # Interactive Python chat demo
+│   │   ├── moss_chat.py         # Compatibility entrypoint
+│   │   └── README.md
 │   └── rust_example/
 │       ├── src/main.rs           # Rust FFI integration
 │       └── build.rs
@@ -109,6 +115,8 @@ moss/
 ```
 
 ### 6.1 Package Slicing Rules
+
+The detailed architecture and import-boundary rules live in [ARCHITECTURE.md](./ARCHITECTURE.md). The short version:
 
 Go package boundaries should follow encapsulation boundaries, not individual files. `internal/mesh` intentionally remains a single package because the `Node` coordinator owns tightly coupled peer, relay, NAT, scoring, and pubsub state. Splitting these files into child packages would force private state to become exported or introduce broad interfaces that only exist to cross directory boundaries.
 
@@ -131,7 +139,7 @@ Preferred slicing inside `internal/mesh`:
 | **Phase 3** | **Cryptographic Transport** | Noise XX/IK handshakes (using `flynn/noise`), encrypted `net.Conn` wrapper, Mesh ID verification protocol, Ed25519 identity generation, key caching for IK reconnection. | Phase 1 | Two Moss nodes on same LAN establish encrypted connection in <100ms. Non-Moss peers are rejected within 2 seconds. Handshake produces unique session keys. |
 | **Phase 4** | **GossipSub Channels** | Topic mesh manager (GRAFT/PRUNE), IHAVE/IWANT gossip, flood publishing, message deduplication cache, peer scoring engine (P1-P6), C-API for subscribe/publish/callback. | Phase 3 | 10-node mesh on LAN: message published to a channel reaches all subscribers within 500ms. Peer with score <0 is pruned within 2 heartbeats. |
 | **Phase 5** | **Autonomous NAT Engine** | NAT type classifier, UPnP/NAT-PMP/PCP port mapping, SuperNode auto-promotion, distributed STUN (binding via peers), UDP hole-punching coordinator, relay fallback with rate limiting, port prediction for Symmetric NAT. | Phases 3, 4 | Two nodes behind separate Port-Restricted Cone NATs connect via hole-punch. Two nodes behind Symmetric NATs connect via SuperNode relay within 5 seconds. SuperNode correctly rate-limits to configured bandwidth. |
-| **Phase 6** | **Integration, Optimization & Documentation** | Connection pruning, bandwidth governance, comprehensive API documentation, integration examples in C, C++, Python, and Rust, benchmarks (throughput, latency, memory), integration test suite with simulated NAT topologies. | Phases 1-5 | Published API docs with all functions documented. All examples compile and run. Throughput ≥10 MB/s direct, ≥256 KB/s relayed. Memory usage <50MB per node with 200 peers. |
+| **Phase 6** | **Integration, Optimization & Documentation** | Connection pruning, bandwidth governance, comprehensive API documentation, integration examples in C, C++, C#, Python, and Rust, benchmarks (throughput, latency, memory), integration test suite with simulated NAT topologies. | Phases 1-5 | Published API docs with all functions documented. All examples compile and run. Throughput ≥10 MB/s direct, ≥256 KB/s relayed. Memory usage <50MB per node with 200 peers. |
 
 ---
 
@@ -173,7 +181,7 @@ Preferred slicing inside `internal/mesh`:
 | **Unit Tests** | Individual components (InfoHash generation, Noise handshake, peer scoring, token bucket) | `go test`, table-driven tests |
 | **Integration Tests** | Multi-node scenarios on localhost (mesh formation, pubsub propagation, NAT simulation) | Docker Compose with `tc` (traffic control) for latency/packet loss simulation |
 | **NAT Simulation** | Full Cone, Restricted, Port-Restricted, Symmetric NAT, CGNAT | `iptables` rules in Docker containers, `mininet` for complex topologies |
-| **FFI Tests** | C, C++, Python, Rust integration | Compile-and-run test binaries, memory leak detection via Valgrind/ASan |
+| **FFI Tests** | C, C++, C#, Python, Rust integration | Compile-and-run test binaries, memory leak detection via Valgrind/ASan |
 | **Load Tests** | 100+ node mesh, throughput saturation, relay capacity | Kubernetes cluster with Moss containers |
 | **Fuzz Tests** | Malformed tracker responses, invalid Noise handshakes, oversized messages | `go test -fuzz`, AFL |
 
