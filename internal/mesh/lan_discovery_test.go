@@ -2,11 +2,16 @@ package mesh
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"testing"
 
 	"moss/internal/nat"
 )
+
+func lanTestPeerID(seed int) string {
+	return fmt.Sprintf("%064x", seed)
+}
 
 func TestHandleLANBeaconUpdatesKnownPeerWithSourceIP(t *testing.T) {
 	cfg := DefaultConfig()
@@ -16,9 +21,10 @@ func TestHandleLANBeaconUpdatesKnownPeerWithSourceIP(t *testing.T) {
 		t.Fatalf("NewNode failed: %v", err)
 	}
 
+	peerID := lanTestPeerID(1)
 	node.handleLANBeacon(&net.UDPAddr{IP: net.ParseIP("192.168.50.20"), Port: 44445}, lanBeacon{
 		MeshID:          "mesh-lan-beacon",
-		PeerID:          "peer-1",
+		PeerID:          peerID,
 		ListenPort:      41030,
 		NATType:         string(nat.TypePortRestricted),
 		PublicReachable: false,
@@ -27,7 +33,7 @@ func TestHandleLANBeaconUpdatesKnownPeerWithSourceIP(t *testing.T) {
 
 	node.mu.RLock()
 	defer node.mu.RUnlock()
-	info, ok := node.knownPeers["peer-1"]
+	info, ok := node.knownPeers[peerID]
 	if !ok {
 		t.Fatal("expected known peer to be stored")
 	}
@@ -53,16 +59,17 @@ func TestHandleLANBeaconIgnoresUnauthenticatedAdvertisedAddress(t *testing.T) {
 		t.Fatalf("NewNode failed: %v", err)
 	}
 
+	peerID := lanTestPeerID(2)
 	node.handleLANBeacon(&net.UDPAddr{IP: net.ParseIP("172.30.1.2"), Port: 44445}, lanBeacon{
 		MeshID:         "mesh-lan-beacon",
-		PeerID:         "peer-1",
+		PeerID:         peerID,
 		ListenPort:     41030,
 		AdvertisedAddr: "100.64.74.9:41030",
 	})
 
 	node.mu.RLock()
 	defer node.mu.RUnlock()
-	info, ok := node.knownPeers["peer-1"]
+	info, ok := node.knownPeers[peerID]
 	if !ok {
 		t.Fatal("expected known peer to be stored")
 	}
@@ -87,9 +94,10 @@ func TestHandleLANBeaconDoesNotOverrideKnownPublicEndpoint(t *testing.T) {
 		t.Fatalf("NewNode failed: %v", err)
 	}
 
+	peerID := lanTestPeerID(3)
 	node.mu.Lock()
-	node.knownPeers["peer-1"] = knownPeer{
-		id:              "peer-1",
+	node.knownPeers[peerID] = knownPeer{
+		id:              peerID,
 		addr:            "185.242.25.75:24598",
 		publicReachable: true,
 	}
@@ -97,14 +105,14 @@ func TestHandleLANBeaconDoesNotOverrideKnownPublicEndpoint(t *testing.T) {
 
 	node.handleLANBeacon(&net.UDPAddr{IP: net.ParseIP("172.30.1.2"), Port: 44445}, lanBeacon{
 		MeshID:          "mesh-lan-beacon",
-		PeerID:          "peer-1",
+		PeerID:          peerID,
 		ListenPort:      41030,
 		PublicReachable: false,
 	})
 
 	node.mu.RLock()
 	defer node.mu.RUnlock()
-	info := node.knownPeers["peer-1"]
+	info := node.knownPeers[peerID]
 	if info.addr != "185.242.25.75:24598" {
 		t.Fatalf("expected public known peer addr to be preserved, got %q", info.addr)
 	}
@@ -127,7 +135,7 @@ func TestHandleLANBeaconIgnoresDifferentMeshAndSelf(t *testing.T) {
 
 	node.handleLANBeacon(&net.UDPAddr{IP: net.ParseIP("10.1.2.3"), Port: 44445}, lanBeacon{
 		MeshID:     "other-mesh",
-		PeerID:     "peer-1",
+		PeerID:     lanTestPeerID(4),
 		ListenPort: 41030,
 	})
 	node.handleLANBeacon(&net.UDPAddr{IP: net.ParseIP("10.1.2.4"), Port: 44445}, lanBeacon{
@@ -140,6 +148,52 @@ func TestHandleLANBeaconIgnoresDifferentMeshAndSelf(t *testing.T) {
 	defer node.mu.RUnlock()
 	if len(node.knownPeers) != 0 {
 		t.Fatalf("expected no known peers, got %d", len(node.knownPeers))
+	}
+}
+
+func TestHandleLANBeaconRejectsMalformedPeerID(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Trackers = nil
+	node, err := NewNode("mesh-lan-beacon", nil, cfg)
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+
+	node.handleLANBeacon(&net.UDPAddr{IP: net.ParseIP("10.1.2.3"), Port: 44445}, lanBeacon{
+		MeshID:     "mesh-lan-beacon",
+		PeerID:     "peer-1",
+		ListenPort: 41030,
+	})
+
+	node.mu.RLock()
+	defer node.mu.RUnlock()
+	if len(node.knownPeers) != 0 {
+		t.Fatalf("expected malformed LAN peer ID to be ignored, got %d known peers", len(node.knownPeers))
+	}
+}
+
+func TestHandleLANBeaconCapsUnverifiedLANPeers(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Trackers = nil
+	cfg.MaxPeers = 8
+	node, err := NewNode("mesh-lan-beacon", nil, cfg)
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+
+	limit := lanPeerCap(cfg.MaxPeers)
+	for i := 1; i <= limit+20; i++ {
+		node.handleLANBeacon(&net.UDPAddr{IP: net.ParseIP(fmt.Sprintf("10.1.2.%d", i)), Port: 44445}, lanBeacon{
+			MeshID:     "mesh-lan-beacon",
+			PeerID:     lanTestPeerID(i),
+			ListenPort: 41030,
+		})
+	}
+
+	node.mu.RLock()
+	defer node.mu.RUnlock()
+	if got := node.lanPeerCountLocked(); got > limit {
+		t.Fatalf("expected at most %d LAN peers, got %d", limit, got)
 	}
 }
 

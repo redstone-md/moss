@@ -2,8 +2,10 @@ package mesh
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"net"
+	"sort"
 	"strconv"
 	"time"
 
@@ -13,6 +15,24 @@ import (
 )
 
 const lanDiscoveryGroup = "239.255.77.77"
+
+const (
+	lanPeerIDBytes             = 32
+	lanBeaconGlobalBurst       = 128
+	lanBeaconGlobalRate        = 32
+	lanBeaconSourceBurst       = 16
+	lanBeaconSourceRate        = 4
+	lanBeaconMaxSources        = 256
+	lanBeaconBucketTTL         = 10 * time.Minute
+	lanDiscoveredPeerTTL       = 10 * time.Minute
+	lanDiscoveredPeerCapFactor = 2
+	lanDiscoveredPeerMinCap    = 16
+)
+
+type lanBeaconRateBucket struct {
+	bucket   *nat.TokenBucket
+	lastSeen time.Time
+}
 
 type lanBeacon struct {
 	MeshID          string `json:"mesh_id"`
@@ -159,10 +179,9 @@ func (n *Node) lanDiscoveryReadLoop(ctx context.Context, conn net.PacketConn) {
 		if err := json.Unmarshal(buffer[:length], &beacon); err != nil {
 			continue
 		}
-		if beacon.MeshID == n.meshID && beacon.PeerID != "" && beacon.PeerID != n.localPeerID() {
+		if n.handleLANBeacon(udpSrc, beacon) {
 			n.sendLANBeaconReply(conn, &net.UDPAddr{IP: udpSrc.IP, Port: n.config.LANDiscoveryPort})
 		}
-		n.handleLANBeacon(udpSrc, beacon)
 	}
 }
 
@@ -215,18 +234,27 @@ func (n *Node) sendLANBeaconReply(conn net.PacketConn, dst *net.UDPAddr) {
 	_, _ = conn.WriteTo(payload, dst)
 }
 
-func (n *Node) handleLANBeacon(src *net.UDPAddr, beacon lanBeacon) {
+func (n *Node) handleLANBeacon(src *net.UDPAddr, beacon lanBeacon) bool {
 	if src == nil || src.IP == nil || src.IP.IsUnspecified() {
-		return
+		return false
 	}
-	if beacon.MeshID != n.meshID || beacon.PeerID == "" || beacon.PeerID == n.localPeerID() || beacon.ListenPort <= 0 {
-		return
+	if !n.validLANBeacon(beacon) {
+		return false
 	}
 	observedAddr := net.JoinHostPort(src.IP.String(), strconv.Itoa(beacon.ListenPort))
 	candidateAddr := observedAddr
 	shouldDial := false
+	now := time.Now()
 	n.mu.Lock()
+	if !n.allowLANBeaconRateLocked(src.IP, now) {
+		n.mu.Unlock()
+		return false
+	}
 	current := n.knownPeers[beacon.PeerID]
+	if current.id == "" && !n.allowNewLANPeerLocked(now) {
+		n.mu.Unlock()
+		return false
+	}
 	chosenAddr := preferredKnownPeerAddr(current, candidateAddr)
 	lan := chosenAddr == observedAddr && knownPeerAddrRank(observedAddr) <= 1
 	observations := appendObservation(current.observations, observedAddr)
@@ -239,7 +267,7 @@ func (n *Node) handleLANBeacon(src *net.UDPAddr, beacon lanBeacon) {
 		natType:         nat.Type(beacon.NATType),
 		publicReachable: beacon.PublicReachable,
 		relayCapable:    beacon.RelayCapable,
-		lastSeen:        time.Now(),
+		lastSeen:        now,
 		observations:    observations,
 		noiseStatic:     append([]byte(nil), current.noiseStatic...),
 	}
@@ -253,8 +281,8 @@ func (n *Node) handleLANBeacon(src *net.UDPAddr, beacon lanBeacon) {
 				cooldown = time.Second
 			}
 			lastDial := n.peerDials[beacon.PeerID]
-			if lastDial.IsZero() || time.Since(lastDial) >= cooldown {
-				n.peerDials[beacon.PeerID] = time.Now()
+			if lastDial.IsZero() || now.Sub(lastDial) >= cooldown {
+				n.peerDials[beacon.PeerID] = now
 				shouldDial = true
 			}
 		}
@@ -263,4 +291,106 @@ func (n *Node) handleLANBeacon(src *net.UDPAddr, beacon lanBeacon) {
 	if shouldDial {
 		go n.dialKnownPeer(beacon.PeerID, chosenAddr)
 	}
+	return true
+}
+
+func (n *Node) shouldReplyToLANBeacon(beacon lanBeacon) bool {
+	return beacon.MeshID == n.meshID && validLANPeerID(beacon.PeerID) && beacon.PeerID != n.localPeerID() && beacon.ListenPort > 0
+}
+
+func (n *Node) validLANBeacon(beacon lanBeacon) bool {
+	return n.shouldReplyToLANBeacon(beacon)
+}
+
+func validLANPeerID(peerID string) bool {
+	if len(peerID) != lanPeerIDBytes*2 {
+		return false
+	}
+	decoded, err := hex.DecodeString(peerID)
+	return err == nil && len(decoded) == lanPeerIDBytes
+}
+
+func (n *Node) allowNewLANPeerLocked(now time.Time) bool {
+	n.pruneLANPeersLocked(now)
+	return n.lanPeerCountLocked() < lanPeerCap(n.config.MaxPeers)
+}
+
+func (n *Node) allowLANBeaconRateLocked(srcIP net.IP, now time.Time) bool {
+	if n.lanBeaconGlobal == nil {
+		n.lanBeaconGlobal = nat.NewTokenBucket(lanBeaconGlobalBurst, lanBeaconGlobalRate)
+	}
+	if !n.lanBeaconGlobal.Allow(1) {
+		return false
+	}
+	if n.lanBeaconBuckets == nil {
+		n.lanBeaconBuckets = make(map[string]*lanBeaconRateBucket)
+	}
+	for source, bucket := range n.lanBeaconBuckets {
+		if now.Sub(bucket.lastSeen) > lanBeaconBucketTTL {
+			delete(n.lanBeaconBuckets, source)
+		}
+	}
+	source := srcIP.String()
+	bucket := n.lanBeaconBuckets[source]
+	if bucket == nil {
+		if len(n.lanBeaconBuckets) >= lanBeaconMaxSources {
+			return false
+		}
+		bucket = &lanBeaconRateBucket{bucket: nat.NewTokenBucket(lanBeaconSourceBurst, lanBeaconSourceRate)}
+		n.lanBeaconBuckets[source] = bucket
+	}
+	bucket.lastSeen = now
+	return bucket.bucket.Allow(1)
+}
+
+func (n *Node) pruneLANPeersLocked(now time.Time) {
+	limit := lanPeerCap(n.config.MaxPeers)
+	type candidate struct {
+		peerID   string
+		lastSeen time.Time
+	}
+	candidates := make([]candidate, 0, limit+1)
+	for peerID, info := range n.knownPeers {
+		if !prunableLANPeer(info) {
+			continue
+		}
+		if now.Sub(info.lastSeen) > lanDiscoveredPeerTTL {
+			delete(n.knownPeers, peerID)
+			delete(n.peerDials, peerID)
+			continue
+		}
+		candidates = append(candidates, candidate{peerID: peerID, lastSeen: info.lastSeen})
+	}
+	if len(candidates) <= limit {
+		return
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].lastSeen.Before(candidates[j].lastSeen)
+	})
+	for _, candidate := range candidates[:len(candidates)-limit] {
+		delete(n.knownPeers, candidate.peerID)
+		delete(n.peerDials, candidate.peerID)
+	}
+}
+
+func (n *Node) lanPeerCountLocked() int {
+	count := 0
+	for _, info := range n.knownPeers {
+		if prunableLANPeer(info) {
+			count++
+		}
+	}
+	return count
+}
+
+func prunableLANPeer(info knownPeer) bool {
+	return info.lan && !info.verified && !info.direct && !info.bootstrap
+}
+
+func lanPeerCap(maxPeers int) int {
+	limit := maxPeers * lanDiscoveredPeerCapFactor
+	if limit < lanDiscoveredPeerMinCap {
+		return lanDiscoveredPeerMinCap
+	}
+	return limit
 }

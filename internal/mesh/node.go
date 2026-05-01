@@ -64,6 +64,8 @@ type Node struct {
 	directProbes     map[string]time.Time
 	peerDials        map[string]time.Time
 	bootstrapDials   map[string]time.Time
+	lanBeaconBuckets map[string]*lanBeaconRateBucket
+	lanBeaconGlobal  *nat.TokenBucket
 	meshDeliveries   map[string]*meshDeliveryObservation
 	overloadedUntil  time.Time
 	bindingHistory   []string
@@ -225,6 +227,8 @@ func NewNodeWithIdentity(meshID string, psk []byte, cfg Config, identity *mcrypt
 		directProbes:     make(map[string]time.Time),
 		peerDials:        make(map[string]time.Time),
 		bootstrapDials:   make(map[string]time.Time),
+		lanBeaconBuckets: make(map[string]*lanBeaconRateBucket),
+		lanBeaconGlobal:  nat.NewTokenBucket(lanBeaconGlobalBurst, lanBeaconGlobalRate),
 		meshDeliveries:   make(map[string]*meshDeliveryObservation),
 		bindingHistory:   make([]string, 0, 4),
 		knownPeers:       make(map[string]knownPeer),
