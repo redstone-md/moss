@@ -28,13 +28,13 @@ Open two terminals from the repository root.
 Terminal 1:
 
 ```powershell
-python examples\python_chat\moss_chat.py --nickname Alice --listen-port 41030 --room lobby --no-trackers
+python examples\python_chat\moss_chat.py --nickname Alice --listen-port 41030 --room lobby
 ```
 
 Terminal 2:
 
 ```powershell
-python examples\python_chat\moss_chat.py --nickname Bob --listen-port 41031 --peer 127.0.0.1:41030 --room lobby --no-trackers
+python examples\python_chat\moss_chat.py --nickname Bob --listen-port 41031 --peer 127.0.0.1:41030 --room lobby
 ```
 
 For a private chat, pass the same 32-byte PSK to every participant:
@@ -49,7 +49,7 @@ For a second machine on the same LAN, use the first machine's hostname or LAN IP
 python examples\python_chat\moss_chat.py --nickname Pi --listen-port 41030 --peer rpi1.local:41030 --room lobby
 ```
 
-For autonomous bootstrap closer to the Moss specification, start nodes without `--no-trackers`. In that mode the chat uses the default public tracker set and peers should discover each other without manual `/connect`.
+For autonomous bootstrap closer to the Moss specification, pass `--default-trackers`. In that mode the chat uses the default public tracker set and peers should discover each other without manual `/connect`. Use `--psk-hex` with public trackers for non-public rooms.
 
 Or launch both demo windows automatically:
 
@@ -80,10 +80,10 @@ Supported commands:
 
 - For the local demo, the second client needs `--peer 127.0.0.1:PORT_OF_FIRST_CLIENT`.
 - For Raspberry Pi / LAN testing, use `--peer HOSTNAME_OR_LAN_IP:PORT` and make sure the port is allowed by the local firewall.
-- By default the chat uses the built-in public tracker list for autonomous bootstrap.
+- By default the chat does not use public trackers; use `--peer` or `/connect` for local/static bootstrap.
 - Remote messages show a verified peer fingerprint next to nicknames. Reserved names such as `system` and `you` are not accepted as nicknames.
 - Use `--psk-hex` with a shared 32-byte key for identity-sensitive chats; without it, anyone who can join the mesh can send messages.
-- Use `--no-trackers` only for deterministic local/static-peer testing.
-- A node with no `--peer` and `--no-trackers` is isolated until another peer dials it or you run `/connect HOST:PORT`.
+- Public tracker bootstrap is explicit via `--default-trackers` or `--tracker`; a no-PSK public tracker mesh is discoverable by anyone who knows or guesses the mesh ID.
+- A node with no `--peer`, `--tracker`, or `--default-trackers` is isolated until another peer dials it or you run `/connect HOST:PORT`.
 - Each nickname gets its own persisted Moss identity in `examples/python_chat/.state/`.
 - The app loads the shared library from the repository root: `moss.dll`, `libmoss.so`, or `libmoss.dylib`.

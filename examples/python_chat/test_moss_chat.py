@@ -51,6 +51,40 @@ class ChatIdentityRenderingTest(unittest.TestCase):
         with self.assertRaises(argparse.ArgumentTypeError):
             moss_chat.parse_psk_hex("ab" * 31)
 
+    def test_cli_defaults_disable_public_trackers(self) -> None:
+        args = argparse.Namespace(tracker=None, no_trackers=False, default_trackers=False)
+
+        trackers, use_default_trackers = moss_chat.resolve_tracker_options(args)
+
+        self.assertEqual(trackers, [])
+        self.assertFalse(use_default_trackers)
+
+    def test_default_trackers_require_explicit_opt_in(self) -> None:
+        args = argparse.Namespace(tracker=None, no_trackers=False, default_trackers=True)
+
+        trackers, use_default_trackers = moss_chat.resolve_tracker_options(args)
+
+        self.assertIsNone(trackers)
+        self.assertTrue(use_default_trackers)
+
+    def test_explicit_tracker_overrides_default_tracker_flag(self) -> None:
+        args = argparse.Namespace(tracker=["udp://example.test:80/announce"], no_trackers=False, default_trackers=True)
+
+        trackers, use_default_trackers = moss_chat.resolve_tracker_options(args)
+
+        self.assertEqual(trackers, ["udp://example.test:80/announce"])
+        self.assertFalse(use_default_trackers)
+
+    def test_moss_config_serializes_explicit_empty_trackers(self) -> None:
+        config = moss_chat.build_moss_config(listen_port=0, peers=[], trackers=[], heartbeat_ms=250)
+
+        self.assertEqual(config["trackers"], [])
+
+    def test_moss_config_omits_trackers_only_for_default_tracker_opt_in(self) -> None:
+        config = moss_chat.build_moss_config(listen_port=0, peers=[], trackers=None, heartbeat_ms=250)
+
+        self.assertNotIn("trackers", config)
+
 
 if __name__ == "__main__":
     unittest.main()

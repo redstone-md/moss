@@ -214,6 +214,30 @@ def sender_label(sender_hex: str, local_peer_hex: str, nick: object | None) -> s
     return f"{clean} [{peer}]"
 
 
+def resolve_tracker_options(args: argparse.Namespace) -> tuple[list[str] | None, bool]:
+    if args.no_trackers:
+        return [], False
+    if args.tracker is not None:
+        return args.tracker, False
+    if args.default_trackers:
+        return None, True
+    return [], False
+
+
+def build_moss_config(
+    *, listen_port: int, peers: list[str], trackers: list[str] | None, heartbeat_ms: int
+) -> dict[str, object]:
+    config: dict[str, object] = {
+        "listen_port": listen_port,
+        "static_peers": peers,
+        "announce_interval_sec": 1,
+        "gossipsub": {"heartbeat_ms": heartbeat_ms},
+    }
+    if trackers is not None:
+        config["trackers"] = trackers
+    return config
+
+
 def render_chat_line(sender_hex: str, local_peer_hex: str, payload: bytes) -> str:
     raw = payload.decode("utf-8", errors="replace")
     message = safe_json_load(raw)
@@ -264,13 +288,14 @@ class MossClient:
         identity_path: Path | None,
         psk: bytes | None = None,
         trackers: list[str] | None = None,
+        use_default_trackers: bool = False,
         heartbeat_ms: int = 250,
     ) -> None:
         self.mesh_id = mesh_id
         self.listen_port = listen_port
         self.identity_path = identity_path
         self.bootstrap_peers = list(peers)
-        self.trackers = None if trackers is None else list(trackers)
+        self.trackers = None if use_default_trackers else list(trackers or [])
         self._message_handler: Callable[[str, str, bytes], None] | None = None
         self._event_handler: Callable[[int, dict], None] | None = None
         self._message_cb = MossMessageCallback(self._handle_message)
@@ -278,14 +303,12 @@ class MossClient:
         self._keystore_load_cb = None
         self._keystore_save_cb = None
 
-        config = {
-            "listen_port": listen_port,
-            "static_peers": peers,
-            "announce_interval_sec": 1,
-            "gossipsub": {"heartbeat_ms": heartbeat_ms},
-        }
-        if trackers is not None:
-            config["trackers"] = trackers
+        config = build_moss_config(
+            listen_port=listen_port,
+            peers=peers,
+            trackers=self.trackers,
+            heartbeat_ms=heartbeat_ms,
+        )
 
         with _INIT_LOCK:
             self._configure_keystore(identity_path)
@@ -890,9 +913,14 @@ def parse_args() -> argparse.Namespace:
         help="Override tracker list. Can be provided multiple times.",
     )
     parser.add_argument(
+        "--default-trackers",
+        action="store_true",
+        help="Use the built-in public tracker set. Public no-PSK meshes are discoverable.",
+    )
+    parser.add_argument(
         "--no-trackers",
         action="store_true",
-        help="Disable automatic tracker bootstrap and rely only on static peers or inbound dials.",
+        help="Disable tracker bootstrap and rely only on static peers or inbound dials.",
     )
     parser.add_argument(
         "--identity-file",
@@ -924,15 +952,14 @@ def main() -> None:
     if not rooms:
         rooms = [DEFAULT_ROOM]
 
-    trackers = args.tracker
-    if args.no_trackers:
-        trackers = []
+    trackers, use_default_trackers = resolve_tracker_options(args)
 
     client = MossClient(
         mesh_id=args.mesh,
         listen_port=args.listen_port,
         peers=args.peer,
         trackers=trackers,
+        use_default_trackers=use_default_trackers,
         identity_path=resolve_identity_path(args),
         psk=args.psk_hex,
     )
