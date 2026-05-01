@@ -6,8 +6,6 @@ import (
 	"io"
 	"net"
 	"time"
-
-	"github.com/pion/stun/v2"
 )
 
 func (l *UDPListener) ObserveContext(ctx context.Context, addr string) (string, error) {
@@ -58,8 +56,11 @@ func (l *UDPListener) ObserveSTUNContext(ctx context.Context, addr string) (stri
 	if err != nil {
 		return "", err
 	}
-	request := stun.MustBuild(stun.TransactionID, stun.BindingRequest, stun.Fingerprint)
-	txID := string(request.TransactionID[:])
+	request, transactionID, err := buildSTUNBindingRequest()
+	if err != nil {
+		return "", err
+	}
+	txID := string(transactionID[:])
 	wait := make(chan string, 1)
 	l.mu.Lock()
 	l.stunTx[txID] = wait
@@ -72,7 +73,7 @@ func (l *UDPListener) ObserveSTUNContext(ctx context.Context, addr string) (stri
 
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
-	if err := l.writeRawDatagram(remote, request.Raw); err != nil {
+	if err := l.writeRawDatagram(remote, request); err != nil {
 		return "", err
 	}
 	for {
@@ -83,7 +84,7 @@ func (l *UDPListener) ObserveSTUNContext(ctx context.Context, addr string) (stri
 			}
 			return observed, nil
 		case <-ticker.C:
-			if err := l.writeRawDatagram(remote, request.Raw); err != nil {
+			if err := l.writeRawDatagram(remote, request); err != nil {
 				return "", err
 			}
 		case <-ctx.Done():

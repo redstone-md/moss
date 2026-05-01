@@ -156,11 +156,10 @@ Moss classifies each node's network environment upon joining the mesh:
    - **UPnP IGD** (Internet Gateway Device Protocol) — most common in consumer routers.
    - **NAT-PMP** (RFC 6886) — Apple ecosystem routers.
    - **PCP** (Port Control Protocol, RFC 6887) — modern successor to NAT-PMP, supports IPv6 and CGNAT.
-   
-   **Recommended Go libraries:**
-   - `github.com/ethereum/go-ethereum/p2p/nat` — unified UPnP + NAT-PMP interface (2,088+ importers, actively maintained).
-   - `github.com/jech/portmap` — conflict-safe port mapping with automatic expiration.
-
+   **Implementation notes:**
+   - UPnP IGD is implemented directly with `github.com/huin/goupnp`.
+   - NAT-PMP is implemented directly with `github.com/jackpal/go-nat-pmp`.
+   - STUN binding uses a minimal local RFC 8489 codec for Binding/XOR-MAPPED-ADDRESS only.
 2. **External Address Discovery:** If port mapping succeeds, the mapped external address is used. Otherwise, Moss performs a STUN-like binding request against ≥2 already-connected peers (or SuperNodes) from different IP ranges to detect the NAT type and discover the external IP:Port.
 
 3. **Reachability Test:** Moss asks a connected peer to initiate a new connection to the discovered external address. Success confirms public reachability.

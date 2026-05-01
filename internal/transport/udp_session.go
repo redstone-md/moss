@@ -5,10 +5,8 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"strconv"
 
 	"github.com/flynn/noise"
-	"github.com/pion/stun/v2"
 )
 
 func (l *UDPListener) handleData(remote *net.UDPAddr, payload []byte) {
@@ -60,32 +58,24 @@ func (l *UDPListener) handleObserveResp(payload []byte) {
 }
 
 func (l *UDPListener) handleSTUNResponse(packet []byte) bool {
-	if !stun.IsMessage(packet) {
+	if !isSTUNMessage(packet) {
 		return false
 	}
-	msg := &stun.Message{Raw: append([]byte(nil), packet...)}
-	if err := msg.Decode(); err != nil {
-		return false
-	}
-	if msg.Type.Class != stun.ClassSuccessResponse {
-		return false
-	}
-	txID := string(msg.TransactionID[:])
+	transactionID, observed, ok := parseSTUNBindingSuccess(packet)
+	txID := string(transactionID[:])
 	l.mu.Lock()
 	wait := l.stunTx[txID]
 	l.mu.Unlock()
 	if wait == nil {
 		return false
 	}
-	var xorAddr stun.XORMappedAddress
-	if err := xorAddr.GetFrom(msg); err != nil {
+	if !ok {
 		select {
 		case wait <- "":
 		default:
 		}
 		return true
 	}
-	observed := net.JoinHostPort(xorAddr.IP.String(), strconv.Itoa(xorAddr.Port))
 	select {
 	case wait <- observed:
 	default:
