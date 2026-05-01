@@ -128,6 +128,11 @@ type relayLocalSession struct {
 	wait         chan struct{}
 }
 
+const (
+	maxInboundControlMessageIDs  = 256
+	maxSuppressionEntriesPerPeer = 1024
+)
+
 type holePunchRequest struct {
 	targetPeerID string
 	relayPeerID  string
@@ -1011,6 +1016,10 @@ func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 			n.scoring.PenalizeInvalid(peer.id)
 			return
 		}
+		if len(env.Payload) > n.config.Security.MaxMessageSizeBytes {
+			n.scoring.PenalizeInvalid(peer.id)
+			return
+		}
 		n.observeMeshDelivery(env.Channel, env.MessageID, peer.id)
 		if !n.cache.StoreIfNew(env) {
 			return
@@ -1468,8 +1477,12 @@ func (n *Node) handleIHave(peer *peerConn, env gossip.Envelope) {
 	if env.Channel == "" || len(env.MessageIDs) == 0 || !n.pubsub.IsLocalSubscriber(env.Channel) {
 		return
 	}
-	missing := make([]string, 0, len(env.MessageIDs))
-	for _, id := range env.MessageIDs {
+	ids := env.MessageIDs
+	if len(ids) > maxInboundControlMessageIDs {
+		ids = ids[:maxInboundControlMessageIDs]
+	}
+	missing := make([]string, 0, len(ids))
+	for _, id := range ids {
 		if !n.cache.Seen(id) {
 			missing = append(missing, id)
 		}
@@ -1488,7 +1501,11 @@ func (n *Node) handleIWant(peer *peerConn, env gossip.Envelope) {
 	if peer == nil || !n.canGossipWithPeer(peer.id) {
 		return
 	}
-	for _, id := range env.MessageIDs {
+	ids := env.MessageIDs
+	if len(ids) > maxInboundControlMessageIDs {
+		ids = ids[:maxInboundControlMessageIDs]
+	}
+	for _, id := range ids {
 		if n.isSuppressed(peer.id, id) {
 			continue
 		}
@@ -2156,6 +2173,9 @@ func (n *Node) rememberSuppression(peerID string, ids []string, fallback string)
 	}
 	now := time.Now()
 	for _, id := range ids {
+		if _, ok := entry[id]; !ok && len(entry) >= maxSuppressionEntriesPerPeer {
+			continue
+		}
 		entry[id] = now
 	}
 }
