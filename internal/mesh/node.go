@@ -447,6 +447,10 @@ func (n *Node) ListenPort() int {
 	return n.listenPort
 }
 
+func (n *Node) MaxMessageSizeBytes() int {
+	return n.config.Security.MaxMessageSizeBytes
+}
+
 func (n *Node) Connect(addr string) int32 {
 	n.mu.RLock()
 	started := n.started

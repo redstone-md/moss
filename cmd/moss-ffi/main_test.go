@@ -1,12 +1,14 @@
 package main
 
 import (
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"unsafe"
 
 	mcrypto "moss/internal/crypto"
 	"moss/internal/mesh"
@@ -67,6 +69,33 @@ func TestBuildSharedLibrary(t *testing.T) {
 	}
 	if !strings.Contains(string(headerBytes), "Moss_Connect") {
 		t.Fatal("generated header is missing Moss_Connect")
+	}
+}
+
+func TestMossPublishRejectsOversizedLengthInSharedLibrary(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping shared library ffi smoke in short mode")
+	}
+	if _, err := exec.LookPath("gcc"); err != nil {
+		t.Skip("gcc is required for ffi smoke harness")
+	}
+	tmp := t.TempDir()
+	libName, exeName := sharedLibrarySpec()
+	libPath := filepath.Join(tmp, libName)
+	headerPath := libPath[:len(libPath)-len(filepath.Ext(libPath))] + ".h"
+	harnessPath := filepath.Join(tmp, "ffi_publish_oversized.c")
+	exePath := filepath.Join(tmp, exeName)
+
+	buildSharedLibraryForBench(t, libPath, tmp)
+	if err := os.WriteFile(harnessPath, []byte(ffiPublishOversizedSource(filepath.Base(headerPath))), 0o644); err != nil {
+		t.Fatalf("write ffi oversized harness failed: %v", err)
+	}
+	buildFFIHarness(t, tmp, exePath, harnessPath)
+	cmd := exec.Command(exePath)
+	cmd.Dir = tmp
+	cmd.Env = ffiHarnessEnv(tmp)
+	if outputBytes, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("ffi oversized harness failed: %v\n%s", err, string(outputBytes))
 	}
 }
 
@@ -157,6 +186,31 @@ func hasActiveRustToolchain() bool {
 	return strings.TrimSpace(string(outputBytes)) != ""
 }
 
+func ffiPublishOversizedSource(headerName string) string {
+	return `#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include "` + headerName + `"
+
+int main(void) {
+  const char* config = "{\"trackers\":[]}";
+  MossHandle handle = Moss_Init("ffi-oversized", NULL, config);
+  if (handle <= 0) {
+    fprintf(stderr, "Moss_Init failed: %lld\n", (long long)handle);
+    return 2;
+  }
+  uint8_t payload = 0;
+  int32_t code = Moss_Publish(handle, "alpha", &payload, UINT32_MAX);
+  Moss_Stop(handle);
+  if (code != -5) {
+    fprintf(stderr, "Moss_Publish oversized returned %d\n", (int)code);
+    return 3;
+  }
+  return 0;
+}
+`
+}
+
 func TestValidateKeystoreProbeSizeRejectsOversizedIdentity(t *testing.T) {
 	if err := validateKeystoreProbeSize(uint32(mcrypto.IdentityEncodedSize)); err != nil {
 		t.Fatalf("expected exact identity size to be accepted: %v", err)
@@ -175,6 +229,30 @@ func TestValidateKeystoreReadSizeRejectsBufferOverread(t *testing.T) {
 	}
 	if err := validateKeystoreReadSize(uint32(mcrypto.IdentityEncodedSize+1), uint32(mcrypto.IdentityEncodedSize+1)); err == nil {
 		t.Fatal("expected read larger than identity size to be rejected")
+	}
+}
+
+func TestValidatePublishPayloadPointerRejectsOversizedLength(t *testing.T) {
+	one := byte(1)
+	max := mesh.DefaultConfig().Security.MaxMessageSizeBytes
+	if code := validatePublishPayloadPointer(unsafe.Pointer(&one), uint32(max), max); code != mesh.MOSS_OK {
+		t.Fatalf("expected max-sized payload to be accepted, got %d", code)
+	}
+	if code := validatePublishPayloadPointer(unsafe.Pointer(&one), uint32(max+1), max); code != mesh.MOSS_ERR_MESSAGE_TOO_LARGE {
+		t.Fatalf("expected oversized payload to be rejected before copy, got %d", code)
+	}
+	if code := validatePublishPayloadPointer(unsafe.Pointer(&one), math.MaxUint32, max); code != mesh.MOSS_ERR_MESSAGE_TOO_LARGE {
+		t.Fatalf("expected uint32 max length to be rejected before C.GoBytes, got %d", code)
+	}
+}
+
+func TestValidatePublishPayloadPointerRejectsNilNonZeroPayload(t *testing.T) {
+	max := mesh.DefaultConfig().Security.MaxMessageSizeBytes
+	if code := validatePublishPayloadPointer(nil, 0, max); code != mesh.MOSS_OK {
+		t.Fatalf("expected nil zero-length payload to be accepted, got %d", code)
+	}
+	if code := validatePublishPayloadPointer(nil, 1, max); code != mesh.MOSS_ERR_CONFIG_INVALID {
+		t.Fatalf("expected nil non-zero payload to be rejected, got %d", code)
 	}
 }
 

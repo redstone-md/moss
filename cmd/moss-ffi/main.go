@@ -56,6 +56,7 @@ import "C"
 
 import (
 	"errors"
+	"math"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -197,6 +198,9 @@ func Moss_Publish(handle C.MossHandle, channel *C.char, data *C.uint8_t, length 
 	if code != mesh.MOSS_OK {
 		return C.int32_t(code)
 	}
+	if code := validatePublishPayloadPointer(unsafe.Pointer(data), uint32(length), node.MaxMessageSizeBytes()); code != mesh.MOSS_OK {
+		return C.int32_t(code)
+	}
 	payload := bytesFromPointer(data, int(length))
 	return C.int32_t(node.Publish(C.GoString(channel), payload))
 }
@@ -333,6 +337,19 @@ func bytesFromPointer(data *C.uint8_t, length int) []byte {
 		return nil
 	}
 	return C.GoBytes(unsafe.Pointer(data), C.int(length))
+}
+
+func validatePublishPayloadPointer(data unsafe.Pointer, length uint32, maxLength int) int32 {
+	if length == 0 {
+		return mesh.MOSS_OK
+	}
+	if data == nil {
+		return mesh.MOSS_ERR_CONFIG_INVALID
+	}
+	if length > uint32(maxLength) || length > uint32(math.MaxInt32) {
+		return mesh.MOSS_ERR_MESSAGE_TOO_LARGE
+	}
+	return mesh.MOSS_OK
 }
 
 func initNode(meshID string, psk []byte, config string) int64 {
