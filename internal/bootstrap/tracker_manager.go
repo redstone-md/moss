@@ -42,18 +42,22 @@ type AnnounceRequest struct {
 }
 
 type Manager struct {
-	HTTP      trackerAnnouncer
-	UDP       trackerAnnouncer
-	nextBatch atomic.Uint64
-	mu        sync.Mutex
-	state     map[string]trackerState
+	HTTP          trackerAnnouncer
+	UDP           trackerAnnouncer
+	maxConcurrent int
+	nextBatch     atomic.Uint64
+	mu            sync.Mutex
+	state         map[string]trackerState
 }
+
+const defaultTrackerConcurrency = 5
 
 func NewManager(timeout time.Duration) *Manager {
 	return &Manager{
-		HTTP:  NewHTTPClient(timeout),
-		UDP:   &UDPClient{},
-		state: make(map[string]trackerState),
+		HTTP:          NewHTTPClient(timeout),
+		UDP:           &UDPClient{},
+		maxConcurrent: defaultTrackerConcurrency,
+		state:         make(map[string]trackerState),
 	}
 }
 
@@ -117,30 +121,43 @@ func (m *Manager) announceTrackers(ctx context.Context, trackers []string, req A
 		peers   []string
 		err     error
 	}
-	results := make(chan result, len(trackers))
+	workerCount := m.trackerConcurrency(len(trackers))
+	jobs := make(chan string)
+	results := make(chan result, workerCount)
 	var wg sync.WaitGroup
-	for _, tracker := range trackers {
-		tracker := tracker
+	for range workerCount {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			u, err := url.Parse(tracker)
-			if err != nil {
-				results <- result{tracker: tracker, err: err}
-				return
+			for tracker := range jobs {
+				u, err := url.Parse(tracker)
+				if err != nil {
+					results <- result{tracker: tracker, err: err}
+					continue
+				}
+				var peers []string
+				switch strings.ToLower(u.Scheme) {
+				case "udp":
+					peers, err = m.UDP.Announce(ctx, tracker, req)
+				case "http", "https":
+					peers, err = m.HTTP.Announce(ctx, tracker, req)
+				default:
+					err = &url.Error{Op: "announce", URL: tracker, Err: err}
+				}
+				results <- result{tracker: tracker, peers: peers, err: err}
 			}
-			var peers []string
-			switch strings.ToLower(u.Scheme) {
-			case "udp":
-				peers, err = m.UDP.Announce(ctx, tracker, req)
-			case "http", "https":
-				peers, err = m.HTTP.Announce(ctx, tracker, req)
-			default:
-				err = &url.Error{Op: "announce", URL: tracker, Err: err}
-			}
-			results <- result{tracker: tracker, peers: peers, err: err}
 		}()
 	}
+	go func() {
+		defer close(jobs)
+		for _, tracker := range trackers {
+			select {
+			case jobs <- tracker:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 	go func() {
 		wg.Wait()
 		close(results)
@@ -169,6 +186,20 @@ func (m *Manager) announceTrackers(ctx context.Context, trackers []string, req A
 		return nil, lastErr
 	}
 	return out, nil
+}
+
+func (m *Manager) trackerConcurrency(total int) int {
+	if total <= 0 {
+		return 0
+	}
+	limit := m.maxConcurrent
+	if limit <= 0 {
+		limit = defaultTrackerConcurrency
+	}
+	if total < limit {
+		return total
+	}
+	return limit
 }
 
 func (m *Manager) recordTrackerResult(tracker string, err error) {

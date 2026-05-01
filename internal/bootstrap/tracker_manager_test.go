@@ -262,6 +262,72 @@ func (b *blockingTrackerClient) Announce(ctx context.Context, trackerURL string,
 	return append([]string(nil), result.peers...), result.err
 }
 
+type meteredTrackerClient struct {
+	mu        sync.Mutex
+	active    int
+	maxActive int
+	calls     int
+}
+
+func (m *meteredTrackerClient) Announce(ctx context.Context, trackerURL string, req AnnounceRequest) ([]string, error) {
+	m.mu.Lock()
+	m.active++
+	m.calls++
+	if m.active > m.maxActive {
+		m.maxActive = m.active
+	}
+	m.mu.Unlock()
+
+	select {
+	case <-time.After(10 * time.Millisecond):
+	case <-ctx.Done():
+		m.mu.Lock()
+		m.active--
+		m.mu.Unlock()
+		return nil, ctx.Err()
+	}
+
+	m.mu.Lock()
+	m.active--
+	m.mu.Unlock()
+	return []string{"198.51.100.10:4000"}, nil
+}
+
+func (m *meteredTrackerClient) Snapshot() (int, int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.calls, m.maxActive
+}
+
+func TestManagerAnnounceAllLimitsConcurrentTrackers(t *testing.T) {
+	client := &meteredTrackerClient{}
+	manager := &Manager{
+		UDP:           client,
+		HTTP:          client,
+		maxConcurrent: 3,
+		state:         make(map[string]trackerState),
+	}
+	trackers := make([]string, 12)
+	for i := range trackers {
+		trackers[i] = "udp://tracker-" + string(rune('a'+i)) + "/announce"
+	}
+
+	peers, err := manager.AnnounceAll(context.Background(), trackers, AnnounceRequest{})
+	if err != nil {
+		t.Fatalf("AnnounceAll failed: %v", err)
+	}
+	if !reflect.DeepEqual(peers, []string{"198.51.100.10:4000"}) {
+		t.Fatalf("unexpected peers %#v", peers)
+	}
+	calls, maxActive := client.Snapshot()
+	if calls != len(trackers) {
+		t.Fatalf("expected every tracker to be queried, got %d", calls)
+	}
+	if maxActive > manager.maxConcurrent {
+		t.Fatalf("expected at most %d concurrent announces, saw %d", manager.maxConcurrent, maxActive)
+	}
+}
+
 func TestManagerAnnounceAllHonorsContextDeadline(t *testing.T) {
 	client := &blockingTrackerClient{
 		fakeTrackerClient: fakeTrackerClient{
