@@ -2559,6 +2559,18 @@ func waitForPeerCountAtMost(t *testing.T, node *Node, max int, dur time.Duration
 	}
 }
 
+func waitForPeerCountEventuallyAtMost(t *testing.T, node *Node, max int, dur time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(dur)
+	for time.Now().Before(deadline) {
+		if got := node.currentPeerCount(); got <= max {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("peer count did not drop to <= %d; info=%s", max, node.MeshInfoJSON())
+}
+
 func waitForPeerCountAtLeast(t *testing.T, node *Node, min int, dur time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(dur)

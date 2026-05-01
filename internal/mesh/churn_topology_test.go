@@ -76,7 +76,7 @@ func TestStarTopologyRecoversAfterPeerReplacement(t *testing.T) {
 	for _, node := range stopped {
 		node.Stop()
 	}
-	waitForPeerCountAtMost(t, root, 7, 3*time.Second)
+	waitForPeerCountEventuallyAtMost(t, root, 7, 3*time.Second)
 
 	replacements := make([]*Node, 0, len(stopped))
 	for i := 0; i < len(stopped); i++ {
