@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	mcrypto "moss/internal/crypto"
 	"moss/internal/mesh"
 )
 
@@ -154,6 +155,27 @@ func hasActiveRustToolchain() bool {
 		return false
 	}
 	return strings.TrimSpace(string(outputBytes)) != ""
+}
+
+func TestValidateKeystoreProbeSizeRejectsOversizedIdentity(t *testing.T) {
+	if err := validateKeystoreProbeSize(uint32(mcrypto.IdentityEncodedSize)); err != nil {
+		t.Fatalf("expected exact identity size to be accepted: %v", err)
+	}
+	if err := validateKeystoreProbeSize(uint32(mcrypto.IdentityEncodedSize + 1)); err == nil {
+		t.Fatal("expected oversized keystore load probe to be rejected")
+	}
+}
+
+func TestValidateKeystoreReadSizeRejectsBufferOverread(t *testing.T) {
+	if err := validateKeystoreReadSize(1, 1); err != nil {
+		t.Fatalf("expected in-capacity read to be accepted: %v", err)
+	}
+	if err := validateKeystoreReadSize(2, 1); err == nil {
+		t.Fatal("expected read larger than capacity to be rejected")
+	}
+	if err := validateKeystoreReadSize(uint32(mcrypto.IdentityEncodedSize+1), uint32(mcrypto.IdentityEncodedSize+1)); err == nil {
+		t.Fatal("expected read larger than identity size to be rejected")
+	}
 }
 
 func TestInitNodeUsesPersistentIdentityFromKeyStore(t *testing.T) {

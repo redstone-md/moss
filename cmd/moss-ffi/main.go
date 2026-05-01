@@ -83,6 +83,9 @@ var (
 		if size == 0 {
 			return nil, nil
 		}
+		if err := validateKeystoreProbeSize(uint32(size)); err != nil {
+			return nil, err
+		}
 		buffer := C.malloc(C.size_t(size))
 		if buffer == nil {
 			return nil, errors.New("keystore load allocation failed")
@@ -91,6 +94,9 @@ var (
 		read := C.callKeyStoreLoad(load, (*C.uint8_t)(buffer), size)
 		if read == 0 {
 			return nil, nil
+		}
+		if err := validateKeystoreReadSize(uint32(read), uint32(size)); err != nil {
+			return nil, err
 		}
 		return C.GoBytes(buffer, C.int(read)), nil
 	}
@@ -107,6 +113,23 @@ var (
 		return nil
 	}
 )
+
+func validateKeystoreProbeSize(size uint32) error {
+	if size > uint32(mcrypto.IdentityEncodedSize) {
+		return errors.New("keystore load size exceeds identity encoding size")
+	}
+	return nil
+}
+
+func validateKeystoreReadSize(read, capacity uint32) error {
+	if read > capacity {
+		return errors.New("keystore load read exceeds buffer capacity")
+	}
+	if read > uint32(mcrypto.IdentityEncodedSize) {
+		return errors.New("keystore load read exceeds identity encoding size")
+	}
+	return nil
+}
 
 func main() {}
 
