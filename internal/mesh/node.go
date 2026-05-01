@@ -1070,15 +1070,20 @@ func (n *Node) broadcastEnvelope(env gossip.Envelope, excludePeerID string) bool
 }
 
 func (n *Node) broadcastFloodPublish(env gossip.Envelope, excludePeerID string) bool {
-	n.mu.RLock()
-	targets := make([]string, 0, len(n.peers))
-	for peerID := range n.peers {
+	meshPeers := n.pubsub.MeshPeers(env.Channel)
+	nonMeshSubscribers := n.pubsub.NonMeshSubscribers(env.Channel)
+	targets := make([]string, 0, len(meshPeers)+len(nonMeshSubscribers))
+	seen := make(map[string]struct{}, len(meshPeers)+len(nonMeshSubscribers))
+	for _, peerID := range append(meshPeers, nonMeshSubscribers...) {
 		if peerID == excludePeerID || n.isPeerBelowPublishThreshold(peerID) {
 			continue
 		}
+		if _, ok := seen[peerID]; ok {
+			continue
+		}
+		seen[peerID] = struct{}{}
 		targets = append(targets, peerID)
 	}
-	n.mu.RUnlock()
 	if len(targets) == 0 {
 		return false
 	}

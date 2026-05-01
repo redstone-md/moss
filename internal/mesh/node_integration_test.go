@@ -195,6 +195,9 @@ func TestTrackerBootstrapPeersRelayPubSubThroughTransitServer(t *testing.T) {
 		t.Fatalf("server.Start failed: %d", code)
 	}
 	defer server.Stop()
+	if code := server.Subscribe("lobby"); code != MOSS_OK {
+		t.Fatalf("server.Subscribe failed: %d", code)
+	}
 
 	serverAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(server.ListenPort()))
 	tracker.SetPeers([]string{serverAddr})
