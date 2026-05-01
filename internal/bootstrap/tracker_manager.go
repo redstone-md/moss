@@ -42,22 +42,18 @@ type AnnounceRequest struct {
 }
 
 type Manager struct {
-	HTTP          trackerAnnouncer
-	UDP           trackerAnnouncer
-	maxConcurrent int
-	nextBatch     atomic.Uint64
-	mu            sync.Mutex
-	state         map[string]trackerState
+	HTTP      trackerAnnouncer
+	UDP       trackerAnnouncer
+	nextBatch atomic.Uint64
+	mu        sync.Mutex
+	state     map[string]trackerState
 }
-
-const defaultTrackerConcurrency = 5
 
 func NewManager(timeout time.Duration) *Manager {
 	return &Manager{
-		HTTP:          NewHTTPClient(timeout),
-		UDP:           &UDPClient{},
-		maxConcurrent: defaultTrackerConcurrency,
-		state:         make(map[string]trackerState),
+		HTTP:  NewHTTPClient(timeout),
+		UDP:   &UDPClient{},
+		state: make(map[string]trackerState),
 	}
 }
 
@@ -76,25 +72,7 @@ func (m *Manager) AnnounceAll(ctx context.Context, trackers []string, req Announ
 	if len(ordered) == 0 {
 		return nil, errors.New("no trackers configured")
 	}
-	limit := m.maxConcurrent
-	if limit <= 0 {
-		limit = defaultTrackerConcurrency
-	}
-	if limit > len(ordered) {
-		limit = len(ordered)
-	}
-	var lastErr error
-	for start := 0; start < len(ordered); start += limit {
-		end := min(start+limit, len(ordered))
-		peers, err := m.announceBatch(ctx, ordered[start:end], req)
-		if err != nil {
-			lastErr = err
-		}
-		if len(peers) != 0 {
-			return peers, nil
-		}
-	}
-	return nil, lastErr
+	return m.announceTrackers(ctx, ordered, req)
 }
 
 func (m *Manager) orderedTrackers(trackers []string) []string {
@@ -133,7 +111,7 @@ func (m *Manager) orderedTrackers(trackers []string) []string {
 	return ordered
 }
 
-func (m *Manager) announceBatch(ctx context.Context, trackers []string, req AnnounceRequest) ([]string, error) {
+func (m *Manager) announceTrackers(ctx context.Context, trackers []string, req AnnounceRequest) ([]string, error) {
 	type result struct {
 		tracker string
 		peers   []string
@@ -185,6 +163,9 @@ func (m *Manager) announceBatch(ctx context.Context, trackers []string, req Anno
 	}
 	sort.Strings(out)
 	if len(out) == 0 {
+		if lastErr == nil {
+			lastErr = ctx.Err()
+		}
 		return nil, lastErr
 	}
 	return out, nil
@@ -206,11 +187,4 @@ func (m *Manager) recordTrackerResult(tracker string, err error) {
 	state.consecutiveFailures = 0
 	state.lastSuccess = time.Now()
 	m.state[tracker] = state
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

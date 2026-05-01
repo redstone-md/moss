@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"reflect"
-	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -38,7 +37,7 @@ func (f *fakeTrackerClient) Calls() []string {
 	return append([]string(nil), f.calls...)
 }
 
-func TestManagerAnnounceAllFallsBackToNextTrackerBatch(t *testing.T) {
+func TestManagerAnnounceAllQueriesAllConfiguredTrackers(t *testing.T) {
 	udp := &fakeTrackerClient{
 		responses: map[string]fakeTrackerResult{
 			"udp://tracker-a/announce": {err: errors.New("a failed")},
@@ -48,10 +47,9 @@ func TestManagerAnnounceAllFallsBackToNextTrackerBatch(t *testing.T) {
 		},
 	}
 	manager := &Manager{
-		UDP:           udp,
-		HTTP:          udp,
-		maxConcurrent: 3,
-		state:         make(map[string]trackerState),
+		UDP:   udp,
+		HTTP:  udp,
+		state: make(map[string]trackerState),
 	}
 
 	peers, err := manager.AnnounceAll(context.Background(), []string{
@@ -70,17 +68,15 @@ func TestManagerAnnounceAllFallsBackToNextTrackerBatch(t *testing.T) {
 	if len(calls) != 4 {
 		t.Fatalf("unexpected tracker call count %#v", calls)
 	}
-	firstBatch := append([]string(nil), calls[:3]...)
-	sort.Strings(firstBatch)
-	if !reflect.DeepEqual(firstBatch, []string{
+	for _, tracker := range []string{
 		"udp://tracker-a/announce",
 		"udp://tracker-b/announce",
 		"udp://tracker-c/announce",
-	}) {
-		t.Fatalf("unexpected first batch %#v", calls)
-	}
-	if calls[3] != "udp://tracker-d/announce" {
-		t.Fatalf("expected fallback tracker to be queried after first batch, got %#v", calls)
+		"udp://tracker-d/announce",
+	} {
+		if !containsTrackerCall(calls, tracker) {
+			t.Fatalf("expected tracker %s to be queried, got %#v", tracker, calls)
+		}
 	}
 }
 
@@ -93,10 +89,9 @@ func TestManagerPrefersHealthyTrackersOnNextAnnounce(t *testing.T) {
 		},
 	}
 	manager := &Manager{
-		UDP:           udp,
-		HTTP:          udp,
-		maxConcurrent: 2,
-		state:         make(map[string]trackerState),
+		UDP:   udp,
+		HTTP:  udp,
+		state: make(map[string]trackerState),
 	}
 	trackers := []string{
 		"udp://tracker-a/announce",
@@ -119,16 +114,72 @@ func TestManagerPrefersHealthyTrackersOnNextAnnounce(t *testing.T) {
 	if !reflect.DeepEqual(peers, []string{"198.51.100.20:4000", "198.51.100.21:4000"}) {
 		t.Fatalf("unexpected peers %#v", peers)
 	}
-	if calls := udp.Calls(); len(calls) != 2 || calls[0] == "udp://tracker-a/announce" || calls[1] == "udp://tracker-a/announce" {
-		t.Fatalf("expected only healthy trackers in first batch, got %#v", calls)
+	if calls := udp.Calls(); len(calls) != 3 {
+		t.Fatalf("expected all trackers to be queried, got %#v", calls)
 	}
 }
 
-func TestNewManagerUsesSpecTrackerConcurrency(t *testing.T) {
-	manager := NewManager(3 * time.Second)
+func TestManagerAnnounceAllMergesPeersAcrossSuccessfulTrackers(t *testing.T) {
+	udp := &fakeTrackerClient{
+		responses: map[string]fakeTrackerResult{
+			"udp://malicious-tracker/announce": {peers: []string{"203.0.113.66:6000"}},
+			"udp://honest-tracker/announce":    {peers: []string{"198.51.100.10:7000"}},
+		},
+	}
+	manager := &Manager{
+		UDP:   udp,
+		HTTP:  udp,
+		state: make(map[string]trackerState),
+	}
 
-	if manager.maxConcurrent != defaultTrackerConcurrency {
-		t.Fatalf("expected default tracker concurrency %d, got %d", defaultTrackerConcurrency, manager.maxConcurrent)
+	peers, err := manager.AnnounceAll(context.Background(), []string{
+		"udp://malicious-tracker/announce",
+		"udp://honest-tracker/announce",
+	}, AnnounceRequest{})
+	if err != nil {
+		t.Fatalf("AnnounceAll failed: %v", err)
+	}
+	if !reflect.DeepEqual(peers, []string{"198.51.100.10:7000", "203.0.113.66:6000"}) {
+		t.Fatalf("expected merged tracker peers, got %#v", peers)
+	}
+	if calls := udp.Calls(); len(calls) != 2 {
+		t.Fatalf("expected both trackers to be queried, got %#v", calls)
+	}
+}
+
+func TestManagerAnnounceAllHealthOrderingDoesNotStarveUnknownTrackers(t *testing.T) {
+	udp := &fakeTrackerClient{
+		responses: map[string]fakeTrackerResult{
+			"udp://malicious-tracker/announce": {peers: []string{"203.0.113.66:6000"}},
+			"udp://honest-tracker/announce":    {peers: []string{"198.51.100.10:7000"}},
+		},
+	}
+	manager := &Manager{
+		UDP:   udp,
+		HTTP:  udp,
+		state: make(map[string]trackerState),
+	}
+	trackers := []string{
+		"udp://malicious-tracker/announce",
+		"udp://honest-tracker/announce",
+	}
+
+	if _, err := manager.AnnounceAll(context.Background(), trackers, AnnounceRequest{}); err != nil {
+		t.Fatalf("first AnnounceAll failed: %v", err)
+	}
+	udp.mu.Lock()
+	udp.calls = nil
+	udp.mu.Unlock()
+
+	peers, err := manager.AnnounceAll(context.Background(), trackers, AnnounceRequest{})
+	if err != nil {
+		t.Fatalf("second AnnounceAll failed: %v", err)
+	}
+	if !reflect.DeepEqual(peers, []string{"198.51.100.10:7000", "203.0.113.66:6000"}) {
+		t.Fatalf("expected merged tracker peers after health ordering, got %#v", peers)
+	}
+	if calls := udp.Calls(); len(calls) != 2 || !containsTrackerCall(calls, "udp://honest-tracker/announce") {
+		t.Fatalf("expected health ordering to keep querying honest tracker, got %#v", calls)
 	}
 }
 
@@ -141,10 +192,9 @@ func TestManagerRecoversWhenHealthyTrackerChangesBetweenAnnounces(t *testing.T) 
 		},
 	}
 	manager := &Manager{
-		UDP:           udp,
-		HTTP:          udp,
-		maxConcurrent: 2,
-		state:         make(map[string]trackerState),
+		UDP:   udp,
+		HTTP:  udp,
+		state: make(map[string]trackerState),
 	}
 	trackers := []string{
 		"udp://tracker-a/announce",
@@ -225,10 +275,9 @@ func TestManagerAnnounceAllHonorsContextDeadline(t *testing.T) {
 		},
 	}
 	manager := &Manager{
-		UDP:           client,
-		HTTP:          client,
-		maxConcurrent: 2,
-		state:         make(map[string]trackerState),
+		UDP:   client,
+		HTTP:  client,
+		state: make(map[string]trackerState),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Millisecond)
@@ -251,6 +300,42 @@ func TestManagerAnnounceAllHonorsContextDeadline(t *testing.T) {
 	}
 }
 
+func TestManagerAnnounceAllQueriesHonestTrackerWhenPeerReturningTrackerBlocks(t *testing.T) {
+	client := &blockingTrackerClient{
+		fakeTrackerClient: fakeTrackerClient{
+			responses: map[string]fakeTrackerResult{
+				"udp://blocking-tracker/announce": {err: context.DeadlineExceeded},
+				"udp://honest-tracker/announce":   {peers: []string{"198.51.100.10:7000"}},
+			},
+		},
+		block: map[string]bool{
+			"udp://blocking-tracker/announce": true,
+		},
+	}
+	manager := &Manager{
+		UDP:   client,
+		HTTP:  client,
+		state: make(map[string]trackerState),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Millisecond)
+	defer cancel()
+
+	peers, err := manager.AnnounceAll(ctx, []string{
+		"udp://blocking-tracker/announce",
+		"udp://honest-tracker/announce",
+	}, AnnounceRequest{})
+	if err != nil {
+		t.Fatalf("AnnounceAll failed: %v", err)
+	}
+	if !reflect.DeepEqual(peers, []string{"198.51.100.10:7000"}) {
+		t.Fatalf("expected honest tracker peer despite blocking tracker, got %#v", peers)
+	}
+	if calls := client.Calls(); len(calls) != 2 || !containsTrackerCall(calls, "udp://honest-tracker/announce") {
+		t.Fatalf("expected blocking and honest trackers to be attempted, got %#v", calls)
+	}
+}
+
 func TestManagerAnnounceAllReturnsLastErrorWhenAllTrackersFail(t *testing.T) {
 	udp := &fakeTrackerClient{
 		responses: map[string]fakeTrackerResult{
@@ -260,10 +345,9 @@ func TestManagerAnnounceAllReturnsLastErrorWhenAllTrackersFail(t *testing.T) {
 		},
 	}
 	manager := &Manager{
-		UDP:           udp,
-		HTTP:          udp,
-		maxConcurrent: 2,
-		state:         make(map[string]trackerState),
+		UDP:   udp,
+		HTTP:  udp,
+		state: make(map[string]trackerState),
 	}
 
 	_, err := manager.AnnounceAll(context.Background(), []string{
