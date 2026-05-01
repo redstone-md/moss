@@ -95,6 +95,48 @@ func TestHandleSupernodeStatusRejectsInvalidSignature(t *testing.T) {
 	}
 }
 
+func TestHandleSupernodeStatusRequiresDirectSenderForVerification(t *testing.T) {
+	nodeA, err := NewNode("mesh-supernode-direct", nil, DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewNode nodeA failed: %v", err)
+	}
+	nodeB, err := NewNode("mesh-supernode-direct", nil, DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewNode nodeB failed: %v", err)
+	}
+
+	peerID := nodeB.localPeerID()
+	signed := nodeB.signSupernodeEnvelope(gossip.Envelope{
+		Type:                   gossip.TypeSupernodeAnnounce,
+		AdvertisedPeerID:       peerID,
+		AdvertisedAddr:         "192.168.1.50:41030",
+		AdvertisedNATType:      string(nat.TypePublic),
+		AdvertisedReachable:    true,
+		AdvertisedRelayCapable: true,
+	})
+
+	nodeA.handleSupernodeStatus(&peerConn{id: "relay-peer"}, signed, true)
+
+	nodeA.mu.RLock()
+	relayed := nodeA.knownPeers[peerID]
+	nodeA.mu.RUnlock()
+	if relayed.verified {
+		t.Fatal("expected relayed supernode status to remain unverified")
+	}
+	if targets := nodeA.discoveredPeerTargets(); len(targets) != 0 {
+		t.Fatalf("expected unverified relayed supernode status to stay out of dial targets, got %d", len(targets))
+	}
+
+	nodeA.handleSupernodeStatus(&peerConn{id: peerID}, signed, true)
+
+	nodeA.mu.RLock()
+	direct := nodeA.knownPeers[peerID]
+	nodeA.mu.RUnlock()
+	if !direct.verified {
+		t.Fatal("expected direct supernode status to verify")
+	}
+}
+
 func TestVerifySupernodeEnvelopeRejectsWrongPublicKeyLength(t *testing.T) {
 	env := gossip.Envelope{
 		Type:                   gossip.TypeSupernodeAnnounce,
