@@ -4,21 +4,12 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
-	ethnat "github.com/ethereum/go-ethereum/p2p/nat"
 	"net"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
-
-func newUPnPBackend() routerInterface {
-	return ethnat.UPnP()
-}
-
-func newNATPMPBackend() routerInterface {
-	return ethnat.PMP(nil)
-}
 
 func newPCPBackend() routerInterface {
 	return &pcpRouter{

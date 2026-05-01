@@ -7,8 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pion/stun/v2"
-
 	mcrypto "moss/internal/crypto"
 )
 
@@ -407,17 +405,13 @@ func TestUDPObserveSTUNContextReportsObservedEndpoint(t *testing.T) {
 			if readErr != nil {
 				return
 			}
-			msg := &stun.Message{Raw: append([]byte(nil), buffer[:n]...)}
-			if err := msg.Decode(); err != nil {
+			if !isSTUNMessage(buffer[:n]) {
 				continue
 			}
-			response := stun.MustBuild(
-				stun.NewTransactionIDSetter(msg.TransactionID),
-				stun.BindingSuccess,
-				&stun.XORMappedAddress{IP: remote.IP, Port: remote.Port},
-				stun.Fingerprint,
-			)
-			_, _ = serverConn.WriteToUDP(response.Raw, remote)
+			var transactionID [12]byte
+			copy(transactionID[:], buffer[8:20])
+			response := buildSTUNBindingSuccess(transactionID, remote)
+			_, _ = serverConn.WriteToUDP(response, remote)
 		}
 	}()
 

@@ -148,7 +148,8 @@ Preferred slicing inside `internal/mesh`:
 | Package | Purpose | License |
 |---------|---------|---------|
 | `github.com/flynn/noise` | Noise Protocol Framework (XX/IK handshakes) | BSD-3 |
-| `github.com/ethereum/go-ethereum/p2p/nat` | UPnP + NAT-PMP unified interface | LGPL-3.0 |
+| `github.com/huin/goupnp` | UPnP IGD port mapping | BSD-2 |
+| `github.com/jackpal/go-nat-pmp` | NAT-PMP port mapping | Apache-2.0 |
 | `github.com/jech/portmap` | Conflict-safe port mapping | MIT |
 | `golang.org/x/crypto` | HKDF, Ed25519, Curve25519 | BSD-3 |
 | `golang.org/x/net` | UDP/TCP networking utilities | BSD-3 |
