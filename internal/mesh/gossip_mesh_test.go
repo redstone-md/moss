@@ -148,6 +148,14 @@ func TestRememberSuppressionCapsEntriesPerPeer(t *testing.T) {
 	if got := len(node.suppress["peer-a"]); got != maxSuppressionEntriesPerPeer {
 		t.Fatalf("expected suppression map capped at %d entries, got %d", maxSuppressionEntriesPerPeer, got)
 	}
+
+	for i := 0; i < 10; i++ {
+		node.rememberSuppression("peer-a", []string{"extra-" + strconv.Itoa(i)}, "")
+	}
+
+	if got := len(node.suppress["peer-a"]); got != maxSuppressionEntriesPerPeer {
+		t.Fatalf("expected repeated suppression calls to stay capped at %d entries, got %d", maxSuppressionEntriesPerPeer, got)
+	}
 }
 
 func TestMeshDeliveryDeficitPenalizesSilentMeshPeers(t *testing.T) {

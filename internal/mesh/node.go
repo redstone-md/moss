@@ -2075,10 +2075,10 @@ func (n *Node) rememberSuppression(peerID string, ids []string, fallback string)
 	}
 	now := time.Now()
 	for _, id := range ids {
-		entry[id] = now
-		if len(entry) >= maxSuppressionEntriesPerPeer {
-			break
+		if _, ok := entry[id]; !ok && len(entry) >= maxSuppressionEntriesPerPeer {
+			continue
 		}
+		entry[id] = now
 	}
 }
 
