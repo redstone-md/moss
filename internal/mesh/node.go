@@ -1172,7 +1172,11 @@ func (n *Node) localKnownPeer() knownPeer {
 }
 
 func (n *Node) handlePeerAnnounce(peer *peerConn, env gossip.Envelope) {
-	n.handleKnownPeerEnvelope(peer, env, gossip.TypePeerAnnounce, verifyPeerAnnouncementEnvelope(env))
+	verified := verifyPeerAnnouncementEnvelope(env)
+	if peer == nil || env.AdvertisedPeerID != peer.id {
+		verified = false
+	}
+	n.handleKnownPeerEnvelope(peer, env, gossip.TypePeerAnnounce, verified)
 }
 
 func (n *Node) handleSupernodeStatus(peer *peerConn, env gossip.Envelope, relayCapable bool) {
