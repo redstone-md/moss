@@ -96,6 +96,8 @@ type peerConn struct {
 	pingMisses  int
 }
 
+const sendToPeersConcurrency = 16
+
 type dispatchMessage struct {
 	channel string
 	sender  [32]byte
@@ -1608,17 +1610,25 @@ func (n *Node) sendToPeers(peerIDs []string, env gossip.Envelope) bool {
 	if len(peers) == 0 {
 		return false
 	}
+	workerCount := min(len(peers), sendToPeersConcurrency)
+	jobs := make(chan *peerConn, len(peers))
 	var sent atomic.Bool
 	var wg sync.WaitGroup
-	wg.Add(len(peers))
-	for _, peer := range peers {
-		go func(peer *peerConn) {
+	wg.Add(workerCount)
+	for range workerCount {
+		go func() {
 			defer wg.Done()
-			if err := peer.session.WritePacket(payload); err == nil {
-				sent.Store(true)
+			for peer := range jobs {
+				if err := peer.session.WritePacket(payload); err == nil {
+					sent.Store(true)
+				}
 			}
-		}(peer)
+		}()
 	}
+	for _, peer := range peers {
+		jobs <- peer
+	}
+	close(jobs)
 	wg.Wait()
 	return sent.Load()
 }
