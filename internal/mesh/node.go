@@ -2173,7 +2173,7 @@ func (n *Node) discoveredPeerTargets() []discoveredPeerTarget {
 		if peerID == n.localPeerID() || info.addr == "" {
 			continue
 		}
-		if !info.verified {
+		if !info.verified && len(info.signature) == 0 {
 			continue
 		}
 		if _, connected := n.peers[peerID]; connected {
