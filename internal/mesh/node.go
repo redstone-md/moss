@@ -115,6 +115,11 @@ type relayRoute struct {
 	target    string
 }
 
+func (r relayRoute) allows(source, target string) bool {
+	return (r.initiator == source && r.target == target) ||
+		(r.initiator == target && r.target == source)
+}
+
 type relayLocalSession struct {
 	sessionID    string
 	viaPeerID    string
@@ -2391,13 +2396,13 @@ func (n *Node) handleRelayRequest(peer *peerConn, env gossip.Envelope) {
 }
 
 func (n *Node) handleRelayAccept(peer *peerConn, env gossip.Envelope) {
-	if env.RelaySession == "" {
+	if env.RelaySession == "" || env.RelaySource == "" || env.RelayTarget == "" {
 		return
 	}
 	if env.RelayTarget == n.localPeerID() {
 		n.mu.Lock()
 		session, ok := n.relayLocals[env.RelaySession]
-		if ok {
+		if ok && session.viaPeerID == peer.id && session.remotePeerID == env.RelaySource {
 			session.established = true
 			n.relayLocals[env.RelaySession] = session
 			if session.wait != nil {
@@ -2418,10 +2423,16 @@ func (n *Node) handleRelayAccept(peer *peerConn, env gossip.Envelope) {
 }
 
 func (n *Node) handleRelayData(peer *peerConn, env gossip.Envelope) {
-	if env.RelaySession == "" || env.RelayTarget == "" {
+	if env.RelaySession == "" || env.RelaySource == "" || env.RelayTarget == "" {
 		return
 	}
 	if env.RelayTarget == n.localPeerID() {
+		n.mu.RLock()
+		session, ok := n.relayLocals[env.RelaySession]
+		n.mu.RUnlock()
+		if !ok || !session.established || session.viaPeerID != peer.id || session.remotePeerID != env.RelaySource {
+			return
+		}
 		var sender [32]byte
 		raw, err := hex.DecodeString(env.RelaySource)
 		if err == nil {
@@ -2431,8 +2442,15 @@ func (n *Node) handleRelayData(peer *peerConn, env gossip.Envelope) {
 		return
 	}
 	n.mu.RLock()
+	route, hasRoute := n.relayRoutes[env.RelaySession]
 	targetPeer := n.peers[env.RelayTarget]
 	n.mu.RUnlock()
+	if !hasRoute || !route.allows(env.RelaySource, env.RelayTarget) {
+		return
+	}
+	if peer.id != env.RelaySource {
+		return
+	}
 	if targetPeer == nil {
 		return
 	}
