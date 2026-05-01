@@ -3790,7 +3790,11 @@ func (n *Node) medianMeshScore(peers []string) float64 {
 		scores = append(scores, n.peerScore(peerID))
 	}
 	sort.Float64s(scores)
-	return scores[len(scores)/2]
+	middle := len(scores) / 2
+	if len(scores)%2 == 1 {
+		return scores[middle]
+	}
+	return (scores[middle-1] + scores[middle]) / 2
 }
 
 func decodePeerID(peerID string) [32]byte {

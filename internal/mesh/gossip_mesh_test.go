@@ -116,6 +116,51 @@ func TestMedianMeshScore(t *testing.T) {
 	}
 }
 
+func TestNodeMedianMeshScoreEvenCountAveragesMiddleValues(t *testing.T) {
+	node, err := NewNode("mesh-node-median-even", nil, DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+	peers := []string{"peer-a", "peer-b", "peer-c", "peer-d", "peer-e", "peer-f"}
+	for i, peerID := range peers {
+		if i < 3 {
+			node.scoring.SetApplicationScore(peerID, 0)
+			continue
+		}
+		node.scoring.SetApplicationScore(peerID, 1)
+	}
+
+	if score := node.medianMeshScore(peers); score != 0.5 {
+		t.Fatalf("expected even-count median 0.5, got %f", score)
+	}
+}
+
+func TestOpportunisticGraftUsesEvenMedianToRepairDegradedMesh(t *testing.T) {
+	node, err := NewNode("mesh-opportunistic-even-median", nil, DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+	meshPeers := []string{"peer-a", "peer-b", "peer-c", "peer-d", "peer-e", "peer-f"}
+	for i, peerID := range meshPeers {
+		node.pubsub.SetMeshPeer("alpha", peerID, true)
+		if i < 3 {
+			node.scoring.SetApplicationScore(peerID, 0)
+			continue
+		}
+		node.scoring.SetApplicationScore(peerID, 1)
+	}
+	candidate := "peer-g"
+	node.peers[candidate] = &peerConn{id: candidate}
+	node.pubsub.SetPeerSubscription(candidate, "alpha", true)
+	node.scoring.SetApplicationScore(candidate, 2)
+
+	node.opportunisticGraft("alpha")
+
+	if !node.pubsub.InMesh("alpha", candidate) {
+		t.Fatal("expected opportunistic graft to repair degraded even-sized mesh")
+	}
+}
+
 func TestPublishBelowThresholdIsDropped(t *testing.T) {
 	node, err := NewNode("mesh-publish-threshold", nil, DefaultConfig())
 	if err != nil {
