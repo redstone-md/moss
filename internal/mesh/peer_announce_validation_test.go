@@ -92,7 +92,7 @@ func TestHandlePeerAnnounceAcceptsSignedThirdPartyAdvertisement(t *testing.T) {
 
 	env := nodeC.peerAnnouncementEnvelope(knownPeer{
 		id:   nodeC.localPeerID(),
-		addr: "203.0.113.20:5001",
+		addr: "10.0.0.20:5001",
 	})
 	nodeA.handlePeerAnnounce(&peerConn{id: nodeB.localPeerID()}, env)
 
@@ -102,10 +102,45 @@ func TestHandlePeerAnnounceAcceptsSignedThirdPartyAdvertisement(t *testing.T) {
 	if !ok {
 		t.Fatal("expected signed third-party advertisement to be stored")
 	}
-	if info.addr != "203.0.113.20:5001" {
+	if info.addr != "10.0.0.20:5001" {
 		t.Fatalf("expected signed third-party addr to be stored, got %q", info.addr)
 	}
 	if len(info.signature) == 0 {
 		t.Fatal("expected signed third-party advertisement signature to be retained")
+	}
+	if info.verified {
+		t.Fatal("expected signed third-party advertisement to remain unverified")
+	}
+	if targets := nodeA.discoveredPeerTargets(); len(targets) != 0 {
+		t.Fatalf("expected unverified signed third-party advertisement to stay out of dial targets, got %d", len(targets))
+	}
+}
+
+func TestHandlePeerAnnounceAllowsSameHostSignedThirdPartyAdvertisement(t *testing.T) {
+	nodeA, err := NewNode("mesh-peer-announce-same-host", nil, DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewNode nodeA failed: %v", err)
+	}
+	nodeB, err := NewNode("mesh-peer-announce-same-host", nil, DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewNode nodeB failed: %v", err)
+	}
+	nodeC, err := NewNode("mesh-peer-announce-same-host", nil, DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewNode nodeC failed: %v", err)
+	}
+
+	env := nodeC.peerAnnouncementEnvelope(knownPeer{
+		id:   nodeC.localPeerID(),
+		addr: "127.0.0.1:5001",
+	})
+	nodeA.handlePeerAnnounce(&peerConn{id: nodeB.localPeerID(), addr: "127.0.0.1:4001"}, env)
+
+	targets := nodeA.discoveredPeerTargets()
+	if len(targets) != 1 {
+		t.Fatalf("expected same-host signed third-party advertisement to be dialable, got %d targets", len(targets))
+	}
+	if targets[0].peerID != nodeC.localPeerID() {
+		t.Fatalf("expected nodeC target, got %q", targets[0].peerID)
 	}
 }

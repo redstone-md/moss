@@ -164,6 +164,7 @@ type knownPeer struct {
 	predictionObservations []string
 	noiseStatic            []byte
 	signature              []byte
+	thirdPartyDialable     bool
 }
 
 type meshInfo struct {
@@ -1272,6 +1273,12 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 	}
 	lan := current.lan && knownPeerAddrRank(addr) <= 1
 	verified := current.verified || verifiedEnvelope || (peer != nil && env.AdvertisedPeerID == peer.id)
+	thirdPartyDialable := current.thirdPartyDialable && current.addr == addr
+	if verified {
+		thirdPartyDialable = true
+	} else if validSignedAnnouncement && !trustedSelfAnnouncement && env.AdvertisedAddr == addr {
+		thirdPartyDialable = thirdPartyAnnouncementDialable(peer, env.AdvertisedAddr)
+	}
 	natType := current.natType
 	natTrusted := current.natTrusted
 	publicReachable := current.publicReachable
@@ -1287,7 +1294,7 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 	if peer != nil && env.AdvertisedPeerID == peer.id {
 		predictionObservations = appendObservation(predictionObservations, liveSessionAddr)
 	}
-	if !ok || current.addr != addr || !current.direct || current.verified != verified || current.natType != natType || current.natTrusted != natTrusted || current.publicReachable != publicReachable || current.relayCapable != relayCapable || !equalBytes(current.signature, signature) {
+	if !ok || current.addr != addr || !current.direct || current.verified != verified || current.thirdPartyDialable != thirdPartyDialable || current.natType != natType || current.natTrusted != natTrusted || current.publicReachable != publicReachable || current.relayCapable != relayCapable || !equalBytes(current.signature, signature) {
 		direct := false
 		if ok && current.direct {
 			direct = true
@@ -1312,6 +1319,7 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 			predictionObservations: predictionObservations,
 			noiseStatic:            append([]byte(nil), current.noiseStatic...),
 			signature:              signature,
+			thirdPartyDialable:     thirdPartyDialable,
 		}
 		changed = true
 	}
@@ -1341,6 +1349,36 @@ func knownPeerSignature(current knownPeer, addr string, env gossip.Envelope, val
 		return append([]byte(nil), current.signature...)
 	}
 	return nil
+}
+
+func thirdPartyAnnouncementDialable(peer *peerConn, addr string) bool {
+	if knownPeerAddrRank(addr) >= 3 {
+		return true
+	}
+	if peer == nil || peer.addr == "" {
+		return false
+	}
+	return sameHostPortHost(peer.addr, addr)
+}
+
+func sameHostPortHost(a, b string) bool {
+	aHost, _, err := net.SplitHostPort(a)
+	if err != nil {
+		return false
+	}
+	bHost, _, err := net.SplitHostPort(b)
+	if err != nil {
+		return false
+	}
+	aIP, err := netip.ParseAddr(aHost)
+	if err != nil {
+		return false
+	}
+	bIP, err := netip.ParseAddr(bHost)
+	if err != nil {
+		return false
+	}
+	return aIP.Unmap() == bIP.Unmap()
 }
 
 func equalBytes(a, b []byte) bool {
@@ -2173,7 +2211,7 @@ func (n *Node) discoveredPeerTargets() []discoveredPeerTarget {
 		if peerID == n.localPeerID() || info.addr == "" {
 			continue
 		}
-		if !info.verified && len(info.signature) == 0 {
+		if !info.verified && !info.thirdPartyDialable {
 			continue
 		}
 		if _, connected := n.peers[peerID]; connected {
