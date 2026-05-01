@@ -1861,6 +1861,11 @@ func (n *Node) pruneLowScoringPeers() {
 
 func (n *Node) prunePeerFromAllMeshes(peerID string) {
 	until := time.Now().Add(n.peerPruneBackoff())
+	n.mu.Lock()
+	if peer := n.peers[peerID]; peer != nil && until.After(peer.meshBlocked) {
+		peer.meshBlocked = until
+	}
+	n.mu.Unlock()
 	for _, channel := range n.pubsub.SnapshotLocal() {
 		if !n.pubsub.InMesh(channel, peerID) {
 			continue
@@ -1873,11 +1878,6 @@ func (n *Node) prunePeerFromAllMeshes(peerID string) {
 			n.sendEnvelope(peer, gossip.Envelope{Type: gossip.TypePrune, Channel: channel})
 		}
 	}
-	n.mu.Lock()
-	if peer := n.peers[peerID]; peer != nil && until.After(peer.meshBlocked) {
-		peer.meshBlocked = until
-	}
-	n.mu.Unlock()
 }
 
 func (n *Node) peerProbeInterval() time.Duration {

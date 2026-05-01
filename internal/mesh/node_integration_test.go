@@ -2319,6 +2319,8 @@ func TestHighLatencyPeerIsPruned(t *testing.T) {
 	if peer := nodeA.peers[targetID]; peer != nil {
 		peer.connectedAt = time.Now().Add(-time.Minute)
 		peer.lastRTT = 3 * time.Second
+		peer.pingPending = ""
+		peer.pingSentAt = time.Now()
 	}
 	nodeA.mu.Unlock()
 
@@ -2647,7 +2649,24 @@ func waitForPeerMeshState(t *testing.T, node *Node, channel, peerID string, want
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	t.Fatalf("peer %s mesh state for %s did not become %t", peerID, channel, want)
+	node.mu.RLock()
+	peer := node.peers[peerID]
+	var rtt time.Duration
+	var blockedFor time.Duration
+	var pending string
+	var sentAgo time.Duration
+	if peer != nil {
+		rtt = peer.lastRTT
+		if time.Until(peer.meshBlocked) > 0 {
+			blockedFor = time.Until(peer.meshBlocked)
+		}
+		pending = peer.pingPending
+		if !peer.pingSentAt.IsZero() {
+			sentAgo = time.Since(peer.pingSentAt)
+		}
+	}
+	node.mu.RUnlock()
+	t.Fatalf("peer %s mesh state for %s did not become %t (actual=%t exists=%t rtt=%s blocked_for=%s pending=%q sent_ago=%s mesh=%v)", peerID, channel, want, node.pubsub.InMesh(channel, peerID), peer != nil, rtt, blockedFor, pending, sentAgo, node.pubsub.MeshPeers(channel))
 }
 
 func waitForKnownPeerPort(t *testing.T, node *Node, wantPeerID, wantPort string) {
