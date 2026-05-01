@@ -90,7 +90,7 @@ func TestHandleKnownPeerEnvelopeDoesNotOverwritePublicAddrWithPrivateAnnounce(t 
 		AdvertisedNATType:      string(nat.TypeRestrictedCone),
 		AdvertisedReachable:    false,
 		AdvertisedRelayCapable: false,
-	}, gossip.TypePeerAnnounce)
+	}, gossip.TypePeerAnnounce, false)
 
 	node.mu.RLock()
 	defer node.mu.RUnlock()
@@ -123,7 +123,7 @@ func TestHandleKnownPeerEnvelopeUpdatesDirectPeerAddrOnSelfAnnouncedPublicChange
 		AdvertisedNATType:      string(nat.TypeRestrictedCone),
 		AdvertisedReachable:    false,
 		AdvertisedRelayCapable: false,
-	}, gossip.TypePeerAnnounce)
+	}, gossip.TypePeerAnnounce, false)
 
 	node.mu.RLock()
 	defer node.mu.RUnlock()
@@ -154,7 +154,7 @@ func TestHandleKnownPeerEnvelopeRefreshesStalePrivateDirectAddrOnSelfAnnounce(t 
 		AdvertisedNATType:      string(nat.TypeUnknown),
 		AdvertisedReachable:    false,
 		AdvertisedRelayCapable: false,
-	}, gossip.TypePeerAnnounce)
+	}, gossip.TypePeerAnnounce, false)
 
 	node.mu.RLock()
 	defer node.mu.RUnlock()
@@ -189,7 +189,7 @@ func TestHandleKnownPeerEnvelopeClearsDialCooldownOnEndpointChange(t *testing.T)
 		AdvertisedNATType:      string(nat.TypeRestrictedCone),
 		AdvertisedReachable:    false,
 		AdvertisedRelayCapable: false,
-	}, gossip.TypePeerAnnounce)
+	}, gossip.TypePeerAnnounce, false)
 
 	node.mu.RLock()
 	defer node.mu.RUnlock()
@@ -228,5 +228,107 @@ func TestUpdateKnownPeerClearsCooldownsOnEndpointChange(t *testing.T) {
 	}
 	if _, ok := node.directProbes["peer-1"]; ok {
 		t.Fatal("expected direct probe cooldown to be cleared after known peer update")
+	}
+}
+
+func TestDiscoveredPeerTargetsSkipsUnverifiedKnownPeers(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Trackers = nil
+	node, err := NewNode("mesh-known-peer", nil, cfg)
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+
+	node.mu.Lock()
+	node.knownPeers["peer-verified"] = knownPeer{id: "peer-verified", addr: "127.0.0.1:41030", verified: true}
+	node.knownPeers["peer-unverified"] = knownPeer{id: "peer-unverified", addr: "127.0.0.1:41031"}
+	node.mu.Unlock()
+
+	targets := node.discoveredPeerTargets()
+	if len(targets) != 1 {
+		t.Fatalf("expected only verified known peer to be selected, got %d targets", len(targets))
+	}
+	if targets[0].peerID != "peer-verified" {
+		t.Fatalf("expected verified known peer to be selected, got %q", targets[0].peerID)
+	}
+}
+
+func TestDiscoveredPeerTargetsRetriesDisconnectedVerifiedPeers(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Trackers = nil
+	node, err := NewNode("mesh-known-peer", nil, cfg)
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+
+	node.mu.Lock()
+	node.knownPeers["peer-1"] = knownPeer{id: "peer-1", addr: "127.0.0.1:41030", verified: true}
+	node.mu.Unlock()
+
+	targets := node.discoveredPeerTargets()
+	if len(targets) != 1 {
+		t.Fatalf("expected disconnected verified peer to be retried, got %d targets", len(targets))
+	}
+	if targets[0].peerID != "peer-1" {
+		t.Fatalf("expected peer-1 to be retried, got %q", targets[0].peerID)
+	}
+}
+
+func TestShouldRetainPeerRejectsBootstrapPeerWithPingMisses(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Trackers = nil
+	node, err := NewNode("mesh-retain-ping-miss", nil, cfg)
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+
+	peer := &peerConn{
+		id:          "peer-1",
+		bootstrap:   true,
+		connectedAt: time.Now().Add(-time.Minute),
+		lastRTT:     time.Second,
+		pingMisses:  1,
+	}
+	node.knownPeers[peer.id] = knownPeer{id: peer.id, bootstrap: true}
+
+	if node.shouldRetainPeer(peer) {
+		t.Fatal("expected ping misses to prevent bootstrap peer retention")
+	}
+}
+
+func TestNormalizeHolePunchCoordAtDefaultsWhenZero(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	got := normalizeHolePunchCoordAt(0, now)
+	want := now.Add(600 * time.Millisecond)
+	if !got.Equal(want) {
+		t.Fatalf("expected default coordAt %s, got %s", want, got)
+	}
+}
+
+func TestNormalizeHolePunchCoordAtClampsOutOfWindow(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	farFuture := now.Add(24 * time.Hour).UnixMilli()
+	got := normalizeHolePunchCoordAt(farFuture, now)
+	want := now.Add(600 * time.Millisecond)
+	if !got.Equal(want) {
+		t.Fatalf("expected out-of-window coordAt to clamp to %s, got %s", want, got)
+	}
+}
+
+func TestNormalizeHolePunchCoordAtPreservesNearFutureCoord(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	nearFuture := now.Add(150 * time.Millisecond)
+	got := normalizeHolePunchCoordAt(nearFuture.UnixMilli(), now)
+	if !got.Equal(nearFuture) {
+		t.Fatalf("expected near-future coordAt to be preserved, want %s got %s", nearFuture, got)
+	}
+}
+
+func TestNormalizeHolePunchCoordAtPreservesValidWindow(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	valid := now.Add(1200 * time.Millisecond)
+	got := normalizeHolePunchCoordAt(valid.UnixMilli(), now)
+	if !got.Equal(valid) {
+		t.Fatalf("expected in-window coordAt to be preserved, want %s got %s", valid, got)
 	}
 }
