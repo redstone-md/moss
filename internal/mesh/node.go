@@ -839,6 +839,8 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 		_ = replacedPeer.session.Close()
 	}
 	n.recalculateIPColocationPenalties()
+	n.wg.Add(1)
+	go n.readPeer(peer)
 	n.sendKnownPeerSnapshot(peer)
 	n.broadcastPeerAnnouncement(n.localKnownPeer(), peerID)
 	go n.refreshExternalAddress(time.Now().Add(n.config.HandshakeTimeout()))
@@ -853,8 +855,6 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 	if replacedPeer == nil {
 		n.enqueueEvent(EventPeerJoined, map[string]string{"peer": peerID, "addr": addr})
 	}
-	n.wg.Add(1)
-	go n.readPeer(peer)
 }
 
 func (n *Node) selectOverflowPrunePeerLocked() *peerConn {
@@ -1087,15 +1087,15 @@ func filterPeerIDs(peerIDs []string, keep func(string) bool) []string {
 	return filtered
 }
 
-func (n *Node) sendEnvelope(peer *peerConn, env gossip.Envelope) {
+func (n *Node) sendEnvelope(peer *peerConn, env gossip.Envelope) bool {
 	if peer == nil || peer.session == nil {
-		return
+		return false
 	}
 	payload, err := json.Marshal(env)
 	if err != nil {
-		return
+		return false
 	}
-	_ = peer.session.WritePacket(payload)
+	return peer.session.WritePacket(payload) == nil
 }
 
 func (n *Node) sendKnownPeerSnapshot(peer *peerConn) {
@@ -1724,7 +1724,11 @@ func (n *Node) handlePong(peer *peerConn, env gossip.Envelope) {
 	if current == nil || current.pingPending != env.RequestID || current.pingSentAt.IsZero() {
 		return
 	}
-	current.lastRTT = time.Since(current.pingSentAt)
+	rtt := time.Since(current.pingSentAt)
+	if rtt <= 0 {
+		rtt = time.Nanosecond
+	}
+	current.lastRTT = rtt
 	current.pingPending = ""
 	current.pingSentAt = time.Time{}
 	current.pingMisses = 0
@@ -1754,8 +1758,25 @@ func (n *Node) probePeerLatency(now time.Time) {
 		targets = append(targets, pingTarget{peer: peer, requestID: requestID})
 	}
 	n.mu.Unlock()
+	failed := make([]pingTarget, 0)
 	for _, target := range targets {
-		n.sendEnvelope(target.peer, gossip.Envelope{Type: gossip.TypePing, RequestID: target.requestID})
+		ok := n.sendEnvelope(target.peer, gossip.Envelope{Type: gossip.TypePing, RequestID: target.requestID})
+		if ok {
+			continue
+		}
+		failed = append(failed, target)
+	}
+	if len(failed) == 0 {
+		return
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	for _, target := range failed {
+		current := n.peers[target.peer.id]
+		if current == target.peer && current.pingPending == target.requestID {
+			current.pingPending = ""
+			current.pingSentAt = time.Time{}
+		}
 	}
 }
 

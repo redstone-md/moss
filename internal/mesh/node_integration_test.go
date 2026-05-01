@@ -2621,7 +2621,21 @@ func waitForPeerRTT(t *testing.T, node *Node, peerID string, max time.Duration) 
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	t.Fatalf("peer %s did not report RTT within %s", peerID, max)
+	node.mu.RLock()
+	peer := node.peers[peerID]
+	var rtt time.Duration
+	var pending string
+	var sentAgo time.Duration
+	if peer != nil {
+		rtt = peer.lastRTT
+		pending = peer.pingPending
+		if !peer.pingSentAt.IsZero() {
+			sentAgo = time.Since(peer.pingSentAt)
+		}
+	}
+	peerCount := len(node.peers)
+	node.mu.RUnlock()
+	t.Fatalf("peer %s did not report RTT within %s (exists=%t count=%d rtt=%s pending=%q sent_ago=%s)", peerID, max, peer != nil, peerCount, rtt, pending, sentAgo)
 }
 
 func waitForPeerMeshState(t *testing.T, node *Node, channel, peerID string, want bool) {
