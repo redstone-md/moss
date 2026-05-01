@@ -67,17 +67,37 @@ func TestRecalculateIPColocationPenalties(t *testing.T) {
 
 	node.recalculateIPColocationPenalties()
 
-	if score := node.scoring.Score("peer-a"); score != -1 {
-		t.Fatalf("expected peer-a colocation penalty -1, got %f", score)
+	if score := node.scoring.Score("peer-a"); score != -10 {
+		t.Fatalf("expected peer-a colocation penalty -10, got %f", score)
 	}
-	if score := node.scoring.Score("peer-b"); score != -1 {
-		t.Fatalf("expected peer-b colocation penalty -1, got %f", score)
+	if score := node.scoring.Score("peer-b"); score != -10 {
+		t.Fatalf("expected peer-b colocation penalty -10, got %f", score)
 	}
-	if score := node.scoring.Score("peer-c"); score != -1 {
-		t.Fatalf("expected peer-c colocation penalty -1, got %f", score)
+	if score := node.scoring.Score("peer-c"); score != -10 {
+		t.Fatalf("expected peer-c colocation penalty -10, got %f", score)
 	}
 	if score := node.scoring.Score("peer-d"); score != 0 {
 		t.Fatalf("expected peer-d to have no colocation penalty, got %f", score)
+	}
+}
+
+func TestRecalculateIPColocationPenaltiesBlocksFourSamePublicIPPeers(t *testing.T) {
+	node, err := NewNode("mesh-ip-penalty-threshold", nil, DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+	for i := 0; i < 4; i++ {
+		peerID := "peer-" + strconv.Itoa(i)
+		node.peers[peerID] = &peerConn{id: peerID, addr: "198.51.100.10:" + strconv.Itoa(41030+i)}
+		node.pubsub.SetPeerSubscription(peerID, "alpha", true)
+	}
+
+	node.recalculateIPColocationPenalties()
+
+	for peerID := range node.peers {
+		if score := node.scoring.Score(peerID); score >= gossip.GossipThreshold {
+			t.Fatalf("expected %s score below gossip threshold, got %f", peerID, score)
+		}
 	}
 }
 
