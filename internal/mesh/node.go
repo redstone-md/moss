@@ -1792,7 +1792,7 @@ func (n *Node) probePeerLatency(now time.Time) {
 	targets := make([]pingTarget, 0)
 	n.mu.Lock()
 	for _, peer := range n.peers {
-		if peer.pingPending != "" && now.Sub(peer.pingSentAt) <= peerPingTimeout {
+		if peer.pingPending != "" {
 			continue
 		}
 		if peer.pingPending == "" && !peer.pingSentAt.IsZero() && now.Sub(peer.pingSentAt) < interval {

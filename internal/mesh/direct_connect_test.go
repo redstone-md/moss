@@ -328,6 +328,44 @@ func TestShouldRetainPeerRejectsBootstrapPeerWithPingMisses(t *testing.T) {
 	}
 }
 
+func TestProbePeerLatencyPreservesExpiredPendingPingForPrune(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Trackers = nil
+	node, err := NewNode("mesh-latency-timeout", nil, cfg)
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+
+	staleSentAt := time.Now().Add(-peerPingTimeout - time.Second)
+	node.mu.Lock()
+	node.peers["peer-1"] = &peerConn{
+		id:          "peer-1",
+		connectedAt: time.Now().Add(-time.Minute),
+		pingPending: "stale-request",
+		pingSentAt:  staleSentAt,
+	}
+	node.mu.Unlock()
+
+	node.probePeerLatency(time.Now())
+	node.mu.RLock()
+	peer := node.peers["peer-1"]
+	if peer.pingPending != "stale-request" || !peer.pingSentAt.Equal(staleSentAt) {
+		t.Fatalf("probe refreshed expired ping: pending=%q sent=%s", peer.pingPending, peer.pingSentAt)
+	}
+	node.mu.RUnlock()
+
+	node.pruneHighLatencyPeers()
+	node.mu.RLock()
+	peer = node.peers["peer-1"]
+	misses := peer.pingMisses
+	pending := peer.pingPending
+	sentAt := peer.pingSentAt
+	node.mu.RUnlock()
+	if misses != 1 || pending != "" || !sentAt.IsZero() {
+		t.Fatalf("expected prune to consume expired ping, misses=%d pending=%q sent=%s", misses, pending, sentAt)
+	}
+}
+
 func TestNormalizeHolePunchCoordAtDefaultsWhenZero(t *testing.T) {
 	now := time.Unix(1700000000, 0)
 	got := normalizeHolePunchCoordAt(0, now)
