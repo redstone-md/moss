@@ -1229,7 +1229,6 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 	changed := false
 	n.mu.Lock()
 	current, ok := n.knownPeers[env.AdvertisedPeerID]
-	previousAddr := current.addr
 	addr := preferredKnownPeerAddr(current, env.AdvertisedAddr)
 	liveSessionAddr := ""
 	if peer != nil && env.AdvertisedPeerID == peer.id {
@@ -1272,10 +1271,6 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 			observations:    appendObservation(current.observations, env.AdvertisedAddr),
 			noiseStatic:     append([]byte(nil), current.noiseStatic...),
 			signature:       signature,
-		}
-		if previousAddr != "" && previousAddr != addr {
-			delete(n.peerDials, env.AdvertisedPeerID)
-			delete(n.directProbes, env.AdvertisedPeerID)
 		}
 		changed = true
 	}
@@ -3417,7 +3412,6 @@ func (n *Node) updateKnownPeer(peerID, addr string, direct bool) {
 	if ok && current.direct {
 		direct = true
 	}
-	previousAddr := current.addr
 	addr = preferredKnownPeerAddr(current, addr)
 	n.knownPeers[peerID] = knownPeer{
 		id:              peerID,
@@ -3432,10 +3426,6 @@ func (n *Node) updateKnownPeer(peerID, addr string, direct bool) {
 		lastSeen:        time.Now(),
 		observations:    appendObservation(current.observations, addr),
 		noiseStatic:     append([]byte(nil), current.noiseStatic...),
-	}
-	if previousAddr != "" && previousAddr != addr {
-		delete(n.peerDials, peerID)
-		delete(n.directProbes, peerID)
 	}
 }
 

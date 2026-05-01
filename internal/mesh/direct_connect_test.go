@@ -163,7 +163,7 @@ func TestHandleKnownPeerEnvelopeRefreshesStalePrivateDirectAddrOnSelfAnnounce(t 
 	}
 }
 
-func TestHandleKnownPeerEnvelopeClearsDialCooldownOnEndpointChange(t *testing.T) {
+func TestHandleKnownPeerEnvelopeRetainsDialCooldownOnEndpointChange(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Trackers = nil
 	node, err := NewNode("mesh-known-peer", nil, cfg)
@@ -176,14 +176,20 @@ func TestHandleKnownPeerEnvelopeClearsDialCooldownOnEndpointChange(t *testing.T)
 	node.knownPeers["peer-1"] = knownPeer{
 		id:              "peer-1",
 		addr:            "185.242.25.75:24598",
+		verified:        true,
 		natType:         nat.TypeRestrictedCone,
 		publicReachable: false,
 	}
 	node.peerDials["peer-1"] = now
 	node.directProbes["peer-1"] = now
+	node.relayLocals["relay-1"] = relayLocalSession{
+		sessionID:    "relay-1",
+		remotePeerID: "peer-1",
+		established:  true,
+	}
 	node.mu.Unlock()
 
-	node.handleKnownPeerEnvelope(&peerConn{id: "peer-1"}, gossip.Envelope{
+	node.handleKnownPeerEnvelope(&peerConn{id: "peer-1", addr: "185.242.25.75:55222"}, gossip.Envelope{
 		AdvertisedPeerID:       "peer-1",
 		AdvertisedAddr:         "185.242.25.75:24610",
 		AdvertisedNATType:      string(nat.TypeRestrictedCone),
@@ -192,16 +198,28 @@ func TestHandleKnownPeerEnvelopeClearsDialCooldownOnEndpointChange(t *testing.T)
 	}, gossip.TypePeerAnnounce, false)
 
 	node.mu.RLock()
-	defer node.mu.RUnlock()
-	if _, ok := node.peerDials["peer-1"]; ok {
-		t.Fatal("expected peer dial cooldown to be cleared after endpoint change")
+	gotAddr := node.knownPeers["peer-1"].addr
+	_, hasPeerDial := node.peerDials["peer-1"]
+	_, hasDirectProbe := node.directProbes["peer-1"]
+	node.mu.RUnlock()
+	if gotAddr != "185.242.25.75:24610" {
+		t.Fatalf("expected updated addr to be stored, got %q", gotAddr)
 	}
-	if _, ok := node.directProbes["peer-1"]; ok {
-		t.Fatal("expected direct probe cooldown to be cleared after endpoint change")
+	if !hasPeerDial {
+		t.Fatal("expected peer dial cooldown to remain after endpoint change")
+	}
+	if !hasDirectProbe {
+		t.Fatal("expected direct probe cooldown to remain after endpoint change")
+	}
+	if targets := node.discoveredPeerTargets(); len(targets) != 0 {
+		t.Fatalf("expected peer dial cooldown to suppress churned endpoint, got %d targets", len(targets))
+	}
+	if targets := node.relayPromotionTargets(); len(targets) != 0 {
+		t.Fatalf("expected direct probe cooldown to suppress churned endpoint, got %d targets", len(targets))
 	}
 }
 
-func TestUpdateKnownPeerClearsCooldownsOnEndpointChange(t *testing.T) {
+func TestUpdateKnownPeerRetainsCooldownsOnEndpointChange(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Trackers = nil
 	node, err := NewNode("mesh-known-peer", nil, cfg)
@@ -211,23 +229,37 @@ func TestUpdateKnownPeerClearsCooldownsOnEndpointChange(t *testing.T) {
 
 	now := time.Now()
 	node.mu.Lock()
-	node.knownPeers["peer-1"] = knownPeer{id: "peer-1", addr: "185.242.25.75:24598"}
+	node.knownPeers["peer-1"] = knownPeer{id: "peer-1", addr: "185.242.25.75:24598", verified: true}
 	node.peerDials["peer-1"] = now
 	node.directProbes["peer-1"] = now
+	node.relayLocals["relay-1"] = relayLocalSession{
+		sessionID:    "relay-1",
+		remotePeerID: "peer-1",
+		established:  true,
+	}
 	node.mu.Unlock()
 
 	node.updateKnownPeer("peer-1", "185.242.25.75:24610", false)
 
 	node.mu.RLock()
-	defer node.mu.RUnlock()
-	if got := node.knownPeers["peer-1"].addr; got != "185.242.25.75:24610" {
-		t.Fatalf("expected updated addr to be stored, got %q", got)
+	gotAddr := node.knownPeers["peer-1"].addr
+	_, hasPeerDial := node.peerDials["peer-1"]
+	_, hasDirectProbe := node.directProbes["peer-1"]
+	node.mu.RUnlock()
+	if gotAddr != "185.242.25.75:24610" {
+		t.Fatalf("expected updated addr to be stored, got %q", gotAddr)
 	}
-	if _, ok := node.peerDials["peer-1"]; ok {
-		t.Fatal("expected peer dial cooldown to be cleared after known peer update")
+	if !hasPeerDial {
+		t.Fatal("expected peer dial cooldown to remain after known peer update")
 	}
-	if _, ok := node.directProbes["peer-1"]; ok {
-		t.Fatal("expected direct probe cooldown to be cleared after known peer update")
+	if !hasDirectProbe {
+		t.Fatal("expected direct probe cooldown to remain after known peer update")
+	}
+	if targets := node.discoveredPeerTargets(); len(targets) != 0 {
+		t.Fatalf("expected peer dial cooldown to suppress updated endpoint, got %d targets", len(targets))
+	}
+	if targets := node.relayPromotionTargets(); len(targets) != 0 {
+		t.Fatalf("expected direct probe cooldown to suppress updated endpoint, got %d targets", len(targets))
 	}
 }
 
