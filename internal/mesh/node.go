@@ -1199,9 +1199,6 @@ func (n *Node) localKnownPeer() knownPeer {
 
 func (n *Node) handlePeerAnnounce(peer *peerConn, env gossip.Envelope) {
 	verified := verifyPeerAnnouncementEnvelope(env)
-	if !directSenderMatches(peer, env) {
-		verified = false
-	}
 	n.handleKnownPeerEnvelope(peer, env, gossip.TypePeerAnnounce, verified)
 }
 
