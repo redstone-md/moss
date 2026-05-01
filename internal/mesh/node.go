@@ -149,20 +149,21 @@ type meshDeliveryObservation struct {
 }
 
 type knownPeer struct {
-	id              string
-	addr            string
-	direct          bool
-	verified        bool
-	bootstrap       bool
-	lan             bool
-	natType         nat.Type
-	natTrusted      bool
-	publicReachable bool
-	relayCapable    bool
-	lastSeen        time.Time
-	observations    []string
-	noiseStatic     []byte
-	signature       []byte
+	id                     string
+	addr                   string
+	direct                 bool
+	verified               bool
+	bootstrap              bool
+	lan                    bool
+	natType                nat.Type
+	natTrusted             bool
+	publicReachable        bool
+	relayCapable           bool
+	lastSeen               time.Time
+	observations           []string
+	predictionObservations []string
+	noiseStatic            []byte
+	signature              []byte
 }
 
 type meshInfo struct {
@@ -827,19 +828,20 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 	}
 	n.peers[peerID] = peer
 	n.knownPeers[peerID] = knownPeer{
-		id:              peerID,
-		addr:            knownAddr,
-		direct:          true,
-		verified:        true,
-		bootstrap:       current.bootstrap || bootstrapSeed,
-		lan:             current.lan,
-		natType:         current.natType,
-		natTrusted:      current.natTrusted,
-		publicReachable: current.publicReachable,
-		relayCapable:    current.relayCapable,
-		lastSeen:        time.Now(),
-		observations:    appendObservation(current.observations, knownAddr),
-		noiseStatic:     append([]byte(nil), remoteStatic[:]...),
+		id:                     peerID,
+		addr:                   knownAddr,
+		direct:                 true,
+		verified:               true,
+		bootstrap:              current.bootstrap || bootstrapSeed,
+		lan:                    current.lan,
+		natType:                current.natType,
+		natTrusted:             current.natTrusted,
+		publicReachable:        current.publicReachable,
+		relayCapable:           current.relayCapable,
+		lastSeen:               time.Now(),
+		observations:           appendObservation(current.observations, knownAddr),
+		predictionObservations: appendObservation(current.predictionObservations, knownAddr),
+		noiseStatic:            append([]byte(nil), remoteStatic[:]...),
 	}
 	n.scoring.Ensure(peerID)
 	n.mu.Unlock()
@@ -1277,6 +1279,10 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 		relayCapable = env.AdvertisedRelayCapable
 	}
 	signature := knownPeerSignature(current, addr, env, verifiedEnvelope || validSignedAnnouncement)
+	predictionObservations := current.predictionObservations
+	if peer != nil && env.AdvertisedPeerID == peer.id {
+		predictionObservations = appendObservation(predictionObservations, liveSessionAddr)
+	}
 	if !ok || current.addr != addr || !current.direct || current.verified != verified || current.natType != natType || current.natTrusted != natTrusted || current.publicReachable != publicReachable || current.relayCapable != relayCapable || !equalBytes(current.signature, signature) {
 		direct := false
 		if ok && current.direct {
@@ -1287,20 +1293,21 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 			bootstrap = true
 		}
 		n.knownPeers[env.AdvertisedPeerID] = knownPeer{
-			id:              env.AdvertisedPeerID,
-			addr:            addr,
-			direct:          direct,
-			verified:        verified,
-			bootstrap:       bootstrap,
-			lan:             lan,
-			natType:         natType,
-			natTrusted:      natTrusted,
-			publicReachable: publicReachable,
-			relayCapable:    relayCapable,
-			lastSeen:        time.Now(),
-			observations:    appendObservation(current.observations, env.AdvertisedAddr),
-			noiseStatic:     append([]byte(nil), current.noiseStatic...),
-			signature:       signature,
+			id:                     env.AdvertisedPeerID,
+			addr:                   addr,
+			direct:                 direct,
+			verified:               verified,
+			bootstrap:              bootstrap,
+			lan:                    lan,
+			natType:                natType,
+			natTrusted:             natTrusted,
+			publicReachable:        publicReachable,
+			relayCapable:           relayCapable,
+			lastSeen:               time.Now(),
+			observations:           appendObservation(current.observations, env.AdvertisedAddr),
+			predictionObservations: predictionObservations,
+			noiseStatic:            append([]byte(nil), current.noiseStatic...),
+			signature:              signature,
 		}
 		changed = true
 	}
@@ -3407,7 +3414,7 @@ func (n *Node) tryHolePunchDialAt(targetPeerID, addr string, at time.Time) {
 	n.mu.RLock()
 	localHistory := append([]string(nil), n.bindingHistory...)
 	targetInfo := n.knownPeers[targetPeerID]
-	remoteHistory := append([]string(nil), targetInfo.observations...)
+	remoteHistory := append([]string(nil), targetInfo.predictionObservations...)
 	enablePrediction := n.config.NAT.PortPredictionEnabled
 	n.mu.RUnlock()
 	plan := nat.Coordinator{
@@ -3477,19 +3484,20 @@ func (n *Node) updateKnownPeer(peerID, addr string, direct bool) {
 	}
 	addr = preferredKnownPeerAddr(current, addr)
 	n.knownPeers[peerID] = knownPeer{
-		id:              peerID,
-		addr:            addr,
-		direct:          direct,
-		verified:        current.verified || direct,
-		bootstrap:       current.bootstrap,
-		lan:             current.lan && knownPeerAddrRank(addr) <= 1,
-		natType:         current.natType,
-		natTrusted:      current.natTrusted,
-		publicReachable: current.publicReachable,
-		relayCapable:    current.relayCapable,
-		lastSeen:        time.Now(),
-		observations:    appendObservation(current.observations, addr),
-		noiseStatic:     append([]byte(nil), current.noiseStatic...),
+		id:                     peerID,
+		addr:                   addr,
+		direct:                 direct,
+		verified:               current.verified || direct,
+		bootstrap:              current.bootstrap,
+		lan:                    current.lan && knownPeerAddrRank(addr) <= 1,
+		natType:                current.natType,
+		natTrusted:             current.natTrusted,
+		publicReachable:        current.publicReachable,
+		relayCapable:           current.relayCapable,
+		lastSeen:               time.Now(),
+		observations:           appendObservation(current.observations, addr),
+		predictionObservations: append([]string(nil), current.predictionObservations...),
+		noiseStatic:            append([]byte(nil), current.noiseStatic...),
 	}
 }
 

@@ -1691,6 +1691,35 @@ func TestHandleHolePunchCoordKeepsPendingRequestAfterMismatchedReply(t *testing.
 	}
 }
 
+func TestHolePunchCoordDoesNotPoisonPredictionObservations(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Trackers = nil
+	node, err := NewNode("mesh-holepunch-prediction-poison", nil, cfg)
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+
+	targetID := "target-peer"
+	node.handleHolePunchCoord(&peerConn{id: "relay-peer"}, gossip.Envelope{
+		Type:           gossip.TypeHolePunchCoord,
+		RequestID:      "attacker-request",
+		CoordStage:     "offer",
+		RelaySource:    targetID,
+		RelayTarget:    node.localPeerID(),
+		AdvertisedAddr: "127.0.0.1:30000",
+	})
+
+	node.mu.RLock()
+	info := node.knownPeers[targetID]
+	node.mu.RUnlock()
+	if got := info.observations[len(info.observations)-1]; got != "127.0.0.1:30000" {
+		t.Fatalf("expected coord address in general observations, got %q", got)
+	}
+	if len(info.predictionObservations) != 0 {
+		t.Fatalf("unexpected coord address in prediction observations: %#v", info.predictionObservations)
+	}
+}
+
 func TestDirectPeerConnectionMigratesRelaySession(t *testing.T) {
 	cfgRelay := DefaultConfig()
 	cfgRelay.Trackers = nil
