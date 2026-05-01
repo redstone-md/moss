@@ -256,7 +256,7 @@ func (n *Node) handleLANBeacon(src *net.UDPAddr, beacon lanBeacon) bool {
 		return false
 	}
 	chosenAddr := preferredKnownPeerAddr(current, candidateAddr)
-	lan := chosenAddr == observedAddr && knownPeerAddrRank(observedAddr) <= 1
+	lan := chosenAddr == observedAddr
 	observations := appendObservation(current.observations, observedAddr)
 	n.knownPeers[beacon.PeerID] = knownPeer{
 		id:              beacon.PeerID,

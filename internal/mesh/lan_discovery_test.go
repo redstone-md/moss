@@ -197,6 +197,34 @@ func TestHandleLANBeaconCapsUnverifiedLANPeers(t *testing.T) {
 	}
 }
 
+func TestHandleLANBeaconCapsPublicSourceUnverifiedLANPeers(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Trackers = nil
+	cfg.MaxPeers = 8
+	node, err := NewNode("mesh-lan-beacon", nil, cfg)
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+
+	limit := lanPeerCap(cfg.MaxPeers)
+	for i := 1; i <= limit+20; i++ {
+		node.handleLANBeacon(&net.UDPAddr{IP: net.ParseIP(fmt.Sprintf("8.8.4.%d", i)), Port: 44445}, lanBeacon{
+			MeshID:     "mesh-lan-beacon",
+			PeerID:     lanTestPeerID(i),
+			ListenPort: 41030,
+		})
+	}
+
+	node.mu.RLock()
+	defer node.mu.RUnlock()
+	if got := node.lanPeerCountLocked(); got > limit {
+		t.Fatalf("expected at most %d public-source LAN peers, got %d", limit, got)
+	}
+	if got := len(node.knownPeers); got > limit {
+		t.Fatalf("expected known peers to stay capped at %d, got %d", limit, got)
+	}
+}
+
 func TestLANDiscoveryBroadcastCalculation(t *testing.T) {
 	ip := net.IPv4(192, 168, 10, 24)
 	mask := net.CIDRMask(24, 32)

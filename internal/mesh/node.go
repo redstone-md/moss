@@ -2136,7 +2136,7 @@ func (n *Node) discoveredPeerTargets() []discoveredPeerTarget {
 		return nil
 	}
 
-	targets := make([]discoveredPeerTarget, 0, len(n.knownPeers))
+	targets := make([]discoveredPeerTarget, 0, min(len(n.knownPeers), n.config.MaxPeers))
 	for peerID, info := range n.knownPeers {
 		if peerID == n.localPeerID() || info.addr == "" {
 			continue
