@@ -443,10 +443,15 @@ func TestRelaySessionDeliversThroughIntermediatePeer(t *testing.T) {
 	waitForPeerCount(t, nodeA, 1)
 	waitForPeerCount(t, nodeB, 1)
 
-	received := make(chan []byte, 1)
+	receivedByA := make(chan []byte, 1)
+	nodeA.SetRelayCallback(func(senderID [32]byte, data []byte) {
+		_ = senderID
+		receivedByA <- append([]byte(nil), data...)
+	})
+	receivedByB := make(chan []byte, 1)
 	nodeB.SetRelayCallback(func(senderID [32]byte, data []byte) {
 		_ = senderID
-		received <- append([]byte(nil), data...)
+		receivedByB <- append([]byte(nil), data...)
 	})
 
 	relayPub := relayNode.PublicKey()
@@ -455,17 +460,32 @@ func TestRelaySessionDeliversThroughIntermediatePeer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenRelaySession failed: %v", err)
 	}
+	waitForRelaySession(t, nodeA, sessionID)
+	waitForRelaySession(t, nodeB, sessionID)
 	if err := nodeA.RelaySend(sessionID, []byte("through-relay")); err != nil {
 		t.Fatalf("RelaySend failed: %v", err)
 	}
 
 	select {
-	case payload := <-received:
+	case payload := <-receivedByB:
 		if string(payload) != "through-relay" {
 			t.Fatalf("unexpected relay payload: %q", string(payload))
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for relayed payload")
+	}
+
+	if err := nodeB.RelaySend(sessionID, []byte("relay-response")); err != nil {
+		t.Fatalf("reverse RelaySend failed: %v", err)
+	}
+
+	select {
+	case payload := <-receivedByA:
+		if string(payload) != "relay-response" {
+			t.Fatalf("unexpected reverse relay payload: %q", string(payload))
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for reverse relayed payload")
 	}
 }
 

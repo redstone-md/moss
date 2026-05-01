@@ -113,6 +113,11 @@ type relayRoute struct {
 	target    string
 }
 
+func (r relayRoute) allows(source, target string) bool {
+	return (r.initiator == source && r.target == target) ||
+		(r.initiator == target && r.target == source)
+}
+
 type relayLocalSession struct {
 	sessionID    string
 	viaPeerID    string
@@ -2344,16 +2349,10 @@ func (n *Node) handleRelayData(peer *peerConn, env gossip.Envelope) {
 	route, hasRoute := n.relayRoutes[env.RelaySession]
 	targetPeer := n.peers[env.RelayTarget]
 	n.mu.RUnlock()
-	if !hasRoute || route.initiator != env.RelaySource || route.target != env.RelayTarget {
+	if !hasRoute || !route.allows(env.RelaySource, env.RelayTarget) {
 		return
 	}
-	if peer.id != route.initiator && peer.id != route.target {
-		return
-	}
-	if peer.id == route.initiator && env.RelayTarget != route.target {
-		return
-	}
-	if peer.id == route.target && env.RelayTarget != route.initiator {
+	if peer.id != env.RelaySource {
 		return
 	}
 	if targetPeer == nil {
