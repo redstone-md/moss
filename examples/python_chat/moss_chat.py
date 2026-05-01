@@ -20,6 +20,8 @@ DEFAULT_ROOM = "lobby"
 DEFAULT_MESH = "moss-chat-demo"
 RESERVED_NICKNAMES = {"system", "you"}
 MAX_NICKNAME_LEN = 32
+IDENTITY_DIR_MODE = 0o700
+IDENTITY_FILE_MODE = 0o600
 
 
 MossMessageCallback = ctypes.CFUNCTYPE(
@@ -204,6 +206,75 @@ def parse_psk_hex(value: str | None) -> bytes | None:
     return raw
 
 
+def secure_identity_open_flags(flags: int) -> int:
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    return flags
+
+
+def ensure_private_identity_dir(identity_path: Path) -> None:
+    if identity_path.parent.is_symlink():
+        raise MossError(f"identity directory must not be a symlink: {identity_path.parent}")
+    identity_path.parent.mkdir(parents=True, mode=IDENTITY_DIR_MODE, exist_ok=True)
+    try:
+        os.chmod(identity_path.parent, IDENTITY_DIR_MODE)
+    except OSError:
+        if os.name != "nt":
+            raise
+
+
+def read_private_identity(identity_path: Path) -> bytes:
+    flags = secure_identity_open_flags(os.O_RDONLY)
+    try:
+        fd = os.open(identity_path, flags)
+    except FileNotFoundError:
+        return b""
+    except OSError:
+        return b""
+    with os.fdopen(fd, "rb") as handle:
+        return handle.read()
+
+
+def restrict_existing_identity_file(identity_path: Path) -> None:
+    flags = secure_identity_open_flags(os.O_RDONLY)
+    try:
+        fd = os.open(identity_path, flags)
+    except FileNotFoundError:
+        return
+    except OSError:
+        return
+    try:
+        try:
+            os.fchmod(fd, IDENTITY_FILE_MODE)
+        except OSError:
+            if os.name != "nt":
+                raise
+    finally:
+        os.close(fd)
+
+
+def write_private_identity(identity_path: Path, raw: bytes) -> None:
+    ensure_private_identity_dir(identity_path)
+    flags = secure_identity_open_flags(os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
+    fd = os.open(identity_path, flags, IDENTITY_FILE_MODE)
+    try:
+        try:
+            os.fchmod(fd, IDENTITY_FILE_MODE)
+        except OSError:
+            if os.name != "nt":
+                raise
+        with os.fdopen(fd, "wb") as handle:
+            fd = -1
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
 def sender_label(sender_hex: str, local_peer_hex: str, nick: object | None) -> str:
     if sender_hex and sender_hex == local_peer_hex:
         return "you"
@@ -335,13 +406,14 @@ class MossClient:
                 raise MossError(f"Moss_SetKeyStore failed: {error_name(int(code))}")
             return
 
-        identity_path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_private_identity_dir(identity_path)
+        restrict_existing_identity_file(identity_path)
 
         @MossKeyStoreLoadCallback
         def load(buffer: ctypes.POINTER(ctypes.c_uint8), capacity: int) -> int:
-            if not identity_path.exists():
+            raw = read_private_identity(identity_path)
+            if not raw:
                 return 0
-            raw = identity_path.read_bytes()
             if not buffer or capacity == 0:
                 return len(raw)
             write_len = min(len(raw), int(capacity))
@@ -353,7 +425,7 @@ class MossClient:
             if not data or length == 0:
                 return
             raw = ctypes.string_at(data, int(length))
-            identity_path.write_bytes(raw)
+            write_private_identity(identity_path, raw)
 
         self._keystore_load_cb = load
         self._keystore_save_cb = save

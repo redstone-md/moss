@@ -85,5 +85,5 @@ Supported commands:
 - Use `--psk-hex` with a shared 32-byte key for identity-sensitive chats; without it, anyone who can join the mesh can send messages.
 - Public tracker bootstrap is explicit via `--default-trackers` or `--tracker`; a no-PSK public tracker mesh is discoverable by anyone who knows or guesses the mesh ID.
 - A node with no `--peer`, `--tracker`, or `--default-trackers` is isolated until another peer dials it or you run `/connect HOST:PORT`.
-- Each nickname gets its own persisted Moss identity in `examples/python_chat/.state/`.
+- Each nickname gets its own persisted Moss identity in `examples/python_chat/.state/`; on Unix-like systems the demo keeps that directory private (`0700`) and identity files owner-only (`0600`).
 - The app loads the shared library from the repository root: `moss.dll`, `libmoss.so`, or `libmoss.dylib`.
