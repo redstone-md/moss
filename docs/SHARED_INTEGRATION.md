@@ -135,9 +135,9 @@ Example:
     "heartbeat_ms": 1000
   },
   "nat": {
-    "upnp_enabled": true,
-    "natpmp_enabled": true,
-    "pcp_enabled": true
+    "upnp_enabled": false,
+    "natpmp_enabled": false,
+    "pcp_enabled": false
   }
 }
 ```
@@ -146,6 +146,7 @@ Notes:
 
 - omit `trackers` to use the built-in default tracker set
 - pass `"trackers": []` to disable tracker bootstrap explicitly
+- set NAT port mapping flags to `true` only when the app explicitly wants the router to expose the Moss listener
 - partial nested objects are supported
 
 ## Packaging by Platform

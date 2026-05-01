@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"io"
@@ -25,6 +26,11 @@ const (
 )
 
 var errUDPAlreadyConnected = errors.New("udp peer is already connected")
+var errUDPObserveRequiresSession = errors.New("udp observe requires established session")
+
+const maxPendingUDPServerHandshakes = 1024
+
+var pendingUDPServerHandshakeTTL = 5 * time.Second
 
 type UDPListener struct {
 	conn    *net.UDPConn
@@ -49,8 +55,13 @@ type udpClientHandshake struct {
 }
 
 type udpServerHandshake struct {
-	hs   *noise.HandshakeState
-	mode byte
+	hs        *noise.HandshakeState
+	mode      byte
+	remoteID  [32]byte
+	cs1       *noise.CipherState
+	cs2       *noise.CipherState
+	done      [32]byte
+	createdAt time.Time
 }
 
 type udpDialResult struct {
@@ -67,7 +78,11 @@ type udpCarrier struct {
 }
 
 func ListenUDP(port int, cfg HandshakeConfig) (*UDPListener, int, error) {
-	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: port})
+	addr, err := listenUDPAddr(port)
+	if err != nil {
+		return nil, 0, err
+	}
+	conn, err := net.ListenUDP("udp4", addr)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -100,6 +115,10 @@ func (l *UDPListener) Accept() (*Session, error) {
 	case <-l.closed:
 		return nil, io.EOF
 	}
+}
+
+func (c *udpCarrier) supportsDatagramSession() bool {
+	return true
 }
 
 func (l *UDPListener) DialContext(ctx context.Context, addr string) (*Session, error) {
@@ -183,6 +202,9 @@ func (l *UDPListener) ObserveContext(ctx context.Context, addr string) (string, 
 	remote, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil {
 		return "", err
+	}
+	if !l.hasSession(remote) {
+		return "", errUDPObserveRequiresSession
 	}
 	token, err := newObserveToken()
 	if err != nil {
@@ -348,6 +370,8 @@ func (l *UDPListener) handleHandshakeInit(remote *net.UDPAddr, payload []byte) {
 	body := payload[1:]
 	switch mode {
 	case HandshakeModeXX:
+		now := time.Now()
+		l.prunePendingServerHandshakes(now)
 		if _, _, _, err := hs.ReadMessage(nil, body); err != nil {
 			return
 		}
@@ -356,7 +380,11 @@ func (l *UDPListener) handleHandshakeInit(remote *net.UDPAddr, payload []byte) {
 			return
 		}
 		l.mu.Lock()
-		l.servers[key] = &udpServerHandshake{hs: hs, mode: mode}
+		if _, exists := l.servers[key]; !exists && len(l.servers) >= maxPendingUDPServerHandshakes {
+			l.mu.Unlock()
+			return
+		}
+		l.servers[key] = &udpServerHandshake{hs: hs, mode: mode, createdAt: now}
 		l.mu.Unlock()
 		_ = l.writeDatagram(remote, udpMessageHandshakeResp, payload2)
 	case HandshakeModeIK:
@@ -368,26 +396,50 @@ func (l *UDPListener) handleHandshakeInit(remote *net.UDPAddr, payload []byte) {
 		if err := verifyIdentityPayload(payload1, l.cfg.MeshID, hs.PeerStatic(), &remoteID); err != nil {
 			return
 		}
-		payload2, cs1, cs2, err := hs.WriteMessage(nil, mustMarshalIdentityPayload(l.cfg))
+		done, err := newUDPHandshakeToken()
+		if err != nil {
+			return
+		}
+		identityPayload, err := marshalIdentityPayloadWithChallenge(l.cfg, done[:])
+		if err != nil {
+			return
+		}
+		payload2, cs1, cs2, err := hs.WriteMessage(nil, identityPayload)
 		if err != nil {
 			return
 		}
 		if err := l.writeDatagram(remote, udpMessageHandshakeResp, payload2); err != nil {
 			return
 		}
-		remoteKey := peerStaticArray(hs.PeerStatic())
-		sendCipher, recvCipher := splitCipherStates(false, cs1, cs2)
-		session, err := l.establishSession(remote, sendCipher, recvCipher, remoteID, remoteKey, mode)
-		if err != nil {
+		now := time.Now()
+		l.prunePendingServerHandshakes(now)
+		l.mu.Lock()
+		if _, exists := l.servers[key]; !exists && len(l.servers) >= maxPendingUDPServerHandshakes {
+			l.mu.Unlock()
 			return
 		}
-		select {
-		case l.acceptC <- session:
-		case <-l.closed:
-			_ = session.Close()
+		l.servers[key] = &udpServerHandshake{
+			hs:        hs,
+			mode:      mode,
+			remoteID:  remoteID,
+			cs1:       cs1,
+			cs2:       cs2,
+			done:      done,
+			createdAt: now,
 		}
+		l.mu.Unlock()
 	default:
 		return
+	}
+}
+
+func (l *UDPListener) prunePendingServerHandshakes(now time.Time) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for key, pending := range l.servers {
+		if now.Sub(pending.createdAt) > pendingUDPServerHandshakeTTL {
+			delete(l.servers, key)
+		}
 	}
 }
 
@@ -406,7 +458,8 @@ func (l *UDPListener) handleHandshakeResp(remote *net.UDPAddr, payload []byte) {
 		return
 	}
 	remoteKey := peerStaticArray(pending.hs.PeerStatic())
-	if err := verifyIdentityPayload(payload2, l.cfg.MeshID, remoteKey[:], &remoteID); err != nil {
+	done, err := verifyIdentityPayloadChallenge(payload2, l.cfg.MeshID, remoteKey[:], &remoteID)
+	if err != nil {
 		l.finishDial(key, pending, udpDialResult{err: err})
 		return
 	}
@@ -422,6 +475,15 @@ func (l *UDPListener) handleHandshakeResp(remote *net.UDPAddr, payload []byte) {
 			return
 		}
 		sendCipher, recvCipher = splitCipherStates(true, cs1, cs2)
+	} else if pending.mode == HandshakeModeIK {
+		if len(done) != 32 {
+			l.finishDial(key, pending, udpDialResult{err: errors.New("invalid udp ik handshake challenge")})
+			return
+		}
+		if err := l.writeDatagram(remote, udpMessageHandshakeDone, done); err != nil {
+			l.finishDial(key, pending, udpDialResult{err: err})
+			return
+		}
 	}
 	session, err := l.establishSession(remote, sendCipher, recvCipher, remoteID, remoteKey, pending.mode)
 	l.finishDial(key, pending, udpDialResult{session: session, err: err})
@@ -435,22 +497,45 @@ func (l *UDPListener) handleHandshakeDone(remote *net.UDPAddr, payload []byte) {
 	if pending == nil {
 		return
 	}
-	var remoteID [32]byte
-	payload3, cs1, cs2, err := pending.hs.ReadMessage(nil, payload)
-	if err != nil {
+	var (
+		remoteID               [32]byte
+		sendCipher, recvCipher *noise.CipherState
+		remoteKey              [32]byte
+		err                    error
+	)
+	switch pending.mode {
+	case HandshakeModeXX:
+		payload3, cs1, cs2, readErr := pending.hs.ReadMessage(nil, payload)
+		if readErr != nil {
+			l.mu.Lock()
+			delete(l.servers, key)
+			l.mu.Unlock()
+			return
+		}
+		remoteKey = peerStaticArray(pending.hs.PeerStatic())
+		if err := verifyIdentityPayload(payload3, l.cfg.MeshID, remoteKey[:], &remoteID); err != nil {
+			l.mu.Lock()
+			delete(l.servers, key)
+			l.mu.Unlock()
+			return
+		}
+		sendCipher, recvCipher = splitCipherStates(false, cs1, cs2)
+	case HandshakeModeIK:
+		remoteKey = peerStaticArray(pending.hs.PeerStatic())
+		if len(payload) != len(pending.done) || subtle.ConstantTimeCompare(payload, pending.done[:]) != 1 {
+			l.mu.Lock()
+			delete(l.servers, key)
+			l.mu.Unlock()
+			return
+		}
+		remoteID = pending.remoteID
+		sendCipher, recvCipher = splitCipherStates(false, pending.cs1, pending.cs2)
+	default:
 		l.mu.Lock()
 		delete(l.servers, key)
 		l.mu.Unlock()
 		return
 	}
-	remoteKey := peerStaticArray(pending.hs.PeerStatic())
-	if err := verifyIdentityPayload(payload3, l.cfg.MeshID, remoteKey[:], &remoteID); err != nil {
-		l.mu.Lock()
-		delete(l.servers, key)
-		l.mu.Unlock()
-		return
-	}
-	sendCipher, recvCipher := splitCipherStates(false, cs1, cs2)
 	session, err := l.establishSession(remote, sendCipher, recvCipher, remoteID, remoteKey, pending.mode)
 	l.mu.Lock()
 	delete(l.servers, key)
@@ -480,10 +565,19 @@ func (l *UDPListener) handleObserveReq(remote *net.UDPAddr, payload []byte) {
 	if len(payload) != 16 {
 		return
 	}
+	if !l.hasSession(remote) {
+		return
+	}
 	response := make([]byte, 16+len(remote.String()))
 	copy(response, payload)
 	copy(response[16:], remote.String())
 	_ = l.writeDatagram(remote, udpMessageObserveResp, response)
+}
+
+func (l *UDPListener) hasSession(remote *net.UDPAddr) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.sessions[remote.String()] != nil
 }
 
 func (l *UDPListener) handleObserveResp(payload []byte) {
@@ -646,4 +740,10 @@ func newObserveToken() ([]byte, error) {
 		return nil, fmt.Errorf("read observe token: %w", err)
 	}
 	return token, nil
+}
+
+func newUDPHandshakeToken() ([32]byte, error) {
+	var token [32]byte
+	_, err := rand.Read(token[:])
+	return token, err
 }

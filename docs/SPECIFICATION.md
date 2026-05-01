@@ -1,18 +1,18 @@
 
-# Product Requirements Document (PRD): Project Moss
+# Moss Technical Specification
 
 **Document Version:** 2.0  
 **Last Updated:** March 2026  
-**Project Codename:** Moss  
+**Project:** Moss  
 **Core Technologies:** Go 1.22+, CGO (`-buildmode=c-shared`), BitTorrent UDP/HTTP Trackers (BEP 15), GossipSub v1.1+, Noise Protocol Framework, Autonomous NAT Traversal (STUN/TURN/ICE-lite).
 
 ---
 
 ## 1. Executive Summary
 
-**Project Moss** is a zero-infrastructure, embeddable Peer-to-Peer (P2P) networking core written in Go. Compiled via CGO into C-shared libraries (`.dll`, `.so`, `.dylib`), Moss allows any application — written in C, C++, C#, Python, Rust, or any language with C FFI support — to seamlessly join a decentralized data-exchange mesh with a single function call.
+**Moss** is a zero-infrastructure, embeddable Peer-to-Peer (P2P) networking core written in Go. Compiled via CGO into C-shared libraries (`.dll`, `.so`, `.dylib`), Moss allows any application — written in C, C++, C#, Python, Rust, or any language with C FFI support — to join a decentralized data-exchange mesh with a small host integration layer.
 
-The defining characteristic of Moss is its **complete elimination of centralized infrastructure**:
+The defining characteristic of Moss is its **minimization of centralized infrastructure requirements**:
 
 1. **Bootstrapping** — Public BitTorrent trackers (BEP 15 UDP, BEP 3 HTTP) serve as zero-cost, high-availability rendezvous points for initial peer discovery.
 2. **NAT Traversal** — An autonomous SuperNode promotion system turns publicly reachable peers into distributed STUN/TURN relays, guaranteeing connectivity across all NAT types including Symmetric NAT and Carrier-Grade NAT (CGNAT).
@@ -464,9 +464,9 @@ void Moss_Free(void* ptr);
     "heartbeat_ms": 1000
   },
   "nat": {
-    "upnp_enabled": true,
-    "natpmp_enabled": true,
-    "pcp_enabled": true,
+    "upnp_enabled": false,
+    "natpmp_enabled": false,
+    "pcp_enabled": false,
     "supernode_min_uptime_sec": 300,
     "relay_max_bandwidth_kbps": 256,
     "relay_max_sessions": 50,

@@ -21,6 +21,7 @@ func TestScoringCallbackOverridesRelaySelectionScore(t *testing.T) {
 		id:              peerA,
 		addr:            "198.51.100.40:4000",
 		natType:         nat.TypePublic,
+		natTrusted:      true,
 		publicReachable: true,
 		relayCapable:    true,
 	}
@@ -28,6 +29,7 @@ func TestScoringCallbackOverridesRelaySelectionScore(t *testing.T) {
 		id:              peerB,
 		addr:            "203.0.113.40:4000",
 		natType:         nat.TypePublic,
+		natTrusted:      true,
 		publicReachable: true,
 		relayCapable:    true,
 	}

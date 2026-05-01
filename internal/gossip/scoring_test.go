@@ -37,11 +37,16 @@ func TestApplyIPColocationPenaltyResetsWhenPeerBecomesUnique(t *testing.T) {
 	}
 }
 
-func TestApplyIPColocationPenaltyAllowsTwoPeersPerIP(t *testing.T) {
+func TestApplyIPColocationPenaltyPenalizesEveryAdditionalPeerPerIP(t *testing.T) {
 	engine := NewEngine()
 	engine.Ensure("peer-1")
 	engine.ApplyIPColocationPenalty("peer-1", 2)
-	if score := engine.Score("peer-1"); score != 0 {
-		t.Fatalf("expected no penalty for two peers behind one public IP, got %f", score)
+	if score := engine.Score("peer-1"); score != -5 {
+		t.Fatalf("expected penalty -5 for two peers behind one public IP, got %f", score)
+	}
+
+	engine.ApplyIPColocationPenalty("peer-1", 4)
+	if score := engine.Score("peer-1"); score != -15 {
+		t.Fatalf("expected penalty -15 for four peers behind one public IP, got %f", score)
 	}
 }

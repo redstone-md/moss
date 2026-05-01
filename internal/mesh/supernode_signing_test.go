@@ -34,6 +34,32 @@ func TestSupernodeEnvelopeSignatureRoundTrip(t *testing.T) {
 	}
 }
 
+func TestPeerAnnouncementSignatureRoundTrip(t *testing.T) {
+	node, err := NewNode("mesh-peer-sign", nil, DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+	env := gossip.Envelope{
+		Type:                   gossip.TypePeerAnnounce,
+		AdvertisedPeerID:       node.localPeerID(),
+		AdvertisedAddr:         "192.168.1.50:41030",
+		AdvertisedNATType:      string(nat.TypePublic),
+		AdvertisedReachable:    true,
+		AdvertisedRelayCapable: false,
+	}
+	signed := node.signPeerAnnouncementEnvelope(env)
+	if len(signed.AdvertisedSignature) == 0 {
+		t.Fatal("expected signed peer announcement to have signature")
+	}
+	if !verifyPeerAnnouncementEnvelope(signed) {
+		t.Fatal("expected valid peer announcement signature to verify")
+	}
+	signed.AdvertisedAddr = "192.168.1.99:41030"
+	if verifyPeerAnnouncementEnvelope(signed) {
+		t.Fatal("expected modified peer announcement to fail verification")
+	}
+}
+
 func TestHandleSupernodeStatusRejectsInvalidSignature(t *testing.T) {
 	nodeA, err := NewNode("mesh-supernode-invalid", nil, DefaultConfig())
 	if err != nil {
@@ -66,5 +92,62 @@ func TestHandleSupernodeStatusRejectsInvalidSignature(t *testing.T) {
 	}
 	if score := nodeA.scoring.Score(peerID); score >= base {
 		t.Fatalf("expected invalid supernode announce to penalize sender, base=%f new=%f", base, score)
+	}
+}
+
+func TestHandleSupernodeStatusRequiresDirectSenderForVerification(t *testing.T) {
+	nodeA, err := NewNode("mesh-supernode-direct", nil, DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewNode nodeA failed: %v", err)
+	}
+	nodeB, err := NewNode("mesh-supernode-direct", nil, DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewNode nodeB failed: %v", err)
+	}
+
+	peerID := nodeB.localPeerID()
+	signed := nodeB.signSupernodeEnvelope(gossip.Envelope{
+		Type:                   gossip.TypeSupernodeAnnounce,
+		AdvertisedPeerID:       peerID,
+		AdvertisedAddr:         "192.168.1.50:41030",
+		AdvertisedNATType:      string(nat.TypePublic),
+		AdvertisedReachable:    true,
+		AdvertisedRelayCapable: true,
+	})
+
+	nodeA.handleSupernodeStatus(&peerConn{id: "relay-peer"}, signed, true)
+
+	nodeA.mu.RLock()
+	relayed := nodeA.knownPeers[peerID]
+	nodeA.mu.RUnlock()
+	if relayed.verified {
+		t.Fatal("expected relayed supernode status to remain unverified")
+	}
+	if targets := nodeA.discoveredPeerTargets(); len(targets) != 0 {
+		t.Fatalf("expected unverified relayed supernode status to stay out of dial targets, got %d", len(targets))
+	}
+
+	nodeA.handleSupernodeStatus(&peerConn{id: peerID}, signed, true)
+
+	nodeA.mu.RLock()
+	direct := nodeA.knownPeers[peerID]
+	nodeA.mu.RUnlock()
+	if !direct.verified {
+		t.Fatal("expected direct supernode status to verify")
+	}
+}
+
+func TestVerifySupernodeEnvelopeRejectsWrongPublicKeyLength(t *testing.T) {
+	env := gossip.Envelope{
+		Type:                   gossip.TypeSupernodeAnnounce,
+		AdvertisedPeerID:       "00",
+		AdvertisedAddr:         "192.168.1.50:41030",
+		AdvertisedNATType:      string(nat.TypePublic),
+		AdvertisedReachable:    true,
+		AdvertisedRelayCapable: true,
+		AdvertisedSignature:    []byte{1},
+	}
+	if verifySupernodeEnvelope(env) {
+		t.Fatal("expected envelope with invalid advertised public key length to be rejected")
 	}
 }

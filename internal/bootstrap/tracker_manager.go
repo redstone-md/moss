@@ -50,11 +50,13 @@ type Manager struct {
 	state         map[string]trackerState
 }
 
+const defaultTrackerConcurrency = 5
+
 func NewManager(timeout time.Duration) *Manager {
 	return &Manager{
 		HTTP:          NewHTTPClient(timeout),
 		UDP:           &UDPClient{},
-		maxConcurrent: 3,
+		maxConcurrent: defaultTrackerConcurrency,
 		state:         make(map[string]trackerState),
 	}
 }
@@ -74,25 +76,7 @@ func (m *Manager) AnnounceAll(ctx context.Context, trackers []string, req Announ
 	if len(ordered) == 0 {
 		return nil, errors.New("no trackers configured")
 	}
-	limit := m.maxConcurrent
-	if limit <= 0 {
-		limit = 3
-	}
-	if limit > len(ordered) {
-		limit = len(ordered)
-	}
-	var lastErr error
-	for start := 0; start < len(ordered); start += limit {
-		end := min(start+limit, len(ordered))
-		peers, err := m.announceBatch(ctx, ordered[start:end], req)
-		if err != nil {
-			lastErr = err
-		}
-		if len(peers) != 0 {
-			return peers, nil
-		}
-	}
-	return nil, lastErr
+	return m.announceTrackers(ctx, ordered, req)
 }
 
 func (m *Manager) orderedTrackers(trackers []string) []string {
@@ -131,36 +115,49 @@ func (m *Manager) orderedTrackers(trackers []string) []string {
 	return ordered
 }
 
-func (m *Manager) announceBatch(ctx context.Context, trackers []string, req AnnounceRequest) ([]string, error) {
+func (m *Manager) announceTrackers(ctx context.Context, trackers []string, req AnnounceRequest) ([]string, error) {
 	type result struct {
 		tracker string
 		peers   []string
 		err     error
 	}
-	results := make(chan result, len(trackers))
+	workerCount := m.trackerConcurrency(len(trackers))
+	jobs := make(chan string)
+	results := make(chan result, workerCount)
 	var wg sync.WaitGroup
-	for _, tracker := range trackers {
-		tracker := tracker
+	for range workerCount {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			u, err := url.Parse(tracker)
-			if err != nil {
-				results <- result{tracker: tracker, err: err}
-				return
+			for tracker := range jobs {
+				u, err := url.Parse(tracker)
+				if err != nil {
+					results <- result{tracker: tracker, err: err}
+					continue
+				}
+				var peers []string
+				switch strings.ToLower(u.Scheme) {
+				case "udp":
+					peers, err = m.UDP.Announce(ctx, tracker, req)
+				case "http", "https":
+					peers, err = m.HTTP.Announce(ctx, tracker, req)
+				default:
+					err = &url.Error{Op: "announce", URL: tracker, Err: err}
+				}
+				results <- result{tracker: tracker, peers: peers, err: err}
 			}
-			var peers []string
-			switch strings.ToLower(u.Scheme) {
-			case "udp":
-				peers, err = m.UDP.Announce(ctx, tracker, req)
-			case "http", "https":
-				peers, err = m.HTTP.Announce(ctx, tracker, req)
-			default:
-				err = &url.Error{Op: "announce", URL: tracker, Err: err}
-			}
-			results <- result{tracker: tracker, peers: peers, err: err}
 		}()
 	}
+	go func() {
+		defer close(jobs)
+		for _, tracker := range trackers {
+			select {
+			case jobs <- tracker:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 	go func() {
 		wg.Wait()
 		close(results)
@@ -183,9 +180,26 @@ func (m *Manager) announceBatch(ctx context.Context, trackers []string, req Anno
 	}
 	sort.Strings(out)
 	if len(out) == 0 {
+		if lastErr == nil {
+			lastErr = ctx.Err()
+		}
 		return nil, lastErr
 	}
 	return out, nil
+}
+
+func (m *Manager) trackerConcurrency(total int) int {
+	if total <= 0 {
+		return 0
+	}
+	limit := m.maxConcurrent
+	if limit <= 0 {
+		limit = defaultTrackerConcurrency
+	}
+	if total < limit {
+		return total
+	}
+	return limit
 }
 
 func (m *Manager) recordTrackerResult(tracker string, err error) {
@@ -204,11 +218,4 @@ func (m *Manager) recordTrackerResult(tracker string, err error) {
 	state.consecutiveFailures = 0
 	state.lastSuccess = time.Now()
 	m.state[tracker] = state
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

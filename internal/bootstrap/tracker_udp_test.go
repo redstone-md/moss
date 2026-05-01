@@ -160,3 +160,129 @@ func TestUDPClientAnnounceRetriesAfterTimeout(t *testing.T) {
 		t.Fatal("udp tracker retry goroutine did not finish")
 	}
 }
+
+func TestUDPClientAnnounceHonorsContextDeadline(t *testing.T) {
+	previousWindow := udpTrackerResponseWindow
+	previousBase := udpTrackerRetryBase
+	t.Cleanup(func() {
+		udpTrackerResponseWindow = previousWindow
+		udpTrackerRetryBase = previousBase
+	})
+	udpTrackerResponseWindow = 50 * time.Millisecond
+	udpTrackerRetryBase = 10 * time.Millisecond
+
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("ListenPacket failed: %v", err)
+	}
+	defer conn.Close()
+
+	var connectCount atomic.Int32
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := make([]byte, 2048)
+		for {
+			n, _, readErr := conn.ReadFrom(buf)
+			if readErr != nil {
+				return
+			}
+			if n < 16 {
+				continue
+			}
+			action := binary.BigEndian.Uint32(buf[8:12])
+			if action == trackerConnectAction {
+				connectCount.Add(1)
+			}
+		}
+	}()
+
+	infoHash, _ := InfoHash("mesh-udp-deadline", nil)
+	peerID, _ := PeerID()
+	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	client := &UDPClient{}
+	_, err = client.Announce(ctx, fmt.Sprintf("udp://%s/announce", conn.LocalAddr().String()), AnnounceRequest{
+		InfoHash: infoHash,
+		PeerID:   peerID,
+		Port:     7777,
+		Event:    EventStarted,
+		NumWant:  10,
+	})
+	if err == nil {
+		t.Fatal("expected Announce to fail when tracker does not respond")
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("expected Announce to stop promptly on context deadline, got %s", elapsed)
+	}
+	if connectCount.Load() == 0 {
+		t.Fatal("expected at least one connect attempt before deadline")
+	}
+
+	_ = conn.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("udp tracker deadline goroutine did not finish")
+	}
+}
+
+func TestUDPClientAnnounceDoesNotRetryOnProtocolError(t *testing.T) {
+	previousWindow := udpTrackerResponseWindow
+	previousBase := udpTrackerRetryBase
+	t.Cleanup(func() {
+		udpTrackerResponseWindow = previousWindow
+		udpTrackerRetryBase = previousBase
+	})
+	udpTrackerResponseWindow = 20 * time.Millisecond
+	udpTrackerRetryBase = 5 * time.Millisecond
+
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("ListenPacket failed: %v", err)
+	}
+	defer conn.Close()
+
+	var connectCount atomic.Int32
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := make([]byte, 2048)
+		n, addr, readErr := conn.ReadFrom(buf)
+		if readErr != nil || n < 16 {
+			return
+		}
+		connectCount.Add(1)
+		txID := binary.BigEndian.Uint32(buf[12:16])
+		resp := make([]byte, 16)
+		binary.BigEndian.PutUint32(resp[0:4], trackerAnnounceAction)
+		binary.BigEndian.PutUint32(resp[4:8], txID)
+		binary.BigEndian.PutUint64(resp[8:16], 0x0102030405060708)
+		_, _ = conn.WriteTo(resp, addr)
+	}()
+
+	infoHash, _ := InfoHash("mesh-udp-protocol", nil)
+	peerID, _ := PeerID()
+	client := &UDPClient{}
+	_, err = client.Announce(t.Context(), fmt.Sprintf("udp://%s/announce", conn.LocalAddr().String()), AnnounceRequest{
+		InfoHash: infoHash,
+		PeerID:   peerID,
+		Port:     7777,
+		Event:    EventStarted,
+		NumWant:  10,
+	})
+	if err == nil {
+		t.Fatal("expected Announce to fail on protocol error")
+	}
+	if connectCount.Load() != 1 {
+		t.Fatalf("expected protocol error to stop retries, got %d connect attempts", connectCount.Load())
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("udp tracker protocol goroutine did not finish")
+	}
+}

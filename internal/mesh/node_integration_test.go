@@ -3,9 +3,9 @@ package mesh
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
-	"encoding/binary"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	mcrypto "moss/internal/crypto"
 	"moss/internal/gossip"
 	"moss/internal/nat"
 )
@@ -194,6 +195,9 @@ func TestTrackerBootstrapPeersRelayPubSubThroughTransitServer(t *testing.T) {
 		t.Fatalf("server.Start failed: %d", code)
 	}
 	defer server.Stop()
+	if code := server.Subscribe("lobby"); code != MOSS_OK {
+		t.Fatalf("server.Subscribe failed: %d", code)
+	}
 
 	serverAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(server.ListenPort()))
 	tracker.SetPeers([]string{serverAddr})
@@ -228,8 +232,9 @@ func TestTrackerBootstrapPeersRelayPubSubThroughTransitServer(t *testing.T) {
 	}
 	defer nodeB.Stop()
 
-	waitForPeerCount(t, nodeA, 1)
-	waitForPeerCount(t, nodeB, 1)
+	if !waitForPeerCountWithin(nodeA, 1, 10*time.Second) || !waitForPeerCountWithin(nodeB, 1, 10*time.Second) {
+		t.Fatalf("bootstrap peers did not connect in time; server=%s nodeA=%s nodeB=%s", server.MeshInfoJSON(), nodeA.MeshInfoJSON(), nodeB.MeshInfoJSON())
+	}
 
 	received := make(chan []byte, 1)
 	nodeB.SetMessageCallback(func(channel string, senderID [32]byte, data []byte) {
@@ -244,6 +249,7 @@ func TestTrackerBootstrapPeersRelayPubSubThroughTransitServer(t *testing.T) {
 	if code := nodeB.Subscribe("lobby"); code != MOSS_OK {
 		t.Fatalf("nodeB.Subscribe failed: %d", code)
 	}
+	waitForSubscriberCount(t, server, "lobby", 2)
 
 	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
@@ -259,7 +265,7 @@ func TestTrackerBootstrapPeersRelayPubSubThroughTransitServer(t *testing.T) {
 		case <-time.After(250 * time.Millisecond):
 		}
 	}
-	t.Skipf("bootstrap transit topology did not converge in time; server=%s nodeA=%s nodeB=%s", server.MeshInfoJSON(), nodeA.MeshInfoJSON(), nodeB.MeshInfoJSON())
+	t.Fatalf("bootstrap transit topology did not converge in time; server=%s nodeA=%s nodeB=%s", server.MeshInfoJSON(), nodeA.MeshInfoJSON(), nodeB.MeshInfoJSON())
 }
 
 func TestTrackerBootstrapPeerIsRetainedAfterNegativeScore(t *testing.T) {
@@ -296,7 +302,7 @@ func TestTrackerBootstrapPeerIsRetainedAfterNegativeScore(t *testing.T) {
 	defer client.Stop()
 
 	if !waitForPeerCountWithin(server, 1, 8*time.Second) || !waitForPeerCountWithin(client, 1, 8*time.Second) {
-		t.Skipf("bootstrap retain topology did not converge in time; server=%s client=%s", server.MeshInfoJSON(), client.MeshInfoJSON())
+		t.Fatalf("bootstrap retain topology did not converge in time; server=%s client=%s", server.MeshInfoJSON(), client.MeshInfoJSON())
 	}
 
 	serverPub := server.PublicKey()
@@ -359,7 +365,7 @@ func TestDirectPeerAnnouncementDoesNotOverwriteSessionAddress(t *testing.T) {
 		AdvertisedPeerID:  peerID,
 		AdvertisedAddr:    "10.123.45.67:41030",
 		AdvertisedNATType: string(nat.TypePublic),
-	}, gossip.TypePeerAnnounce)
+	}, gossip.TypePeerAnnounce, false)
 
 	nodeB.mu.RLock()
 	got := nodeB.knownPeers[peerID].addr
@@ -440,10 +446,15 @@ func TestRelaySessionDeliversThroughIntermediatePeer(t *testing.T) {
 	waitForPeerCount(t, nodeA, 1)
 	waitForPeerCount(t, nodeB, 1)
 
-	received := make(chan []byte, 1)
+	receivedByA := make(chan []byte, 1)
+	nodeA.SetRelayCallback(func(senderID [32]byte, data []byte) {
+		_ = senderID
+		receivedByA <- append([]byte(nil), data...)
+	})
+	receivedByB := make(chan []byte, 1)
 	nodeB.SetRelayCallback(func(senderID [32]byte, data []byte) {
 		_ = senderID
-		received <- append([]byte(nil), data...)
+		receivedByB <- append([]byte(nil), data...)
 	})
 
 	relayPub := relayNode.PublicKey()
@@ -452,17 +463,32 @@ func TestRelaySessionDeliversThroughIntermediatePeer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenRelaySession failed: %v", err)
 	}
+	waitForRelaySession(t, nodeA, sessionID)
+	waitForRelaySession(t, nodeB, sessionID)
 	if err := nodeA.RelaySend(sessionID, []byte("through-relay")); err != nil {
 		t.Fatalf("RelaySend failed: %v", err)
 	}
 
 	select {
-	case payload := <-received:
+	case payload := <-receivedByB:
 		if string(payload) != "through-relay" {
 			t.Fatalf("unexpected relay payload: %q", string(payload))
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for relayed payload")
+	}
+
+	if err := nodeB.RelaySend(sessionID, []byte("relay-response")); err != nil {
+		t.Fatalf("reverse RelaySend failed: %v", err)
+	}
+
+	select {
+	case payload := <-receivedByA:
+		if string(payload) != "relay-response" {
+			t.Fatalf("unexpected reverse relay payload: %q", string(payload))
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for reverse relayed payload")
 	}
 }
 
@@ -510,6 +536,16 @@ func TestRelaySendToAutoOpensRelaySession(t *testing.T) {
 	waitForPeerCount(t, relayNode, 2)
 	waitForPeerCount(t, nodeA, 1)
 	waitForPeerCount(t, nodeB, 1)
+	relayPub := relayNode.PublicKey()
+	relayID := hex.EncodeToString(relayPub[:])
+	nodeA.mu.Lock()
+	relayInfo := nodeA.knownPeers[relayID]
+	relayInfo.natType = nat.TypePublic
+	relayInfo.natTrusted = true
+	relayInfo.publicReachable = true
+	relayInfo.relayCapable = true
+	nodeA.knownPeers[relayID] = relayInfo
+	nodeA.mu.Unlock()
 
 	received := make(chan []byte, 1)
 	nodeB.SetRelayCallback(func(senderID [32]byte, data []byte) {
@@ -927,6 +963,73 @@ func TestDiscoveredPeersAutoConnectIntoOverlay(t *testing.T) {
 	waitForDirectPeer(t, nodeC, hex.EncodeToString(sourcePub[:]))
 }
 
+func TestDiscoveredPeerReconnectsAfterRestartWithNewPort(t *testing.T) {
+	cfgHub := DefaultConfig()
+	cfgHub.Trackers = nil
+	cfgHub.GossipSub.HeartbeatMS = 50
+	hub, err := NewNode("mesh-overlay-restart", nil, cfgHub)
+	if err != nil {
+		t.Fatalf("NewNode hub failed: %v", err)
+	}
+	if code := hub.Start(); code != MOSS_OK {
+		t.Fatalf("hub.Start failed: %d", code)
+	}
+	defer hub.Stop()
+
+	newLeaf := func(identity *mcrypto.Identity) *Node {
+		cfg := DefaultConfig()
+		cfg.Trackers = nil
+		cfg.GossipSub.HeartbeatMS = 50
+		cfg.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(hub.ListenPort()))}
+		node, err := NewNodeWithIdentity("mesh-overlay-restart", nil, cfg, identity)
+		if err != nil {
+			t.Fatalf("NewNode leaf failed: %v", err)
+		}
+		if code := node.Start(); code != MOSS_OK {
+			t.Fatalf("leaf.Start failed: %d", code)
+		}
+		return node
+	}
+
+	nodeA := newLeaf(nil)
+	defer nodeA.Stop()
+
+	restartIdentity, err := mcrypto.NewIdentity()
+	if err != nil {
+		t.Fatalf("NewIdentity failed: %v", err)
+	}
+	nodeB := newLeaf(restartIdentity)
+	defer nodeB.Stop()
+
+	waitForPeerCount(t, hub, 2)
+	waitForPeerCount(t, nodeA, 1)
+	waitForPeerCount(t, nodeB, 1)
+
+	nodeBPub := nodeB.PublicKey()
+	nodeBID := hex.EncodeToString(nodeBPub[:])
+	nodeAPub := nodeA.PublicKey()
+	nodeAID := hex.EncodeToString(nodeAPub[:])
+	waitForKnownPeer(t, nodeA, nodeBID)
+	waitForDirectPeer(t, nodeA, nodeBID)
+	waitForDirectPeer(t, nodeB, nodeAID)
+	waitForPeerCount(t, nodeA, 2)
+
+	nodeB.Stop()
+
+	nodeB = newLeaf(restartIdentity)
+	defer nodeB.Stop()
+	waitForPeerCount(t, nodeB, 1)
+	if nodeB.ListenPort() == 0 {
+		t.Fatal("expected restarted nodeB to have a listen port")
+	}
+	restartedAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(nodeB.ListenPort()))
+	waitForKnownPeer(t, nodeA, nodeBID)
+	waitForDirectPeer(t, nodeA, nodeBID)
+	waitForDirectPeer(t, nodeB, nodeAID)
+	waitForKnownPeerAddr(t, nodeA, nodeBID, restartedAddr)
+	waitForPeerCount(t, nodeA, 2)
+}
+
 func TestRelaySendToFallsBackAfterDirectDialFailure(t *testing.T) {
 	cfgRelay := DefaultConfig()
 	cfgRelay.Trackers = nil
@@ -971,9 +1074,17 @@ func TestRelaySendToFallsBackAfterDirectDialFailure(t *testing.T) {
 	waitForPeerCount(t, relayNode, 2)
 	targetPub := nodeB.PublicKey()
 	targetID := hex.EncodeToString(targetPub[:])
+	relayPub := relayNode.PublicKey()
+	relayID := hex.EncodeToString(relayPub[:])
 	waitForKnownPeer(t, nodeA, targetID)
 
 	nodeA.mu.Lock()
+	relayInfo := nodeA.knownPeers[relayID]
+	relayInfo.natType = nat.TypePublic
+	relayInfo.natTrusted = true
+	relayInfo.publicReachable = true
+	relayInfo.relayCapable = true
+	nodeA.knownPeers[relayID] = relayInfo
 	info := nodeA.knownPeers[targetID]
 	info.addr = "127.0.0.1:1"
 	nodeA.knownPeers[targetID] = info
@@ -1077,11 +1188,13 @@ func TestRelaySendToFallsBackToSecondaryRelayPeer(t *testing.T) {
 	info1.relayCapable = true
 	info1.publicReachable = true
 	info1.natType = nat.TypePublic
+	info1.natTrusted = true
 	nodeA.knownPeers[relay1ID] = info1
 	info2 := nodeA.knownPeers[relay2ID]
 	info2.relayCapable = true
 	info2.publicReachable = true
 	info2.natType = nat.TypePublic
+	info2.natTrusted = true
 	nodeA.knownPeers[relay2ID] = info2
 	nodeA.mu.Unlock()
 	nodeA.scoring.SetApplicationScore(relay1ID, 10)
@@ -1189,17 +1302,25 @@ func TestRelaySessionAnyPrefersLessLoadedRelayPeer(t *testing.T) {
 	info1.relayCapable = true
 	info1.publicReachable = true
 	info1.natType = nat.TypePublic
+	info1.natTrusted = true
 	nodeA.knownPeers[relay1ID] = info1
 	info2 := nodeA.knownPeers[relay2ID]
 	info2.relayCapable = true
 	info2.publicReachable = true
 	info2.natType = nat.TypePublic
+	info2.natTrusted = true
 	nodeA.knownPeers[relay2ID] = info2
 	nodeA.relayLocals["existing-1"] = relayLocalSession{sessionID: "existing-1", viaPeerID: relay1ID, remotePeerID: "other-1", established: true}
 	nodeA.relayLocals["existing-2"] = relayLocalSession{sessionID: "existing-2", viaPeerID: relay1ID, remotePeerID: "other-2", established: true}
 	nodeA.mu.Unlock()
 	nodeA.scoring.SetApplicationScore(relay1ID, 10)
-	nodeA.scoring.SetApplicationScore(relay2ID, 1)
+	nodeA.scoring.SetApplicationScore(relay2ID, 10)
+	nodeA.SetScoringCallback(func(peerID [32]byte, baseScore float64) float64 {
+		if peerID == decodePeerID(relay1ID) || peerID == decodePeerID(relay2ID) {
+			return 10
+		}
+		return baseScore
+	})
 
 	sessionID, err := nodeA.OpenRelaySessionAny(targetID, 2*time.Second)
 	if err != nil {
@@ -1499,6 +1620,126 @@ func TestTryHolePunchDialEstablishesDirectPeer(t *testing.T) {
 
 	waitForDirectPeer(t, nodeA, targetID)
 	waitForDirectPeer(t, nodeB, hex.EncodeToString(sourcePub[:]))
+}
+
+func TestHandleHolePunchCoordIgnoresUnsolicitedRequest(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Trackers = nil
+	node, err := NewNode("mesh-holepunch-unsolicited", nil, cfg)
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+
+	localID := node.localPeerID()
+	peer := &peerConn{id: "relay-peer"}
+
+	node.mu.RLock()
+	before, hadBefore := node.knownPeers["attacker-source"]
+	node.mu.RUnlock()
+
+	node.handleHolePunchCoord(peer, gossip.Envelope{
+		Type:           gossip.TypeHolePunchCoord,
+		RequestID:      "attacker-request",
+		CoordStage:     "reply",
+		RelaySource:    "attacker-source",
+		RelayTarget:    localID,
+		AdvertisedAddr: "127.0.0.1:6553",
+	})
+
+	node.mu.RLock()
+	after, hadAfter := node.knownPeers["attacker-source"]
+	_, pending := node.holePunchWait["attacker-request"]
+	node.mu.RUnlock()
+
+	if hadAfter != hadBefore || after.addr != before.addr {
+		t.Fatalf("unexpected known peer update for unsolicited request")
+	}
+	if pending {
+		t.Fatalf("unexpected pending hole punch request for unsolicited request")
+	}
+}
+
+func TestHandleHolePunchCoordKeepsPendingRequestAfterMismatchedReply(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Trackers = nil
+	node, err := NewNode("mesh-holepunch-mismatch", nil, cfg)
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+
+	localID := node.localPeerID()
+	node.mu.Lock()
+	node.holePunchWait["req-1"] = holePunchRequest{targetPeerID: "target-peer", relayPeerID: "relay-peer"}
+	node.mu.Unlock()
+
+	node.handleHolePunchCoord(&peerConn{id: "attacker-relay"}, gossip.Envelope{
+		Type:           gossip.TypeHolePunchCoord,
+		RequestID:      "req-1",
+		CoordStage:     "reply",
+		RelaySource:    "attacker-source",
+		RelayTarget:    localID,
+		AdvertisedAddr: "127.0.0.1:6553",
+	})
+
+	node.mu.RLock()
+	_, stillPending := node.holePunchWait["req-1"]
+	_, attackerKnown := node.knownPeers["attacker-source"]
+	node.mu.RUnlock()
+	if !stillPending {
+		t.Fatalf("mismatched reply consumed pending request")
+	}
+	if attackerKnown {
+		t.Fatalf("mismatched reply updated attacker peer")
+	}
+
+	node.handleHolePunchCoord(&peerConn{id: "relay-peer"}, gossip.Envelope{
+		Type:           gossip.TypeHolePunchCoord,
+		RequestID:      "req-1",
+		CoordStage:     "reply",
+		RelaySource:    "target-peer",
+		RelayTarget:    localID,
+		AdvertisedAddr: "127.0.0.1:6554",
+	})
+
+	node.mu.RLock()
+	_, stillPending = node.holePunchWait["req-1"]
+	known := node.knownPeers["target-peer"]
+	node.mu.RUnlock()
+	if stillPending {
+		t.Fatalf("valid reply did not consume pending request")
+	}
+	if known.addr != "127.0.0.1:6554" {
+		t.Fatalf("valid reply did not update target peer: %q", known.addr)
+	}
+}
+
+func TestHolePunchCoordDoesNotPoisonPredictionObservations(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Trackers = nil
+	node, err := NewNode("mesh-holepunch-prediction-poison", nil, cfg)
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+
+	targetID := "target-peer"
+	node.handleHolePunchCoord(&peerConn{id: "relay-peer"}, gossip.Envelope{
+		Type:           gossip.TypeHolePunchCoord,
+		RequestID:      "attacker-request",
+		CoordStage:     "offer",
+		RelaySource:    targetID,
+		RelayTarget:    node.localPeerID(),
+		AdvertisedAddr: "127.0.0.1:30000",
+	})
+
+	node.mu.RLock()
+	info := node.knownPeers[targetID]
+	node.mu.RUnlock()
+	if got := info.observations[len(info.observations)-1]; got != "127.0.0.1:30000" {
+		t.Fatalf("expected coord address in general observations, got %q", got)
+	}
+	if len(info.predictionObservations) != 0 {
+		t.Fatalf("unexpected coord address in prediction observations: %#v", info.predictionObservations)
+	}
 }
 
 func TestDirectPeerConnectionMigratesRelaySession(t *testing.T) {
@@ -2124,18 +2365,80 @@ func TestHighLatencyPeerIsPruned(t *testing.T) {
 
 	waitForPeerCount(t, nodeA, 1)
 	waitForPeerCount(t, nodeB, 1)
+	if code := nodeA.Subscribe("alpha"); code != MOSS_OK {
+		t.Fatalf("nodeA.Subscribe failed: %d", code)
+	}
+	if code := nodeB.Subscribe("alpha"); code != MOSS_OK {
+		t.Fatalf("nodeB.Subscribe failed: %d", code)
+	}
 
 	targetPub := nodeB.PublicKey()
 	targetID := hex.EncodeToString(targetPub[:])
+	waitForPeerMeshState(t, nodeA, "alpha", targetID, true)
 	nodeA.mu.Lock()
 	if peer := nodeA.peers[targetID]; peer != nil {
 		peer.connectedAt = time.Now().Add(-time.Minute)
 		peer.lastRTT = 3 * time.Second
+		peer.pingPending = ""
+		peer.pingSentAt = time.Now()
 	}
 	nodeA.mu.Unlock()
 
 	nodeA.pruneHighLatencyPeers()
-	waitForPeerGone(t, nodeA, targetID)
+	waitForPeerMeshState(t, nodeA, "alpha", targetID, false)
+	waitForPeerCountAtLeast(t, nodeA, 1, 500*time.Millisecond)
+}
+
+func TestNegativeScorePeerIsPrunedFromMeshWithoutDisconnect(t *testing.T) {
+	cfgA := DefaultConfig()
+	cfgA.Trackers = nil
+	cfgA.GossipSub.HeartbeatMS = 50
+	nodeA, err := NewNode("mesh-negative-score", nil, cfgA)
+	if err != nil {
+		t.Fatalf("NewNode nodeA failed: %v", err)
+	}
+	if code := nodeA.Start(); code != MOSS_OK {
+		t.Fatalf("nodeA.Start failed: %d", code)
+	}
+	defer nodeA.Stop()
+
+	cfgB := DefaultConfig()
+	cfgB.Trackers = nil
+	cfgB.GossipSub.HeartbeatMS = 50
+	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(nodeA.ListenPort()))}
+	nodeB, err := NewNode("mesh-negative-score", nil, cfgB)
+	if err != nil {
+		t.Fatalf("NewNode nodeB failed: %v", err)
+	}
+	if code := nodeB.Start(); code != MOSS_OK {
+		t.Fatalf("nodeB.Start failed: %d", code)
+	}
+	defer nodeB.Stop()
+
+	waitForPeerCount(t, nodeA, 1)
+	waitForPeerCount(t, nodeB, 1)
+	if code := nodeA.Subscribe("alpha"); code != MOSS_OK {
+		t.Fatalf("nodeA.Subscribe failed: %d", code)
+	}
+	if code := nodeB.Subscribe("alpha"); code != MOSS_OK {
+		t.Fatalf("nodeB.Subscribe failed: %d", code)
+	}
+
+	targetPub := nodeB.PublicKey()
+	targetID := hex.EncodeToString(targetPub[:])
+	waitForPeerMeshState(t, nodeA, "alpha", targetID, true)
+
+	nodeA.mu.Lock()
+	if peer := nodeA.peers[targetID]; peer != nil {
+		peer.connectedAt = time.Now().Add(-time.Minute)
+	}
+	nodeA.mu.Unlock()
+	nodeA.scoring.SetApplicationScore(targetID, -5)
+
+	nodeA.pruneLowScoringPeers()
+
+	waitForPeerMeshState(t, nodeA, "alpha", targetID, false)
+	waitForPeerCountAtLeast(t, nodeA, 1, 500*time.Millisecond)
 }
 
 func TestSimultaneousDirectDialsResolveToSingleConnection(t *testing.T) {
@@ -2204,6 +2507,21 @@ func waitForPeerCount(t *testing.T, node *Node, want int) {
 	t.Fatalf("peer count did not reach %d; info=%s", want, node.MeshInfoJSON())
 }
 
+func waitForKnownPeerAddr(t *testing.T, node *Node, peerID, want string) {
+	t.Helper()
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		node.mu.RLock()
+		info, ok := node.knownPeers[peerID]
+		node.mu.RUnlock()
+		if ok && info.addr == want {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("known peer %s addr did not converge to %s; info=%s", peerID, want, node.MeshInfoJSON())
+}
+
 func waitForPeerCountWithin(node *Node, want int, dur time.Duration) bool {
 	deadline := time.Now().Add(dur)
 	for time.Now().Before(deadline) {
@@ -2239,6 +2557,18 @@ func waitForPeerCountAtMost(t *testing.T, node *Node, max int, dur time.Duration
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
+}
+
+func waitForPeerCountEventuallyAtMost(t *testing.T, node *Node, max int, dur time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(dur)
+	for time.Now().Before(deadline) {
+		if got := node.currentPeerCount(); got <= max {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("peer count did not drop to <= %d; info=%s", max, node.MeshInfoJSON())
 }
 
 func waitForPeerCountAtLeast(t *testing.T, node *Node, min int, dur time.Duration) {
@@ -2365,7 +2695,50 @@ func waitForPeerRTT(t *testing.T, node *Node, peerID string, max time.Duration) 
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	t.Fatalf("peer %s did not report RTT within %s", peerID, max)
+	node.mu.RLock()
+	peer := node.peers[peerID]
+	var rtt time.Duration
+	var pending string
+	var sentAgo time.Duration
+	if peer != nil {
+		rtt = peer.lastRTT
+		pending = peer.pingPending
+		if !peer.pingSentAt.IsZero() {
+			sentAgo = time.Since(peer.pingSentAt)
+		}
+	}
+	peerCount := len(node.peers)
+	node.mu.RUnlock()
+	t.Fatalf("peer %s did not report RTT within %s (exists=%t count=%d rtt=%s pending=%q sent_ago=%s)", peerID, max, peer != nil, peerCount, rtt, pending, sentAgo)
+}
+
+func waitForPeerMeshState(t *testing.T, node *Node, channel, peerID string, want bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if node.pubsub.InMesh(channel, peerID) == want {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	node.mu.RLock()
+	peer := node.peers[peerID]
+	var rtt time.Duration
+	var blockedFor time.Duration
+	var pending string
+	var sentAgo time.Duration
+	if peer != nil {
+		rtt = peer.lastRTT
+		if time.Until(peer.meshBlocked) > 0 {
+			blockedFor = time.Until(peer.meshBlocked)
+		}
+		pending = peer.pingPending
+		if !peer.pingSentAt.IsZero() {
+			sentAgo = time.Since(peer.pingSentAt)
+		}
+	}
+	node.mu.RUnlock()
+	t.Fatalf("peer %s mesh state for %s did not become %t (actual=%t exists=%t rtt=%s blocked_for=%s pending=%q sent_ago=%s mesh=%v)", peerID, channel, want, node.pubsub.InMesh(channel, peerID), peer != nil, rtt, blockedFor, pending, sentAgo, node.pubsub.MeshPeers(channel))
 }
 
 func waitForKnownPeerPort(t *testing.T, node *Node, wantPeerID, wantPort string) {
