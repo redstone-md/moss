@@ -15,7 +15,7 @@ type Listener struct {
 }
 
 func Listen(port int) (*Listener, int, error) {
-	addr := listenHost() + ":" + strconv.Itoa(port)
+	addr := listenAddr(port)
 	ln, err := net.Listen("tcp4", addr)
 	if err != nil {
 		return nil, 0, err
@@ -78,12 +78,12 @@ func listenHost() string {
 	return "0.0.0.0"
 }
 
-func listenIP() net.IP {
-	ip := net.ParseIP(listenHost())
-	if ip == nil {
-		return net.IPv4zero
-	}
-	return ip
+func listenAddr(port int) string {
+	return net.JoinHostPort(listenHost(), strconv.Itoa(port))
+}
+
+func listenUDPAddr(port int) (*net.UDPAddr, error) {
+	return net.ResolveUDPAddr("udp4", listenAddr(port))
 }
 
 func RunningGoTest() bool {
