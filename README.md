@@ -11,7 +11,7 @@ The current implementation follows the public technical specification in [docs/S
 - encrypted peer transport with Noise XX (`25519_ChaChaPoly_BLAKE2s`) plus identity binding
 - topic-based pub/sub routing with GRAFT/PRUNE control messages, BLAKE2s message IDs, and peer scoring
 - NAT profiling, relay rate limiting primitives, and supernode eligibility checks
-- C FFI surface with examples for C, C++, Python (`ctypes`), and Rust
+- C FFI surface with examples for C, C++, C#, Python (`ctypes`), and Rust
 - unit, integration, and shared-library smoke tests
 
 Desktop clients now live in the separate [MOSH](https://github.com/redstone-md/mosh) repository, which consumes `MOSS` through the shared runtime and a Git submodule pin for compatibility.
@@ -23,6 +23,7 @@ Desktop clients now live in the separate [MOSH](https://github.com/redstone-md/m
 
 FFI docs:
 
+- Architecture guide: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - API reference: [docs/API.md](docs/API.md)
 - Shared integration guide: [docs/SHARED_INTEGRATION.md](docs/SHARED_INTEGRATION.md)
 - Known limitations: [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md)
@@ -43,7 +44,7 @@ internal/transport/        encrypted sessions and handshake
 internal/gossip/           pubsub cache, scoring, envelopes
 internal/nat/              NAT profiling and relay primitives
 internal/mesh/             runtime node orchestration
-examples/                  C, C++, Python, Rust FFI examples
+examples/                  C, C++, C#, Python, Python chat, Rust FFI examples
 ```
 
 ## Build

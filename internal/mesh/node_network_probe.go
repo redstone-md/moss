@@ -1,0 +1,226 @@
+package mesh
+
+import (
+	"context"
+	"encoding/hex"
+	"net"
+	"net/netip"
+	"sort"
+	"strconv"
+	"sync/atomic"
+	"time"
+
+	"golang.org/x/crypto/blake2s"
+
+	"moss/internal/gossip"
+	"moss/internal/nat"
+)
+
+func (n *Node) probePortMapping(ctx context.Context, listenAddr string, port int) {
+	if observed, ok := n.requestSTUNBindingObservation(3 * time.Second); ok {
+		_ = n.applyExternalObservation(observed, time.Now().Add(n.config.HandshakeTimeout()))
+	}
+	mapper := nat.NewPortMapper(nat.MappingOptions{
+		EnableUPnP:   n.config.NAT.UPnPEnabled,
+		EnableNATPMP: n.config.NAT.NATPMPEnabled,
+		EnablePCP:    n.config.NAT.PCPEnabled,
+		Description:  "moss",
+		Lifetime:     30 * time.Minute,
+	})
+	mappedAddr, ok := mapper.Map(port)
+	if ok {
+		_ = n.applyExternalObservation(mappedAddr, time.Now().Add(n.config.HandshakeTimeout()))
+	} else {
+		if observed, observedOK := n.requestSTUNBindingObservation(3 * time.Second); observedOK {
+			mappedAddr = observed
+			ok = true
+		}
+	}
+	select {
+	case <-ctx.Done():
+		mapper.Close()
+		return
+	default:
+	}
+	if !ok {
+		mapper.Close()
+		return
+	}
+	current := n.natProfile.Load().(nat.Profile)
+	mappedAddr = preferredExternalAddr(current.ExternalAddress, mappedAddr)
+	profile := n.profiler.WithExternalAddress(current, mappedAddr)
+	n.natProfile.Store(profile)
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if !n.started {
+		mapper.Close()
+		return
+	}
+	if n.portMapper != nil {
+		n.portMapper.Close()
+	}
+	n.portMapper = mapper
+}
+
+func requiresReachabilityConfirmation(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	parsed, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	return parsed.IsGlobalUnicast() && !parsed.IsPrivate() && !isCarrierGradeAddr(parsed)
+}
+
+func probeTCPAddress(addr string, timeout time.Duration) bool {
+	if timeout <= 0 {
+		timeout = 250 * time.Millisecond
+	}
+	conn, err := net.DialTimeout("tcp", addr, timeout)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
+func sameAdvertisedEndpoint(a, b string) bool {
+	aEndpoint, err := netip.ParseAddrPort(a)
+	if err != nil {
+		return false
+	}
+	bEndpoint, err := netip.ParseAddrPort(b)
+	if err != nil {
+		return false
+	}
+	return aEndpoint.Port() == bEndpoint.Port() && aEndpoint.Addr().Unmap() == bEndpoint.Addr().Unmap()
+}
+
+func minDuration(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func isCarrierGradeAddr(addr netip.Addr) bool {
+	if !addr.Is4() {
+		return false
+	}
+	return netip.MustParsePrefix("100.64.0.0/10").Contains(addr)
+}
+
+func preferredExternalAddr(current, candidate string) string {
+	if candidate == "" {
+		return current
+	}
+	if current == "" {
+		return candidate
+	}
+	currentRank := knownPeerAddrRank(current)
+	candidateRank := knownPeerAddrRank(candidate)
+	if candidateRank > currentRank {
+		return candidate
+	}
+	if candidateRank < currentRank {
+		return current
+	}
+	return candidate
+}
+
+func eligibleForIPColocationPenalty(host string) bool {
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	if addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() || addr.IsMulticast() || addr.IsUnspecified() {
+		return false
+	}
+	return addr.IsGlobalUnicast() && !isCarrierGradeAddr(addr)
+}
+
+func validChannel(channel string) bool {
+	return channel != "" && len(channel) <= 256
+}
+
+func (n *Node) selectLazyPeers(channel, excludePeerID string, limit int) []string {
+	if limit <= 0 {
+		return nil
+	}
+	peers := n.pubsub.NonMeshSubscribers(channel)
+	if len(peers) == 0 {
+		return nil
+	}
+	heartbeat := atomic.LoadUint64(&n.heartbeat)
+	sort.Slice(peers, func(i, j int) bool {
+		keyI := lazyPeerKey(channel, peers[i], heartbeat)
+		keyJ := lazyPeerKey(channel, peers[j], heartbeat)
+		if keyI == keyJ {
+			return peers[i] < peers[j]
+		}
+		return keyI < keyJ
+	})
+	selected := make([]string, 0, limit)
+	for _, peerID := range peers {
+		if peerID == excludePeerID || !n.canGossipWithPeer(peerID) {
+			continue
+		}
+		selected = append(selected, peerID)
+		if len(selected) == limit {
+			break
+		}
+	}
+	return selected
+}
+
+func lazyPeerKey(channel, peerID string, heartbeat uint64) string {
+	hash, _ := blake2s.New256(nil)
+	hash.Write([]byte(channel))
+	hash.Write([]byte(peerID))
+	hash.Write([]byte(strconv.FormatUint(heartbeat, 10)))
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
+func medianMeshScore(engine *gossip.Engine, peers []string) float64 {
+	if len(peers) == 0 {
+		return 0
+	}
+	scores := make([]float64, 0, len(peers))
+	for _, peerID := range peers {
+		scores = append(scores, engine.Score(peerID))
+	}
+	sort.Float64s(scores)
+	middle := len(scores) / 2
+	if len(scores)%2 == 1 {
+		return scores[middle]
+	}
+	return (scores[middle-1] + scores[middle]) / 2
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func appendObservation(history []string, addr string) []string {
+	if addr == "" {
+		return history
+	}
+	if len(history) > 0 && history[len(history)-1] == addr {
+		return history
+	}
+	history = append(history, addr)
+	if len(history) > 4 {
+		history = append([]string(nil), history[len(history)-4:]...)
+	}
+	return history
+}
+
+func withTimeout(ctx context.Context, timeout time.Duration) context.Context {
+	child, _ := context.WithTimeout(ctx, timeout)
+	return child
+}
