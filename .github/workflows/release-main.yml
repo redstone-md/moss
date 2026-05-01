@@ -99,6 +99,7 @@ jobs:
 
       - name: Publish release assets
         env:
+          GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
