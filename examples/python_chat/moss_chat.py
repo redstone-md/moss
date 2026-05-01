@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import json
+import os
 import socket
 import threading
 from dataclasses import dataclass, field
@@ -17,6 +18,8 @@ PUBLIC_KEY_LEN = 32
 SYSTEM_ROOM = "system"
 DEFAULT_ROOM = "lobby"
 DEFAULT_MESH = "moss-chat-demo"
+RESERVED_NICKNAMES = {"system", "you"}
+MAX_NICKNAME_LEN = 32
 
 
 MossMessageCallback = ctypes.CFUNCTYPE(
@@ -83,10 +86,15 @@ def load_library() -> ctypes.CDLL:
     raise FileNotFoundError(f"moss shared library not found, looked for: {names}")
 
 
-LIB = load_library()
+LIB = None if os.environ.get("MOSS_CHAT_SKIP_LIB") == "1" else load_library()
 
 
 def bind_function(name: str, argtypes: list[object], restype: object):
+    if LIB is None:
+        def missing_symbol(*_args):
+            raise RuntimeError("moss shared library loading was skipped")
+
+        return missing_symbol
     try:
         fn = getattr(LIB, name)
     except AttributeError as exc:
@@ -166,6 +174,57 @@ def format_peer(peer_id: str) -> str:
     return f"{peer_id[:8]}..{peer_id[-4:]}"
 
 
+def one_line(value: object) -> str:
+    return str(value).replace("\r", " ").replace("\n", " ").strip()
+
+
+def clean_nickname(value: object) -> str:
+    nick = " ".join(one_line(value).split())
+    return nick[:MAX_NICKNAME_LEN]
+
+
+def parse_nickname(value: str) -> str:
+    nick = clean_nickname(value)
+    if not nick:
+        raise argparse.ArgumentTypeError("nickname cannot be empty")
+    if nick.lower() in RESERVED_NICKNAMES:
+        raise argparse.ArgumentTypeError(f"nickname {nick!r} is reserved")
+    return nick
+
+
+def parse_psk_hex(value: str | None) -> bytes | None:
+    if not value:
+        return None
+    try:
+        raw = bytes.fromhex(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("PSK must be 64 hex characters") from exc
+    if len(raw) != PUBLIC_KEY_LEN:
+        raise argparse.ArgumentTypeError("PSK must decode to exactly 32 bytes")
+    return raw
+
+
+def sender_label(sender_hex: str, local_peer_hex: str, nick: object | None) -> str:
+    if sender_hex and sender_hex == local_peer_hex:
+        return "you"
+    peer = format_peer(sender_hex) if sender_hex else "unknown-peer"
+    clean = clean_nickname(nick) if nick is not None else ""
+    if not clean or clean.lower() in RESERVED_NICKNAMES:
+        return peer
+    return f"{clean} [{peer}]"
+
+
+def render_chat_line(sender_hex: str, local_peer_hex: str, payload: bytes) -> str:
+    raw = payload.decode("utf-8", errors="replace")
+    message = safe_json_load(raw)
+    text = message.get("text")
+    nick = message.get("nick") if text else None
+    if not text:
+        text = raw
+    sent_at = one_line(message.get("sent_at") or current_timestamp())
+    return f"[{sent_at}] {sender_label(sender_hex, local_peer_hex, nick)}: {one_line(text)}"
+
+
 def detect_share_host() -> str | None:
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
@@ -203,6 +262,7 @@ class MossClient:
         listen_port: int,
         peers: list[str],
         identity_path: Path | None,
+        psk: bytes | None = None,
         trackers: list[str] | None = None,
         heartbeat_ms: int = 250,
     ) -> None:
@@ -229,9 +289,13 @@ class MossClient:
 
         with _INIT_LOCK:
             self._configure_keystore(identity_path)
+            psk_ptr = None
+            if psk is not None:
+                psk_buf = (ctypes.c_uint8 * len(psk)).from_buffer_copy(psk)
+                psk_ptr = psk_buf
             handle = Moss_Init(
                 mesh_id.encode("utf-8"),
-                None,
+                psk_ptr,
                 json.dumps(config).encode("utf-8"),
             )
         if handle <= 0:
@@ -378,7 +442,7 @@ class MossChatApp:
         initial_rooms: list[str],
     ) -> None:
         self.client = client
-        self.nickname = nickname
+        self.nickname = parse_nickname(nickname)
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._mesh_info: dict = {}
@@ -609,7 +673,11 @@ class MossChatApp:
             if not argument:
                 self._system_message("Usage: /nick NAME")
                 return
-            self.nickname = argument.strip()
+            try:
+                self.nickname = parse_nickname(argument)
+            except Exception as exc:
+                self._system_message(str(exc))
+                return
             self._system_message(f"Nickname changed to {self.nickname}.")
             self._invalidate()
             return
@@ -720,14 +788,7 @@ class MossChatApp:
     def _on_message(self, channel: str, sender_hex: str, payload: bytes) -> None:
         room_name = normalize_room(channel)
         self._ensure_room(room_name, subscribed=True)
-        raw = payload.decode("utf-8", errors="replace")
-        message = safe_json_load(raw)
-        nick = message.get("nick") or format_peer(sender_hex)
-        text = message.get("text") or raw
-        sent_at = message.get("sent_at") or current_timestamp()
-        is_self = sender_hex == self.client.public_key_hex
-        prefix = "you" if is_self else nick
-        line = f"[{sent_at}] {prefix}: {text}"
+        line = render_chat_line(sender_hex, self.client.public_key_hex, payload)
         self._append_line(room_name, line)
 
     def _on_event(self, event_type: int, detail: dict) -> None:
@@ -807,7 +868,7 @@ class MossChatApp:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Interactive Moss chat demo")
-    parser.add_argument("--nickname", required=True, help="Nickname shown in the chat")
+    parser.add_argument("--nickname", required=True, type=parse_nickname, help="Nickname shown in the chat")
     parser.add_argument("--mesh", default=DEFAULT_MESH, help="Mesh ID shared by all chat participants")
     parser.add_argument("--listen-port", type=int, default=0, help="Local listen port for this node")
     parser.add_argument(
@@ -836,6 +897,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--identity-file",
         help="Path to persist the Moss identity for this chat profile",
+    )
+    parser.add_argument(
+        "--psk-hex",
+        type=parse_psk_hex,
+        default=None,
+        help="Optional 32-byte pre-shared key as 64 hex characters for private meshes",
     )
     return parser.parse_args()
 
@@ -867,6 +934,7 @@ def main() -> None:
         peers=args.peer,
         trackers=trackers,
         identity_path=resolve_identity_path(args),
+        psk=args.psk_hex,
     )
     app = MossChatApp(client=client, nickname=args.nickname, initial_rooms=rooms)
     app.run()

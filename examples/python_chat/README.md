@@ -8,6 +8,8 @@ Features:
 - system event log
 - unread counters per room
 - persistent Moss identity per profile
+- verified peer fingerprint display next to remote nicknames
+- optional PSK-protected private meshes
 - full-screen terminal UI
 
 ## Install
@@ -33,6 +35,12 @@ Terminal 2:
 
 ```powershell
 python examples\python_chat\moss_chat.py --nickname Bob --listen-port 41031 --peer 127.0.0.1:41030 --room lobby --no-trackers
+```
+
+For a private chat, pass the same 32-byte PSK to every participant:
+
+```powershell
+python examples\python_chat\moss_chat.py --nickname Alice --psk-hex 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
 ```
 
 For a second machine on the same LAN, use the first machine's hostname or LAN IP instead of `127.0.0.1`:
@@ -73,6 +81,8 @@ Supported commands:
 - For the local demo, the second client needs `--peer 127.0.0.1:PORT_OF_FIRST_CLIENT`.
 - For Raspberry Pi / LAN testing, use `--peer HOSTNAME_OR_LAN_IP:PORT` and make sure the port is allowed by the local firewall.
 - By default the chat uses the built-in public tracker list for autonomous bootstrap.
+- Remote messages show a verified peer fingerprint next to nicknames. Reserved names such as `system` and `you` are not accepted as nicknames.
+- Use `--psk-hex` with a shared 32-byte key for identity-sensitive chats; without it, anyone who can join the mesh can send messages.
 - Use `--no-trackers` only for deterministic local/static-peer testing.
 - A node with no `--peer` and `--no-trackers` is isolated until another peer dials it or you run `/connect HOST:PORT`.
 - Each nickname gets its own persisted Moss identity in `examples/python_chat/.state/`.
