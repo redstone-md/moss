@@ -1,11 +1,16 @@
 package mesh
 
 import (
+	"net"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
 	"moss/internal/gossip"
+	"moss/internal/transport"
+
+	"github.com/flynn/noise"
 )
 
 func TestSelectLazyPeersCapsToDLazy(t *testing.T) {
@@ -132,6 +137,71 @@ func TestPublishBelowThresholdIsDropped(t *testing.T) {
 	}
 }
 
+func TestBroadcastEnvelopeSkipsPeersBelowGossipThreshold(t *testing.T) {
+	node, err := NewNode("mesh-broadcast-threshold", nil, DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+	blocked := newRecordedSession(t)
+	allowed := newRecordedSession(t)
+	node.peers["peer-blocked"] = &peerConn{id: "peer-blocked", session: blocked.session}
+	node.peers["peer-allowed"] = &peerConn{id: "peer-allowed", session: allowed.session}
+	node.pubsub.SetMeshPeer("alpha", "peer-blocked", true)
+	node.pubsub.SetMeshPeer("alpha", "peer-allowed", true)
+	node.scoring.SetApplicationScore("peer-blocked", gossip.GossipThreshold-1)
+	node.scoring.SetApplicationScore("peer-allowed", gossip.GossipThreshold)
+
+	sent := node.broadcastEnvelope(gossip.Envelope{Type: gossip.TypePublish, Channel: "alpha", MessageID: "msg-1", Payload: []byte("secret")}, "")
+
+	if !sent {
+		t.Fatal("expected publish to be sent to eligible peer")
+	}
+	if got := blocked.writeCount(); got != 0 {
+		t.Fatalf("expected blocked peer to receive no publish packets, got %d", got)
+	}
+	if got := allowed.writeCount(); got != 1 {
+		t.Fatalf("expected eligible peer to receive publish packet, got %d", got)
+	}
+}
+
+func TestPeerExchangeSkipsPeersBelowBaseline(t *testing.T) {
+	node, err := NewNode("mesh-px-threshold", nil, DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+	blocked := newRecordedSession(t)
+	allowed := newRecordedSession(t)
+	node.peers["peer-blocked"] = &peerConn{id: "peer-blocked", session: blocked.session}
+	node.peers["peer-allowed"] = &peerConn{id: "peer-allowed", session: allowed.session}
+	node.scoring.SetApplicationScore("peer-blocked", gossip.BaselineThreshold-1)
+	node.scoring.SetApplicationScore("peer-allowed", gossip.BaselineThreshold)
+
+	node.broadcastPeerAnnouncement(knownPeer{id: "known-peer", addr: "198.51.100.42:41000"}, "")
+
+	if got := blocked.writeCount(); got != 0 {
+		t.Fatalf("expected blocked peer to receive no peer exchange packets, got %d", got)
+	}
+	if got := allowed.writeCount(); got != 1 {
+		t.Fatalf("expected eligible peer to receive peer exchange packet, got %d", got)
+	}
+}
+
+func TestKnownPeerSnapshotSkipsPeersBelowBaseline(t *testing.T) {
+	node, err := NewNode("mesh-snapshot-threshold", nil, DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+	blocked := newRecordedSession(t)
+	node.knownPeers["known-peer"] = knownPeer{id: "known-peer", addr: "198.51.100.42:41000"}
+	node.scoring.SetApplicationScore("peer-blocked", gossip.BaselineThreshold-1)
+
+	node.sendKnownPeerSnapshot(&peerConn{id: "peer-blocked", session: blocked.session})
+
+	if got := blocked.writeCount(); got != 0 {
+		t.Fatalf("expected blocked peer to receive no known-peer snapshot packets, got %d", got)
+	}
+}
+
 func TestInboundPublishOverMaxMessageSizeDropped(t *testing.T) {
 	node, err := NewNode("mesh-publish-max-size", nil, DefaultConfig())
 	if err != nil {
@@ -176,6 +246,84 @@ func TestRememberSuppressionCapsEntriesPerPeer(t *testing.T) {
 	if got := len(node.suppress["peer-a"]); got != maxSuppressionEntriesPerPeer {
 		t.Fatalf("expected repeated suppression calls to stay capped at %d entries, got %d", maxSuppressionEntriesPerPeer, got)
 	}
+}
+
+type recordedSession struct {
+	session *transport.Session
+	carrier *recordingCarrier
+}
+
+func newRecordedSession(t *testing.T) *recordedSession {
+	t.Helper()
+	suite := noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashBLAKE2s)
+	var key [32]byte
+	for i := range key {
+		key[i] = byte(i + 1)
+	}
+	carrier := newRecordingCarrier()
+	t.Cleanup(func() { _ = carrier.Close() })
+	session, err := transport.NewSession(
+		carrier,
+		noise.UnsafeNewCipherState(suite, key, 0),
+		noise.UnsafeNewCipherState(suite, key, 0),
+		[32]byte{},
+		[32]byte{},
+		transport.HandshakeModeXX,
+	)
+	if err != nil {
+		t.Fatalf("NewSession failed: %v", err)
+	}
+	return &recordedSession{session: session, carrier: carrier}
+}
+
+func (r *recordedSession) writeCount() int {
+	return r.carrier.writeCount()
+}
+
+type recordingCarrier struct {
+	mu     sync.Mutex
+	reads  chan []byte
+	closed bool
+	writes int
+}
+
+func newRecordingCarrier() *recordingCarrier {
+	return &recordingCarrier{reads: make(chan []byte)}
+}
+
+func (c *recordingCarrier) WritePacket([]byte) error {
+	c.mu.Lock()
+	c.writes++
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *recordingCarrier) ReadPacket() ([]byte, error) {
+	packet, ok := <-c.reads
+	if !ok {
+		return nil, net.ErrClosed
+	}
+	return packet, nil
+}
+
+func (c *recordingCarrier) RemoteAddr() net.Addr {
+	return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 41000}
+}
+
+func (c *recordingCarrier) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.closed {
+		close(c.reads)
+		c.closed = true
+	}
+	return nil
+}
+
+func (c *recordingCarrier) writeCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.writes
 }
 
 func TestMeshDeliveryDeficitPenalizesSilentMeshPeers(t *testing.T) {

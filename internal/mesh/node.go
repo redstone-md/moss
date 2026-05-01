@@ -1065,7 +1065,7 @@ func (n *Node) broadcastEnvelope(env gossip.Envelope, excludePeerID string) bool
 		return false
 	}
 	return n.sendToPeers(filterPeerIDs(targets, func(peerID string) bool {
-		return peerID != excludePeerID && !n.isPeerBelowPublishThreshold(peerID)
+		return peerID != excludePeerID && n.canGossipWithPeer(peerID)
 	}), env)
 }
 
@@ -1075,7 +1075,7 @@ func (n *Node) broadcastFloodPublish(env gossip.Envelope, excludePeerID string) 
 	targets := make([]string, 0, len(meshPeers)+len(nonMeshSubscribers))
 	seen := make(map[string]struct{}, len(meshPeers)+len(nonMeshSubscribers))
 	for _, peerID := range append(meshPeers, nonMeshSubscribers...) {
-		if peerID == excludePeerID || n.isPeerBelowPublishThreshold(peerID) {
+		if peerID == excludePeerID || !n.canGossipWithPeer(peerID) {
 			continue
 		}
 		if _, ok := seen[peerID]; ok {
@@ -1104,6 +1104,9 @@ func (n *Node) sendEnvelope(peer *peerConn, env gossip.Envelope) bool {
 	if peer == nil || peer.session == nil {
 		return false
 	}
+	if n.isPeerGraylisted(peer.id) {
+		return false
+	}
 	payload, err := json.Marshal(env)
 	if err != nil {
 		return false
@@ -1112,6 +1115,9 @@ func (n *Node) sendEnvelope(peer *peerConn, env gossip.Envelope) bool {
 }
 
 func (n *Node) sendKnownPeerSnapshot(peer *peerConn) {
+	if peer == nil || !n.canSharePeerExchangeWithPeer(peer.id) {
+		return
+	}
 	n.sendEnvelope(peer, n.peerAnnouncementEnvelope(n.localKnownPeer()))
 
 	n.mu.RLock()
@@ -1140,12 +1146,15 @@ func (n *Node) announceLocalSubscription(channel string) {
 	}
 	n.mu.RUnlock()
 	for _, peer := range peers {
+		if !n.canGossipWithPeer(peer.id) {
+			continue
+		}
 		n.sendEnvelope(peer, gossip.Envelope{Type: gossip.TypeGraft, Channel: channel})
 	}
 }
 
 func (n *Node) announceLocalSubscriptionsToPeer(peer *peerConn) {
-	if peer == nil {
+	if peer == nil || !n.canGossipWithPeer(peer.id) {
 		return
 	}
 	for _, channel := range n.pubsub.SnapshotLocal() {
@@ -1562,22 +1571,17 @@ func (n *Node) broadcastIDontWant(channel string, ids []string, excludePeerID st
 }
 
 func (n *Node) broadcastToAll(env gossip.Envelope, excludePeerID string) bool {
-	payload, err := json.Marshal(env)
-	if err != nil {
-		return false
-	}
 	n.mu.RLock()
-	defer n.mu.RUnlock()
-	sent := false
+	peerIDs := make([]string, 0, len(n.peers))
 	for peerID, peer := range n.peers {
-		if peerID == excludePeerID {
+		if peer == nil || peerID == excludePeerID {
 			continue
 		}
-		if err := peer.session.WritePacket(payload); err == nil {
-			sent = true
-		}
+		peerIDs = append(peerIDs, peerID)
 	}
-	return sent
+	n.mu.RUnlock()
+	targets := filterPeerIDs(peerIDs, n.canSharePeerExchangeWithPeer)
+	return n.sendToPeers(targets, env)
 }
 
 func (n *Node) broadcastToNonMesh(channel string, env gossip.Envelope, excludePeerID string) bool {
@@ -1605,6 +1609,12 @@ func (n *Node) broadcastToNonMesh(channel string, env gossip.Envelope, excludePe
 }
 
 func (n *Node) sendToPeers(peerIDs []string, env gossip.Envelope) bool {
+	if len(peerIDs) == 0 {
+		return false
+	}
+	peerIDs = filterPeerIDs(peerIDs, func(peerID string) bool {
+		return !n.isPeerGraylisted(peerID)
+	})
 	if len(peerIDs) == 0 {
 		return false
 	}
@@ -3725,6 +3735,10 @@ func (n *Node) isPeerBelowPublishThreshold(peerID string) bool {
 
 func (n *Node) isPeerGraylisted(peerID string) bool {
 	return n.peerScore(peerID) < gossip.GraylistThreshold
+}
+
+func (n *Node) canSharePeerExchangeWithPeer(peerID string) bool {
+	return n.peerScore(peerID) >= gossip.BaselineThreshold
 }
 
 func (n *Node) meshGossipPeers(channel, excludePeerID string) []string {
