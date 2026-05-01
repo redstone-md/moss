@@ -70,11 +70,40 @@ jobs:
       - name: Build shared library
         run: go build -buildmode=c-shared -o ${{ matrix.output }} ./cmd/moss-ffi
 
+      - name: Package shared artifact
+        shell: pwsh
+        run: |
+          $archive = "moss-${{ matrix.label }}-shared.zip"
+          Compress-Archive -Path "${{ matrix.output }}", "${{ matrix.header }}" -DestinationPath $archive -Force
+
       - name: Upload shared artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: moss-${{ matrix.label }}-shared
-          path: |
-            ${{ matrix.output }}
-            ${{ matrix.header }}
+          path: moss-${{ matrix.label }}-shared.zip
           if-no-files-found: error
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: build-shared
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download shared artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: moss-*-shared
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" release-assets/*.zip --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" release-assets/*.zip --title "$GITHUB_REF_NAME" --generate-notes
+          fi
