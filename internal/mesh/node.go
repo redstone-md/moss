@@ -1204,7 +1204,7 @@ func (n *Node) localKnownPeer() knownPeer {
 }
 
 func (n *Node) handlePeerAnnounce(peer *peerConn, env gossip.Envelope) {
-	verified := verifyPeerAnnouncementEnvelope(env)
+	verified := directSenderMatches(peer, env) && verifyPeerAnnouncementEnvelope(env)
 	n.handleKnownPeerEnvelope(peer, env, gossip.TypePeerAnnounce, verified)
 }
 
@@ -1228,8 +1228,12 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 		return
 	}
 	trustedSelfAnnouncement := peer != nil && env.AdvertisedPeerID == peer.id
-	if forwardType == gossip.TypePeerAnnounce && !trustedSelfAnnouncement && !verifiedEnvelope {
-		return
+	validSignedAnnouncement := false
+	if forwardType == gossip.TypePeerAnnounce {
+		validSignedAnnouncement = verifyPeerAnnouncementEnvelope(env)
+		if !trustedSelfAnnouncement && !verifiedEnvelope && !validSignedAnnouncement {
+			return
+		}
 	}
 	trustCapabilities := verifySupernodeStatusEnvelope(env)
 	changed := false
@@ -1253,7 +1257,7 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 		publicReachable = env.AdvertisedReachable
 		relayCapable = env.AdvertisedRelayCapable
 	}
-	signature := knownPeerSignature(current, addr, env, verifiedEnvelope)
+	signature := knownPeerSignature(current, addr, env, verifiedEnvelope || validSignedAnnouncement)
 	if !ok || current.addr != addr || !current.direct || current.verified != verified || current.natType != natType || current.publicReachable != publicReachable || current.relayCapable != relayCapable || !equalBytes(current.signature, signature) {
 		direct := false
 		if ok && current.direct {
