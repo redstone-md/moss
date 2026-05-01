@@ -3606,17 +3606,17 @@ func (n *Node) selectRelayPeers(targetPeerID string) ([]string, error) {
 		if rankI, rankJ := relayCandidateRank(infoI), relayCandidateRank(infoJ); rankI != rankJ {
 			return rankI > rankJ
 		}
+		scoreI := n.peerScore(candidates[i])
+		scoreJ := n.peerScore(candidates[j])
+		if scoreI != scoreJ {
+			return scoreI > scoreJ
+		}
 		loadI := n.relaySessionCountViaLocked(candidates[i])
 		loadJ := n.relaySessionCountViaLocked(candidates[j])
 		if loadI != loadJ {
 			return loadI < loadJ
 		}
-		scoreI := n.peerScore(candidates[i])
-		scoreJ := n.peerScore(candidates[j])
-		if scoreI == scoreJ {
-			return candidates[i] < candidates[j]
-		}
-		return scoreI > scoreJ
+		return candidates[i] < candidates[j]
 	})
 	return candidates, nil
 }

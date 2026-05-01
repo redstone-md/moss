@@ -144,7 +144,7 @@ func TestSelectRelayPeersPrefersLessLoadedRelay(t *testing.T) {
 		relayCapable:    true,
 	}
 	node.scoring.SetApplicationScore("peer-a", 10)
-	node.scoring.SetApplicationScore("peer-b", 1)
+	node.scoring.SetApplicationScore("peer-b", 10)
 	node.relayLocals["session-1"] = relayLocalSession{sessionID: "session-1", viaPeerID: "peer-a", remotePeerID: "target-1", established: true}
 	node.relayLocals["session-2"] = relayLocalSession{sessionID: "session-2", viaPeerID: "peer-a", remotePeerID: "target-2", established: true}
 
@@ -154,6 +154,41 @@ func TestSelectRelayPeersPrefersLessLoadedRelay(t *testing.T) {
 	}
 	if candidates[0] != "peer-b" {
 		t.Fatalf("expected less-loaded relay peer-b first, got %v", candidates)
+	}
+}
+
+func TestSelectRelayPeersKeepsScoreAheadOfLoad(t *testing.T) {
+	node, err := NewNode("mesh-relay-score-load", nil, DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+
+	node.peers["trusted-relay"] = &peerConn{id: "trusted-relay"}
+	node.peers["risky-relay"] = &peerConn{id: "risky-relay"}
+	node.knownPeers["trusted-relay"] = knownPeer{
+		id:              "trusted-relay",
+		addr:            "198.51.100.10:4000",
+		natType:         nat.TypePublic,
+		publicReachable: true,
+		relayCapable:    true,
+	}
+	node.knownPeers["risky-relay"] = knownPeer{
+		id:              "risky-relay",
+		addr:            "198.51.100.11:4000",
+		natType:         nat.TypePublic,
+		publicReachable: true,
+		relayCapable:    true,
+	}
+	node.scoring.SetApplicationScore("trusted-relay", 1000)
+	node.scoring.SetApplicationScore("risky-relay", gossip.PublishThreshold-1)
+	node.relayLocals["session-1"] = relayLocalSession{sessionID: "session-1", viaPeerID: "trusted-relay", remotePeerID: "target-1", established: true}
+
+	candidates, err := node.selectRelayPeers("target-peer")
+	if err != nil {
+		t.Fatalf("selectRelayPeers failed: %v", err)
+	}
+	if candidates[0] != "trusted-relay" {
+		t.Fatalf("expected higher-scored relay first despite load, got %v", candidates)
 	}
 }
 

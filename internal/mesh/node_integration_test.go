@@ -1289,7 +1289,13 @@ func TestRelaySessionAnyPrefersLessLoadedRelayPeer(t *testing.T) {
 	nodeA.relayLocals["existing-2"] = relayLocalSession{sessionID: "existing-2", viaPeerID: relay1ID, remotePeerID: "other-2", established: true}
 	nodeA.mu.Unlock()
 	nodeA.scoring.SetApplicationScore(relay1ID, 10)
-	nodeA.scoring.SetApplicationScore(relay2ID, 1)
+	nodeA.scoring.SetApplicationScore(relay2ID, 10)
+	nodeA.SetScoringCallback(func(peerID [32]byte, baseScore float64) float64 {
+		if peerID == decodePeerID(relay1ID) || peerID == decodePeerID(relay2ID) {
+			return 10
+		}
+		return baseScore
+	})
 
 	sessionID, err := nodeA.OpenRelaySessionAny(targetID, 2*time.Second)
 	if err != nil {
