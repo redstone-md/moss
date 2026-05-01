@@ -45,7 +45,7 @@ func TestHandleLANBeaconUpdatesKnownPeerWithSourceIP(t *testing.T) {
 	}
 }
 
-func TestHandleLANBeaconPrefersAdvertisedExternalAddress(t *testing.T) {
+func TestHandleLANBeaconIgnoresUnauthenticatedAdvertisedAddress(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Trackers = nil
 	node, err := NewNode("mesh-lan-beacon", nil, cfg)
@@ -66,11 +66,16 @@ func TestHandleLANBeaconPrefersAdvertisedExternalAddress(t *testing.T) {
 	if !ok {
 		t.Fatal("expected known peer to be stored")
 	}
-	if info.addr != "100.64.74.9:41030" {
-		t.Fatalf("expected advertised endpoint to be preferred, got %q", info.addr)
+	if info.addr != "172.30.1.2:41030" {
+		t.Fatalf("expected source-derived endpoint to be used, got %q", info.addr)
 	}
-	if info.lan {
-		t.Fatal("expected LAN marker to be cleared when advertised endpoint wins")
+	if !info.lan {
+		t.Fatal("expected LAN marker to remain set for source-derived private endpoint")
+	}
+	for _, observed := range info.observations {
+		if observed == "100.64.74.9:41030" {
+			t.Fatal("expected unauthenticated advertised endpoint to be excluded from observations")
+		}
 	}
 }
 

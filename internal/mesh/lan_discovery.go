@@ -224,18 +224,12 @@ func (n *Node) handleLANBeacon(src *net.UDPAddr, beacon lanBeacon) {
 	}
 	observedAddr := net.JoinHostPort(src.IP.String(), strconv.Itoa(beacon.ListenPort))
 	candidateAddr := observedAddr
-	if beacon.AdvertisedAddr != "" {
-		candidateAddr = preferredKnownPeerAddr(knownPeer{addr: observedAddr}, beacon.AdvertisedAddr)
-	}
 	shouldDial := false
 	n.mu.Lock()
 	current := n.knownPeers[beacon.PeerID]
 	chosenAddr := preferredKnownPeerAddr(current, candidateAddr)
 	lan := chosenAddr == observedAddr && knownPeerAddrRank(observedAddr) <= 1
 	observations := appendObservation(current.observations, observedAddr)
-	if beacon.AdvertisedAddr != "" {
-		observations = appendObservation(observations, beacon.AdvertisedAddr)
-	}
 	n.knownPeers[beacon.PeerID] = knownPeer{
 		id:              beacon.PeerID,
 		addr:            chosenAddr,
