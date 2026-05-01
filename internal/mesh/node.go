@@ -156,6 +156,7 @@ type knownPeer struct {
 	bootstrap       bool
 	lan             bool
 	natType         nat.Type
+	natTrusted      bool
 	publicReachable bool
 	relayCapable    bool
 	lastSeen        time.Time
@@ -833,6 +834,7 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 		bootstrap:       current.bootstrap || bootstrapSeed,
 		lan:             current.lan,
 		natType:         current.natType,
+		natTrusted:      current.natTrusted,
 		publicReachable: current.publicReachable,
 		relayCapable:    current.relayCapable,
 		lastSeen:        time.Now(),
@@ -1197,6 +1199,7 @@ func (n *Node) localKnownPeer() knownPeer {
 		bootstrap:       false,
 		lan:             false,
 		natType:         profile.Type,
+		natTrusted:      true,
 		publicReachable: profile.PublicReachable,
 		relayCapable:    n.supernodeReady(profile),
 		lastSeen:        time.Now(),
@@ -1250,15 +1253,17 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 	lan := current.lan && knownPeerAddrRank(addr) <= 1
 	verified := current.verified || verifiedEnvelope || (peer != nil && env.AdvertisedPeerID == peer.id)
 	natType := current.natType
+	natTrusted := current.natTrusted
 	publicReachable := current.publicReachable
 	relayCapable := current.relayCapable
 	if trustCapabilities {
 		natType = nat.Type(env.AdvertisedNATType)
+		natTrusted = true
 		publicReachable = env.AdvertisedReachable
 		relayCapable = env.AdvertisedRelayCapable
 	}
 	signature := knownPeerSignature(current, addr, env, verifiedEnvelope || validSignedAnnouncement)
-	if !ok || current.addr != addr || !current.direct || current.verified != verified || current.natType != natType || current.publicReachable != publicReachable || current.relayCapable != relayCapable || !equalBytes(current.signature, signature) {
+	if !ok || current.addr != addr || !current.direct || current.verified != verified || current.natType != natType || current.natTrusted != natTrusted || current.publicReachable != publicReachable || current.relayCapable != relayCapable || !equalBytes(current.signature, signature) {
 		direct := false
 		if ok && current.direct {
 			direct = true
@@ -1275,6 +1280,7 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 			bootstrap:       bootstrap,
 			lan:             lan,
 			natType:         natType,
+			natTrusted:      natTrusted,
 			publicReachable: publicReachable,
 			relayCapable:    relayCapable,
 			lastSeen:        time.Now(),
@@ -3463,6 +3469,7 @@ func (n *Node) updateKnownPeer(peerID, addr string, direct bool) {
 		bootstrap:       current.bootstrap,
 		lan:             current.lan && knownPeerAddrRank(addr) <= 1,
 		natType:         current.natType,
+		natTrusted:      current.natTrusted,
 		publicReachable: current.publicReachable,
 		relayCapable:    current.relayCapable,
 		lastSeen:        time.Now(),
@@ -3639,9 +3646,11 @@ func relayCandidateRank(info knownPeer) int {
 	if info.publicReachable {
 		rank += 2
 	}
-	switch info.natType {
-	case nat.TypePublic, nat.TypeFullCone:
-		rank++
+	if info.natTrusted {
+		switch info.natType {
+		case nat.TypePublic, nat.TypeFullCone:
+			rank++
+		}
 	}
 	return rank
 }
@@ -3663,6 +3672,9 @@ func (n *Node) shouldPreferRelayForTarget(targetPeerID string) bool {
 	targetInfo, ok := n.knownPeers[targetPeerID]
 	n.mu.RUnlock()
 	if !ok {
+		return false
+	}
+	if !targetInfo.natTrusted {
 		return false
 	}
 	return shouldPreferRelayBetween(localProfile.Type, targetInfo.natType)

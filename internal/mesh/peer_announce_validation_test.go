@@ -5,6 +5,7 @@ import (
 
 	mcrypto "moss/internal/crypto"
 	"moss/internal/gossip"
+	"moss/internal/nat"
 )
 
 func TestHandlePeerAnnounceRejectsThirdPartyAdvertisement(t *testing.T) {
@@ -30,6 +31,48 @@ func TestHandlePeerAnnounceRejectsThirdPartyAdvertisement(t *testing.T) {
 	}
 	if score := node.scoring.Score(peer.id); score != baseScore {
 		t.Fatalf("expected unsigned third-party advertisement not to penalize sender, base=%f new=%f", baseScore, score)
+	}
+}
+
+func TestPeerAnnounceCannotPoisonTargetNATRelayPreference(t *testing.T) {
+	node, err := NewNode("mesh-peer-announce-nat-poison", nil, DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+	node.natProfile.Store(nat.Profile{Type: nat.TypeSymmetric})
+
+	attackerID := "attacker-peer"
+	targetID := "target-peer"
+	node.handlePeerAnnounce(&peerConn{id: attackerID, addr: "198.51.100.10:4001"}, gossip.Envelope{
+		Type:              gossip.TypePeerAnnounce,
+		AdvertisedPeerID:  targetID,
+		AdvertisedAddr:    "203.0.113.20:5001",
+		AdvertisedNATType: string(nat.TypeSymmetric),
+	})
+
+	if _, ok := node.knownPeers[targetID]; ok {
+		t.Fatal("expected unsigned third-party NAT advertisement to be ignored")
+	}
+	if node.shouldPreferRelayForTarget(targetID) {
+		t.Fatal("expected untrusted NAT advertisement not to force relay preference")
+	}
+}
+
+func TestUntrustedKnownPeerNATDoesNotForceRelayPreference(t *testing.T) {
+	node, err := NewNode("mesh-peer-announce-untrusted-nat", nil, DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+	node.natProfile.Store(nat.Profile{Type: nat.TypeSymmetric})
+	targetID := "target-peer"
+	node.knownPeers[targetID] = knownPeer{
+		id:      targetID,
+		addr:    "203.0.113.20:5001",
+		natType: nat.TypeSymmetric,
+	}
+
+	if node.shouldPreferRelayForTarget(targetID) {
+		t.Fatal("expected untrusted known peer NAT type not to force relay preference")
 	}
 }
 

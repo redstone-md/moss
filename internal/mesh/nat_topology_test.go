@@ -89,12 +89,14 @@ func TestSymmetricNATPeersRelayWithinFiveSeconds(t *testing.T) {
 	nodeA.mu.Lock()
 	infoA := nodeA.knownPeers[targetID]
 	infoA.natType = nat.TypeSymmetric
+	infoA.natTrusted = true
 	nodeA.knownPeers[targetID] = infoA
 	nodeA.mu.Unlock()
 
 	nodeB.mu.Lock()
 	infoB := nodeB.knownPeers[sourceID]
 	infoB.natType = nat.TypeSymmetric
+	infoB.natTrusted = true
 	nodeB.knownPeers[sourceID] = infoB
 	nodeB.mu.Unlock()
 
@@ -186,12 +188,14 @@ func TestPortRestrictedPeersConnectDirectWithinFiveSeconds(t *testing.T) {
 	nodeA.mu.Lock()
 	infoA := nodeA.knownPeers[targetID]
 	infoA.natType = nat.TypePortRestricted
+	infoA.natTrusted = true
 	nodeA.knownPeers[targetID] = infoA
 	nodeA.mu.Unlock()
 
 	nodeB.mu.Lock()
 	infoB := nodeB.knownPeers[sourceID]
 	infoB.natType = nat.TypePortRestricted
+	infoB.natTrusted = true
 	nodeB.knownPeers[sourceID] = infoB
 	nodeB.mu.Unlock()
 
