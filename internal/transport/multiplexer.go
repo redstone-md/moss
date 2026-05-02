@@ -43,6 +43,7 @@ type Stream struct {
 	id     StreamID
 	mux    *Multiplexer
 	buffer chan []byte
+	mu     sync.RWMutex
 	closed chan struct{}
 	once   sync.Once
 }
@@ -168,12 +169,16 @@ func (s *Stream) ReadPacket() ([]byte, error) {
 
 func (s *Stream) close() {
 	s.once.Do(func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
 		close(s.closed)
 		close(s.buffer)
 	})
 }
 
 func (s *Stream) enqueue(payload []byte) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	select {
 	case <-s.closed:
 		return
