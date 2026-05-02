@@ -38,6 +38,21 @@ type Config struct {
 	GossipSub           GossipSubConfig `json:"gossipsub"`
 	NAT                 NATConfig       `json:"nat"`
 	Security            SecurityConfig  `json:"security"`
+	Transport           TransportConfig `json:"transport"`
+}
+
+// TransportConfig tunes per-session inbound buffer sizes. Increase these
+// for high-throughput application traffic where bursts can exceed the
+// default 256-packet queue and would otherwise be silently dropped.
+//
+// Setting HighThroughput=true is a convenient preset (16384 per stream
+// and per UDP session) suitable for tunneling bulk traffic such as
+// Minecraft chunk loading or media streams. Default values stay at 256
+// to keep memory footprint small for casual chat/discovery workloads.
+type TransportConfig struct {
+	HighThroughput   bool `json:"high_throughput"`
+	StreamBufferSize int  `json:"stream_buffer_size"`
+	UDPBufferSize    int  `json:"udp_buffer_size"`
 }
 
 type GossipSubConfig struct {

@@ -12,8 +12,30 @@ type StreamID uint32
 
 const DefaultStream StreamID = 1
 const maxInboundStreams = 1024
+const defaultStreamBufferSize = 256
 
-var errUnknownStream = errors.New("transport: unknown stream")
+var (
+	streamBufferSize       = defaultStreamBufferSize
+	streamBufferOnOverflow func(streamID StreamID, queueLen int)
+	errUnknownStream       = errors.New("transport: unknown stream")
+)
+
+// SetStreamBufferSize configures the per-stream inbound queue capacity.
+// Call before opening connections. Values < 1 are ignored.
+// Use larger values for high-throughput application traffic to avoid
+// silent backpressure drops when the consumer cannot keep up with bursts.
+func SetStreamBufferSize(size int) {
+	if size > 0 {
+		streamBufferSize = size
+	}
+}
+
+// SetStreamOverflowHook installs a callback fired whenever an inbound
+// payload is dropped because the stream buffer is full. Useful for
+// surfacing congestion to operators. Pass nil to clear.
+func SetStreamOverflowHook(hook func(streamID StreamID, queueLen int)) {
+	streamBufferOnOverflow = hook
+}
 
 type Multiplexer struct {
 	session *Session
@@ -125,7 +147,7 @@ func newStream(id StreamID, mux *Multiplexer) *Stream {
 	return &Stream{
 		id:     id,
 		mux:    mux,
-		buffer: make(chan []byte, 256),
+		buffer: make(chan []byte, streamBufferSize),
 		closed: make(chan struct{}),
 	}
 }
@@ -167,6 +189,9 @@ func (s *Stream) enqueue(payload []byte) {
 	select {
 	case s.buffer <- packet:
 	default:
+		if hook := streamBufferOnOverflow; hook != nil {
+			hook(s.id, len(s.buffer))
+		}
 	}
 }
 

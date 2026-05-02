@@ -9,6 +9,28 @@ import (
 	"github.com/flynn/noise"
 )
 
+const defaultUDPCarrierBufferSize = 256
+
+var (
+	udpCarrierBufferSize       = defaultUDPCarrierBufferSize
+	udpCarrierBufferOnOverflow func(remote string)
+)
+
+// SetUDPCarrierBufferSize configures the per-UDP-session inbound queue
+// capacity. Must be set before sessions are established. Values < 1 are
+// ignored. Larger values trade memory for tolerance to ingress bursts.
+func SetUDPCarrierBufferSize(size int) {
+	if size > 0 {
+		udpCarrierBufferSize = size
+	}
+}
+
+// SetUDPCarrierOverflowHook installs a callback fired whenever a UDP
+// session drops a datagram because the inbound queue is full.
+func SetUDPCarrierOverflowHook(hook func(remote string)) {
+	udpCarrierBufferOnOverflow = hook
+}
+
 func (l *UDPListener) handleData(remote *net.UDPAddr, payload []byte) {
 	key := remote.String()
 	l.mu.Lock()
@@ -93,7 +115,7 @@ func (l *UDPListener) establishSession(remote *net.UDPAddr, sendCipher, recvCiph
 	carrier := &udpCarrier{
 		listener: l,
 		remote:   remote,
-		incoming: make(chan []byte, 256),
+		incoming: make(chan []byte, udpCarrierBufferSize),
 		closed:   make(chan struct{}),
 	}
 	l.sessions[key] = carrier
@@ -174,6 +196,9 @@ func (c *udpCarrier) enqueue(packet []byte) {
 	select {
 	case c.incoming <- append([]byte(nil), packet...):
 	default:
+		if hook := udpCarrierBufferOnOverflow; hook != nil {
+			hook(c.remote.String())
+		}
 	}
 }
 
