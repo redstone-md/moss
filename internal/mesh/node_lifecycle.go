@@ -15,6 +15,25 @@ import (
 	"moss/internal/transport"
 )
 
+const highThroughputBufferSize = 65536
+
+func transportBufferConfig(cfg TransportConfig) transport.BufferConfig {
+	streamSize := cfg.StreamBufferSize
+	udpSize := cfg.UDPBufferSize
+	if cfg.HighThroughput {
+		if streamSize <= 0 {
+			streamSize = highThroughputBufferSize
+		}
+		if udpSize <= 0 {
+			udpSize = highThroughputBufferSize
+		}
+	}
+	return transport.BufferConfig{
+		StreamBufferSize:     streamSize,
+		UDPCarrierBufferSize: udpSize,
+	}
+}
+
 func NewNode(meshID string, psk []byte, cfg Config) (*Node, error) {
 	return NewNodeWithIdentity(meshID, psk, cfg, nil)
 }
@@ -85,6 +104,7 @@ func (n *Node) Start() int32 {
 		MeshID:   n.meshID,
 		PSK:      n.psk,
 		Identity: n.identity,
+		Buffers:  transportBufferConfig(n.config.Transport),
 	})
 	if err != nil {
 		return MOSS_ERR_CONFIG_INVALID
@@ -194,9 +214,11 @@ func (n *Node) Publish(channel string, data []byte) int32 {
 	n.cache.Store(env)
 	n.deliverLocal(env)
 	sent := n.broadcastFloodPublish(env, "")
-	n.broadcastIHave(channel, []string{env.MessageID}, "")
-	if len(data) > 1024 {
-		n.broadcastIDontWant(channel, []string{env.MessageID}, "")
+	if !n.config.Transport.HighThroughput {
+		n.broadcastIHave(channel, []string{env.MessageID}, "")
+		if len(data) > 1024 {
+			n.broadcastIDontWant(channel, []string{env.MessageID}, "")
+		}
 	}
 	if sent {
 		return MOSS_OK

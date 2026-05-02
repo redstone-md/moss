@@ -5,9 +5,25 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
 
 	"github.com/flynn/noise"
 )
+
+const defaultUDPCarrierBufferSize = 256
+
+var (
+	udpCarrierOverflowMu       sync.RWMutex
+	udpCarrierBufferOnOverflow func(remote string)
+)
+
+// SetUDPCarrierOverflowHook installs a callback fired whenever a UDP
+// session drops a datagram because the inbound queue is full.
+func SetUDPCarrierOverflowHook(hook func(remote string)) {
+	udpCarrierOverflowMu.Lock()
+	defer udpCarrierOverflowMu.Unlock()
+	udpCarrierBufferOnOverflow = hook
+}
 
 func (l *UDPListener) handleData(remote *net.UDPAddr, payload []byte) {
 	key := remote.String()
@@ -93,11 +109,11 @@ func (l *UDPListener) establishSession(remote *net.UDPAddr, sendCipher, recvCiph
 	carrier := &udpCarrier{
 		listener: l,
 		remote:   remote,
-		incoming: make(chan []byte, 256),
+		incoming: make(chan []byte, normalizeUDPCarrierBufferSize(l.buffers.UDPCarrierBufferSize)),
 		closed:   make(chan struct{}),
 	}
 	l.sessions[key] = carrier
-	return NewSession(carrier, sendCipher, recvCipher, remoteID, remoteKey, mode)
+	return NewSessionWithBuffers(carrier, sendCipher, recvCipher, remoteID, remoteKey, mode, l.buffers)
 }
 
 func (l *UDPListener) finishDial(key string, pending *udpClientHandshake, result udpDialResult) {
@@ -174,7 +190,20 @@ func (c *udpCarrier) enqueue(packet []byte) {
 	select {
 	case c.incoming <- append([]byte(nil), packet...):
 	default:
+		udpCarrierOverflowMu.RLock()
+		hook := udpCarrierBufferOnOverflow
+		udpCarrierOverflowMu.RUnlock()
+		if hook != nil {
+			hook(c.remote.String())
+		}
 	}
+}
+
+func normalizeUDPCarrierBufferSize(size int) int {
+	if size > 0 {
+		return size
+	}
+	return defaultUDPCarrierBufferSize
 }
 
 func mustMarshalIdentityPayload(cfg HandshakeConfig) []byte {

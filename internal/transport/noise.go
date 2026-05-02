@@ -19,6 +19,14 @@ type HandshakeConfig struct {
 	PSK          []byte
 	Identity     *mcrypto.Identity
 	RemoteStatic []byte
+	Buffers      BufferConfig
+}
+
+// BufferConfig tunes inbound queues for sessions created by a handshake.
+// Zero values preserve the transport defaults.
+type BufferConfig struct {
+	StreamBufferSize     int
+	UDPCarrierBufferSize int
 }
 
 type identityPayload struct {
@@ -69,7 +77,7 @@ func ClientHandshake(ctx context.Context, conn net.Conn, cfg HandshakeConfig) (*
 			return nil, err
 		}
 		sendCipher, recvCipher := splitCipherStates(true, cs1, cs2)
-		return NewSession(newStreamCarrier(conn), sendCipher, recvCipher, remoteID, remoteKey, mode)
+		return NewSessionWithBuffers(newStreamCarrier(conn), sendCipher, recvCipher, remoteID, remoteKey, mode, cfg.Buffers)
 	case HandshakeModeXX:
 		msg1, _, _, err := hs.WriteMessage(nil, nil)
 		if err != nil {
@@ -104,7 +112,7 @@ func ClientHandshake(ctx context.Context, conn net.Conn, cfg HandshakeConfig) (*
 			return nil, err
 		}
 		sendCipher, recvCipher := splitCipherStates(true, cs1, cs2)
-		return NewSession(newStreamCarrier(conn), sendCipher, recvCipher, remoteID, remoteKey, mode)
+		return NewSessionWithBuffers(newStreamCarrier(conn), sendCipher, recvCipher, remoteID, remoteKey, mode, cfg.Buffers)
 	default:
 		return nil, errors.New("unsupported handshake mode")
 	}
@@ -146,7 +154,7 @@ func ServerHandshake(ctx context.Context, conn net.Conn, cfg HandshakeConfig) (*
 			return nil, err
 		}
 		sendCipher, recvCipher := splitCipherStates(false, cs1, cs2)
-		return NewSession(newStreamCarrier(conn), sendCipher, recvCipher, remoteID, remoteKey, mode)
+		return NewSessionWithBuffers(newStreamCarrier(conn), sendCipher, recvCipher, remoteID, remoteKey, mode, cfg.Buffers)
 	case HandshakeModeXX:
 		msg1, err := readFrame(ctx, conn)
 		if err != nil {
@@ -181,7 +189,7 @@ func ServerHandshake(ctx context.Context, conn net.Conn, cfg HandshakeConfig) (*
 			return nil, err
 		}
 		sendCipher, recvCipher := splitCipherStates(false, cs1, cs2)
-		return NewSession(newStreamCarrier(conn), sendCipher, recvCipher, remoteID, remoteKey, mode)
+		return NewSessionWithBuffers(newStreamCarrier(conn), sendCipher, recvCipher, remoteID, remoteKey, mode, cfg.Buffers)
 	default:
 		return nil, errors.New("unsupported handshake mode")
 	}
