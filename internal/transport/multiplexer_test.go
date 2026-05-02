@@ -136,7 +136,23 @@ func TestInboundStreamCreationIsCapped(t *testing.T) {
 	}
 }
 
+func TestStreamBufferSizeIsSessionScoped(t *testing.T) {
+	_, tuned, _, _ := newStubSessionPairWithBuffers(t, BufferConfig{StreamBufferSize: 3})
+	if cap(tuned.mux.Default().buffer) != 3 {
+		t.Fatalf("expected tuned default stream capacity 3, got %d", cap(tuned.mux.Default().buffer))
+	}
+
+	_, defaulted, _, _ := newStubSessionPair(t)
+	if cap(defaulted.mux.Default().buffer) != defaultStreamBufferSize {
+		t.Fatalf("expected default stream capacity %d, got %d", defaultStreamBufferSize, cap(defaulted.mux.Default().buffer))
+	}
+}
+
 func newStubSessionPair(t *testing.T) (*Session, *Session, *stubDatagramCarrier, *stubDatagramCarrier) {
+	return newStubSessionPairWithBuffers(t, BufferConfig{})
+}
+
+func newStubSessionPairWithBuffers(t *testing.T, buffers BufferConfig) (*Session, *Session, *stubDatagramCarrier, *stubDatagramCarrier) {
 	t.Helper()
 
 	suite := noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashBLAKE2s)
@@ -150,14 +166,14 @@ func newStubSessionPair(t *testing.T) (*Session, *Session, *stubDatagramCarrier,
 	senderCarrier := newStubDatagramCarrier()
 	receiverCarrier := newStubDatagramCarrier()
 
-	sender, err := NewSession(senderCarrier, sendState, recvState, [32]byte{}, [32]byte{}, HandshakeModeXX)
+	sender, err := NewSessionWithBuffers(senderCarrier, sendState, recvState, [32]byte{}, [32]byte{}, HandshakeModeXX, buffers)
 	if err != nil {
 		t.Fatalf("NewSession sender failed: %v", err)
 	}
 
 	sendState = noise.UnsafeNewCipherState(suite, key, 0)
 	recvState = noise.UnsafeNewCipherState(suite, key, 0)
-	receiver, err := NewSession(receiverCarrier, sendState, recvState, [32]byte{}, [32]byte{}, HandshakeModeXX)
+	receiver, err := NewSessionWithBuffers(receiverCarrier, sendState, recvState, [32]byte{}, [32]byte{}, HandshakeModeXX, buffers)
 	if err != nil {
 		t.Fatalf("NewSession receiver failed: %v", err)
 	}

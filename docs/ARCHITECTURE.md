@@ -124,6 +124,14 @@ udp_session.go     UDP carrier and session lifecycle
 
 `transport` must not know about pubsub topics, peer scoring, relay policy, or host callbacks.
 
+Inbound queue sizing is a runtime tuning knob. Per-stream
+(`multiplexer.go`) and per-UDP-session (`udp_session.go`) channels
+default to 256 packets and silently drop on overflow to keep memory
+predictable. `mesh.transportBufferConfig` maps application-driven
+configuration (e.g. the `transport.high_throughput` JSON option) into
+`transport.BufferConfig`, which is attached to listeners and sessions so
+tuned nodes do not mutate process-wide transport defaults.
+
 ### `internal/bootstrap`
 
 `bootstrap` owns tracker rendezvous and infohash generation. It knows how to announce to UDP/HTTP BitTorrent trackers and return candidate peer addresses.

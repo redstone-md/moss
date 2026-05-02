@@ -17,6 +17,11 @@ This document exists to keep repository claims aligned with current runtime beha
 
 - CI validates correctness first; it is not a substitute for sustained long-running load tests.
 - Benchmarks exist, but public support guarantees for every network environment are intentionally conservative.
+- Default per-session inbound buffers (256 packets) target low-rate
+  chat/discovery workloads. Sustained bursts above ~1k packets/sec per
+  peer can hit the silent-drop threshold of the receive queues; opt
+  into `transport.high_throughput` (see [API.md](API.md)) to raise
+  buffers and skip gossip control overhead for streaming use cases.
 
 ## Client applications
 

@@ -30,6 +30,7 @@ var pendingUDPServerHandshakeTTL = 5 * time.Second
 type UDPListener struct {
 	conn    *net.UDPConn
 	cfg     HandshakeConfig
+	buffers BufferConfig
 	acceptC chan *Session
 	closed  chan struct{}
 	once    sync.Once
@@ -84,6 +85,7 @@ func ListenUDP(port int, cfg HandshakeConfig) (*UDPListener, int, error) {
 	listener := &UDPListener{
 		conn:     conn,
 		cfg:      cfg,
+		buffers:  cfg.Buffers,
 		acceptC:  make(chan *Session, 16),
 		closed:   make(chan struct{}),
 		sessions: make(map[string]*udpCarrier),

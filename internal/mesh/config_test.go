@@ -47,3 +47,27 @@ func TestParseConfigPreservesExplicitPortMappingOptIn(t *testing.T) {
 		t.Fatalf("expected explicit router port mapping opt-in, got %+v", cfg.NAT)
 	}
 }
+
+func TestTransportBufferConfigAppliesHighThroughputPreset(t *testing.T) {
+	buffers := transportBufferConfig(TransportConfig{HighThroughput: true})
+	if buffers.StreamBufferSize != highThroughputBufferSize {
+		t.Fatalf("expected stream preset %d, got %d", highThroughputBufferSize, buffers.StreamBufferSize)
+	}
+	if buffers.UDPCarrierBufferSize != highThroughputBufferSize {
+		t.Fatalf("expected udp preset %d, got %d", highThroughputBufferSize, buffers.UDPCarrierBufferSize)
+	}
+}
+
+func TestTransportBufferConfigKeepsExplicitOverrides(t *testing.T) {
+	buffers := transportBufferConfig(TransportConfig{
+		HighThroughput:   true,
+		StreamBufferSize: 1024,
+		UDPBufferSize:    2048,
+	})
+	if buffers.StreamBufferSize != 1024 {
+		t.Fatalf("expected explicit stream size 1024, got %d", buffers.StreamBufferSize)
+	}
+	if buffers.UDPCarrierBufferSize != 2048 {
+		t.Fatalf("expected explicit udp size 2048, got %d", buffers.UDPCarrierBufferSize)
+	}
+}

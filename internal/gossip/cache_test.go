@@ -41,6 +41,17 @@ func TestCacheStoresEnvelopeAndRecentIDs(t *testing.T) {
 	}
 }
 
+func TestRecentIDsFiltersExpiredEntriesBetweenPurges(t *testing.T) {
+	cache := NewCache(25 * time.Millisecond)
+	cache.Store(Envelope{Type: TypePublish, Channel: "alpha", MessageID: "m1", Payload: []byte("one")})
+
+	time.Sleep(35 * time.Millisecond)
+
+	if ids := cache.RecentIDs("alpha", 4); len(ids) != 0 {
+		t.Fatalf("expected expired ids to be filtered, got %#v", ids)
+	}
+}
+
 func TestCacheStoreIfNewRejectsDuplicateMessageID(t *testing.T) {
 	cache := NewCache(time.Minute)
 	first := Envelope{Type: TypePublish, Channel: "alpha", MessageID: "m1", Payload: []byte("one")}

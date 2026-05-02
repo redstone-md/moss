@@ -300,6 +300,11 @@ Top-level config schema:
     "max_message_size_bytes": 65536,
     "rate_limit_burst": 256000,
     "rate_limit_sustained": 64000
+  },
+  "transport": {
+    "high_throughput": false,
+    "stream_buffer_size": 0,
+    "udp_buffer_size": 0
   }
 }
 ```
@@ -309,6 +314,32 @@ Notes:
 - omitting `trackers` uses the built-in default tracker set
 - explicitly passing `"trackers": []` disables tracker bootstrap
 - partial nested config objects are supported; unspecified fields fall back to defaults
+
+### Transport Tuning
+
+The `transport` block controls per-session inbound queue sizes and
+gossip overhead. Defaults (256-packet queues, full GossipSub control
+traffic) suit chat- and discovery-style workloads where each peer
+publishes at most a handful of messages per second.
+
+For high-rate point-to-point streams (file transfer, game traffic,
+media tunnels), set `high_throughput: true`. This applies the following
+preset to the node, taking effect on the next `Moss_Start`:
+
+- per-stream and per-UDP-session inbound queues grow from 256 to 65536
+  packets, eliminating silent drops during bursts
+- `IHAVE` and `IDONTWANT` gossip control broadcasts are skipped on
+  publish, since they exist to amortize duplicate delivery in large
+  meshes and add pure overhead in dense point-to-point topologies
+
+`stream_buffer_size` and `udp_buffer_size` allow per-axis overrides when
+the preset is too coarse — set them explicitly to choose the queue
+capacity without enabling the full preset, or alongside
+`high_throughput` to keep the gossip-overhead reduction while picking
+custom queue sizes. Values <= 0 fall back to defaults / the preset.
+
+Default is `high_throughput: false` so existing integrations keep
+their original memory footprint.
 
 ## Current Examples
 

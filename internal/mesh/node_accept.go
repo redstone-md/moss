@@ -57,6 +57,7 @@ func (n *Node) handleInbound(ctx context.Context, conn net.Conn) {
 		MeshID:   n.meshID,
 		PSK:      n.psk,
 		Identity: n.identity,
+		Buffers:  transportBufferConfig(n.config.Transport),
 	})
 	if err != nil {
 		_ = conn.Close()
@@ -208,6 +209,7 @@ func (n *Node) connectPeerOnce(ctx context.Context, addr string, remoteStatic []
 		PSK:          n.psk,
 		Identity:     n.identity,
 		RemoteStatic: remoteStatic,
+		Buffers:      transportBufferConfig(n.config.Transport),
 	})
 	if err != nil {
 		_ = conn.Close()

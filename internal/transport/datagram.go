@@ -25,7 +25,7 @@ type datagramSession struct {
 	recvMask   uint64
 }
 
-func newDatagramSession(carrier carrier, sendCipher, recvCipher *noise.CipherState, remoteID, remoteKey [32]byte, handshake byte) (*Session, error) {
+func newDatagramSession(carrier carrier, sendCipher, recvCipher *noise.CipherState, remoteID, remoteKey [32]byte, handshake byte, buffers BufferConfig) (*Session, error) {
 	session := &Session{
 		carrier: carrier,
 		datagram: &datagramSession{
@@ -37,7 +37,7 @@ func newDatagramSession(carrier carrier, sendCipher, recvCipher *noise.CipherSta
 		remoteKey: remoteKey,
 		handshake: handshake,
 	}
-	session.mux = newMultiplexer(session)
+	session.mux = newMultiplexer(session, buffers)
 	return session, nil
 }
 
