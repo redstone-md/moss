@@ -69,17 +69,20 @@ type Node struct {
 }
 
 type peerConn struct {
-	id          string
-	addr        string
-	session     *transport.Session
-	outbound    bool
-	bootstrap   bool
-	connectedAt time.Time
-	lastRTT     time.Duration
-	meshBlocked time.Time
-	pingSentAt  time.Time
-	pingPending string
-	pingMisses  int
+	id             string
+	addr           string
+	session        *transport.Session
+	outbound       bool
+	bootstrap      bool
+	connectedAt    time.Time
+	lastRTT        time.Duration
+	relayed        bool
+	viaPeerID      string
+	relaySessionID string
+	meshBlocked    time.Time
+	pingSentAt     time.Time
+	pingPending    string
+	pingMisses     int
 }
 
 const sendToPeersConcurrency = 16
@@ -154,17 +157,22 @@ type knownPeer struct {
 }
 
 type meshInfo struct {
-	MeshID         string   `json:"mesh_id"`
-	ListenPort     int      `json:"listen_port"`
-	AdvertisedAddr string   `json:"advertised_addr"`
-	PeerCount      int      `json:"peer_count"`
-	Peers          []string `json:"peers"`
-	KnownPeerCount int      `json:"known_peer_count"`
-	KnownPeers     []string `json:"known_peers,omitempty"`
-	Channels       []string `json:"channels"`
-	NATType        string   `json:"nat_type"`
-	PublicKey      string   `json:"public_key"`
-	SupernodeReady bool     `json:"supernode_ready"`
+	MeshID                string   `json:"mesh_id"`
+	ListenPort            int      `json:"listen_port"`
+	AdvertisedAddr        string   `json:"advertised_addr"`
+	PeerCount             int      `json:"peer_count"`
+	Peers                 []string `json:"peers"`
+	KnownPeerCount        int      `json:"known_peer_count"`
+	KnownPeers            []string `json:"known_peers,omitempty"`
+	DirectPeerCount       int      `json:"direct_peer_count"`
+	RelayedPeerCount      int      `json:"relayed_peer_count"`
+	RelayCapablePeerCount int      `json:"relay_capable_peer_count"`
+	RelaySessionCount     int      `json:"relay_session_count"`
+	RelayRouteCount       int      `json:"relay_route_count"`
+	Channels              []string `json:"channels"`
+	NATType               string   `json:"nat_type"`
+	PublicKey             string   `json:"public_key"`
+	SupernodeReady        bool     `json:"supernode_ready"`
 }
 
 const (

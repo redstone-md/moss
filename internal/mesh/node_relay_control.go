@@ -17,13 +17,15 @@ func (n *Node) handleRelayRequest(peer *peerConn, env gossip.Envelope) {
 		if peer == nil || !verifyRelayRequestEnvelope(env) {
 			return
 		}
-		n.mu.Lock()
-		n.relayLocals[env.RelaySession] = relayLocalSession{
+		session := relayLocalSession{
 			sessionID:    env.RelaySession,
 			viaPeerID:    peer.id,
 			remotePeerID: env.RelaySource,
 			established:  true,
 		}
+		n.mu.Lock()
+		n.relayLocals[env.RelaySession] = session
+		relayPeer := n.registerRelayedPeerLocked(session)
 		n.mu.Unlock()
 		n.sendEnvelope(peer, n.signRelayAcceptEnvelope(gossip.Envelope{
 			Type:         gossip.TypeRelayAccept,
@@ -31,6 +33,7 @@ func (n *Node) handleRelayRequest(peer *peerConn, env gossip.Envelope) {
 			RelaySource:  env.RelayTarget,
 			RelayTarget:  env.RelaySource,
 		}))
+		n.activateRelayedPeer(relayPeer)
 		return
 	}
 	n.mu.RLock()
@@ -60,11 +63,13 @@ func (n *Node) handleRelayAccept(peer *peerConn, env gossip.Envelope) {
 		if !verifyRelayAcceptEnvelope(env) {
 			return
 		}
+		var relayPeer *peerConn
 		n.mu.Lock()
 		session, ok := n.relayLocals[env.RelaySession]
 		if ok && session.viaPeerID == peer.id && session.remotePeerID == env.RelaySource {
 			session.established = true
 			n.relayLocals[env.RelaySession] = session
+			relayPeer = n.registerRelayedPeerLocked(session)
 			if session.wait != nil {
 				close(session.wait)
 				session.wait = nil
@@ -72,6 +77,7 @@ func (n *Node) handleRelayAccept(peer *peerConn, env gossip.Envelope) {
 			}
 		}
 		n.mu.Unlock()
+		n.activateRelayedPeer(relayPeer)
 		return
 	}
 	n.mu.RLock()
@@ -90,7 +96,11 @@ func (n *Node) handleRelayData(peer *peerConn, env gossip.Envelope) {
 		n.mu.RLock()
 		session, ok := n.relayLocals[env.RelaySession]
 		n.mu.RUnlock()
-		if !ok || !session.established || session.viaPeerID != peer.id || session.remotePeerID != env.RelaySource {
+		if !ok || !session.established || peer == nil || session.viaPeerID != peer.id || session.remotePeerID != env.RelaySource {
+			return
+		}
+		if inner, err := n.openRelayGossipEnvelope(session, env.RelaySource, env.Payload); err == nil {
+			n.handleEnvelope(n.relayPeerForSession(session), inner)
 			return
 		}
 		var sender [32]byte
@@ -108,7 +118,7 @@ func (n *Node) handleRelayData(peer *peerConn, env gossip.Envelope) {
 	if !hasRoute || !route.allows(env.RelaySource, env.RelayTarget) {
 		return
 	}
-	if peer.id != env.RelaySource {
+	if peer == nil || peer.id != env.RelaySource {
 		return
 	}
 	if targetPeer == nil {
@@ -205,9 +215,13 @@ func (n *Node) closeRelaySession(session relayLocalSession) {
 		})
 	}
 	n.mu.Lock()
+	removedPeer := n.removeRelayedPeerLocked(session)
 	delete(n.relayLocals, session.sessionID)
 	delete(n.directProbes, session.remotePeerID)
 	n.mu.Unlock()
+	if removedPeer {
+		n.pubsub.RemovePeer(session.remotePeerID)
+	}
 	n.enqueueEvent(EventRelayMigrated, map[string]string{
 		"peer":    session.remotePeerID,
 		"session": session.sessionID,
@@ -235,7 +249,7 @@ func (n *Node) relayPromotionTargets() []string {
 		if !session.established {
 			continue
 		}
-		if _, direct := n.peers[session.remotePeerID]; direct {
+		if peer := n.peers[session.remotePeerID]; peer != nil && !peer.relayed {
 			continue
 		}
 		lastAttempt := n.directProbes[session.remotePeerID]
@@ -254,4 +268,62 @@ func newRelaySessionID() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(raw[:]), nil
+}
+
+func (n *Node) registerRelayedPeerLocked(session relayLocalSession) *peerConn {
+	if session.remotePeerID == "" || session.viaPeerID == "" || session.sessionID == "" {
+		return nil
+	}
+	if len(n.knownPeers[session.remotePeerID].noiseStatic) != 32 {
+		return nil
+	}
+	if existing := n.peers[session.remotePeerID]; existing != nil && !existing.relayed {
+		return nil
+	}
+	peer := &peerConn{
+		id:             session.remotePeerID,
+		addr:           "relay:" + session.viaPeerID,
+		relayed:        true,
+		viaPeerID:      session.viaPeerID,
+		relaySessionID: session.sessionID,
+		connectedAt:    time.Now(),
+	}
+	n.peers[session.remotePeerID] = peer
+	info := n.knownPeers[session.remotePeerID]
+	info.id = session.remotePeerID
+	info.direct = false
+	info.lastSeen = time.Now()
+	n.knownPeers[session.remotePeerID] = info
+	n.scoring.Ensure(session.remotePeerID)
+	return peer
+}
+
+func (n *Node) activateRelayedPeer(peer *peerConn) {
+	if peer == nil {
+		return
+	}
+	n.sendKnownPeerSnapshot(peer)
+	for _, channel := range n.pubsub.SnapshotLocal() {
+		n.maintainTopicMesh(channel)
+	}
+	n.enqueueEvent(EventPeerJoined, map[string]string{"peer": peer.id, "addr": peer.addr})
+}
+
+func (n *Node) relayPeerForSession(session relayLocalSession) *peerConn {
+	n.mu.RLock()
+	peer := n.peers[session.remotePeerID]
+	n.mu.RUnlock()
+	if peer != nil && peer.relayed && peer.relaySessionID == session.sessionID {
+		return peer
+	}
+	return &peerConn{id: session.remotePeerID, addr: "relay:" + session.viaPeerID, relayed: true, viaPeerID: session.viaPeerID, relaySessionID: session.sessionID}
+}
+
+func (n *Node) removeRelayedPeerLocked(session relayLocalSession) bool {
+	peer := n.peers[session.remotePeerID]
+	if peer == nil || !peer.relayed || peer.relaySessionID != session.sessionID {
+		return false
+	}
+	delete(n.peers, session.remotePeerID)
+	return true
 }

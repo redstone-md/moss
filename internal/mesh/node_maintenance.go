@@ -21,8 +21,12 @@ func (n *Node) removePeer(peerID string, session *transport.Session) {
 	delete(n.relayBuckets, peerID)
 	delete(n.directProbes, peerID)
 	delete(n.peerDials, peerID)
+	removedRelayed := make([]string, 0)
 	for sessionID, relaySession := range n.relayLocals {
 		if relaySession.viaPeerID == peerID || relaySession.remotePeerID == peerID {
+			if n.removeRelayedPeerLocked(relaySession) {
+				removedRelayed = append(removedRelayed, relaySession.remotePeerID)
+			}
 			delete(n.relayLocals, sessionID)
 			delete(n.directProbes, relaySession.remotePeerID)
 		}
@@ -41,6 +45,9 @@ func (n *Node) removePeer(peerID string, session *transport.Session) {
 	}
 	n.mu.Unlock()
 	n.pubsub.RemovePeer(peerID)
+	for _, relayedPeerID := range removedRelayed {
+		n.pubsub.RemovePeer(relayedPeerID)
+	}
 	n.recalculateIPColocationPenalties()
 	if peer != nil {
 		n.enqueueEvent(EventPeerLeft, map[string]string{"peer": peerID, "addr": peer.addr})

@@ -12,8 +12,8 @@ import (
 func (n *Node) directPeerConnected(peerID string) bool {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
-	_, ok := n.peers[peerID]
-	return ok
+	peer := n.peers[peerID]
+	return peer != nil && !peer.relayed
 }
 
 func (n *Node) currentPeerCount() int {

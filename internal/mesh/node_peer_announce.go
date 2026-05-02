@@ -11,10 +11,20 @@ import (
 )
 
 func (n *Node) sendEnvelope(peer *peerConn, env gossip.Envelope) bool {
-	if peer == nil || peer.session == nil {
+	if peer == nil {
 		return false
 	}
 	if n.isPeerGraylisted(peer.id) {
+		return false
+	}
+	if peer.relayed {
+		return n.sendRelayedEnvelope(peer, env)
+	}
+	return n.sendDirectEnvelope(peer, env)
+}
+
+func (n *Node) sendDirectEnvelope(peer *peerConn, env gossip.Envelope) bool {
+	if peer == nil || peer.session == nil {
 		return false
 	}
 	payload, err := json.Marshal(env)
@@ -105,6 +115,7 @@ func (n *Node) peerAnnouncementEnvelope(info knownPeer) gossip.Envelope {
 		AdvertisedNATType:      string(info.natType),
 		AdvertisedReachable:    info.publicReachable,
 		AdvertisedRelayCapable: info.relayCapable,
+		AdvertisedNoiseStatic:  append([]byte(nil), info.noiseStatic...),
 	}
 	if info.id == n.localPeerID() {
 		return n.signPeerAnnouncementEnvelope(env)
@@ -127,6 +138,7 @@ func (n *Node) localKnownPeer() knownPeer {
 		publicReachable: profile.PublicReachable,
 		relayCapable:    n.supernodeReady(profile),
 		lastSeen:        time.Now(),
+		noiseStatic:     n.identity.NoiseStaticPublic(),
 	}
 }
 
@@ -197,7 +209,8 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 	if peer != nil && env.AdvertisedPeerID == peer.id {
 		predictionObservations = appendObservation(predictionObservations, liveSessionAddr)
 	}
-	if !ok || current.addr != addr || !current.direct || current.verified != verified || current.thirdPartyDialable != thirdPartyDialable || current.natType != natType || current.natTrusted != natTrusted || current.publicReachable != publicReachable || current.relayCapable != relayCapable || !equalBytes(current.signature, signature) {
+	noiseStatic := knownPeerNoiseStaticFromEnvelope(current, env, verifiedEnvelope || validSignedAnnouncement)
+	if !ok || current.addr != addr || !current.direct || current.verified != verified || current.thirdPartyDialable != thirdPartyDialable || current.natType != natType || current.natTrusted != natTrusted || current.publicReachable != publicReachable || current.relayCapable != relayCapable || !equalBytes(current.noiseStatic, noiseStatic) || !equalBytes(current.signature, signature) {
 		direct := false
 		if ok && current.direct {
 			direct = true
@@ -220,7 +233,7 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 			lastSeen:               time.Now(),
 			observations:           appendObservation(current.observations, env.AdvertisedAddr),
 			predictionObservations: predictionObservations,
-			noiseStatic:            append([]byte(nil), current.noiseStatic...),
+			noiseStatic:            noiseStatic,
 			signature:              signature,
 			thirdPartyDialable:     thirdPartyDialable,
 		}
@@ -232,6 +245,10 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 		if forwardType != gossip.TypePeerAnnounce && (nat.Type(env.AdvertisedNATType) != natType || env.AdvertisedReachable != publicReachable || env.AdvertisedRelayCapable != relayCapable) {
 			advertisedSignature = nil
 		}
+		excludePeerID := ""
+		if peer != nil {
+			excludePeerID = peer.id
+		}
 		n.broadcastToAll(gossip.Envelope{
 			Type:                   forwardType,
 			AdvertisedPeerID:       env.AdvertisedPeerID,
@@ -239,8 +256,9 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 			AdvertisedNATType:      string(natType),
 			AdvertisedReachable:    publicReachable,
 			AdvertisedRelayCapable: relayCapable,
+			AdvertisedNoiseStatic:  noiseStatic,
 			AdvertisedSignature:    advertisedSignature,
-		}, peer.id)
+		}, excludePeerID)
 	}
 }
 
@@ -294,4 +312,11 @@ func equalBytes(a, b []byte) bool {
 		}
 	}
 	return true
+}
+
+func knownPeerNoiseStaticFromEnvelope(current knownPeer, env gossip.Envelope, valid bool) []byte {
+	if valid && len(env.AdvertisedNoiseStatic) == 32 {
+		return append([]byte(nil), env.AdvertisedNoiseStatic...)
+	}
+	return append([]byte(nil), current.noiseStatic...)
 }

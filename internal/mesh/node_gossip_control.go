@@ -1,7 +1,6 @@
 package mesh
 
 import (
-	"encoding/json"
 	"sync"
 	"sync/atomic"
 
@@ -108,14 +107,9 @@ func (n *Node) broadcastToAll(env gossip.Envelope, excludePeerID string) bool {
 }
 
 func (n *Node) broadcastToNonMesh(channel string, env gossip.Envelope, excludePeerID string) bool {
-	payload, err := json.Marshal(env)
-	if err != nil {
-		return false
-	}
 	targets := n.pubsub.NonMeshSubscribers(channel)
 	n.mu.RLock()
-	defer n.mu.RUnlock()
-	sent := false
+	peers := make([]*peerConn, 0, len(targets))
 	for _, peerID := range targets {
 		if peerID == excludePeerID {
 			continue
@@ -124,7 +118,12 @@ func (n *Node) broadcastToNonMesh(channel string, env gossip.Envelope, excludePe
 		if peer == nil {
 			continue
 		}
-		if err := peer.session.WritePacket(payload); err == nil {
+		peers = append(peers, peer)
+	}
+	n.mu.RUnlock()
+	sent := false
+	for _, peer := range peers {
+		if n.sendEnvelope(peer, env) {
 			sent = true
 		}
 	}
@@ -139,10 +138,6 @@ func (n *Node) sendToPeers(peerIDs []string, env gossip.Envelope) bool {
 		return !n.isPeerGraylisted(peerID)
 	})
 	if len(peerIDs) == 0 {
-		return false
-	}
-	payload, err := json.Marshal(env)
-	if err != nil {
 		return false
 	}
 	n.mu.RLock()
@@ -167,7 +162,7 @@ func (n *Node) sendToPeers(peerIDs []string, env gossip.Envelope) bool {
 		go func() {
 			defer wg.Done()
 			for peer := range jobs {
-				if err := peer.session.WritePacket(payload); err == nil {
+				if n.sendEnvelope(peer, env) {
 					sent.Store(true)
 				}
 			}

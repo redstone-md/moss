@@ -56,7 +56,10 @@ func (n *Node) selectRelayPeers(targetPeerID string) ([]string, error) {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 	candidates := make([]string, 0, len(n.peers))
-	for peerID := range n.peers {
+	for peerID, peer := range n.peers {
+		if peer == nil || peer.relayed {
+			continue
+		}
 		if peerID == targetPeerID {
 			continue
 		}
@@ -122,6 +125,9 @@ func relayCandidateRank(info knownPeer) int {
 }
 
 func (n *Node) peerScore(peerID string) float64 {
+	if n.scoring == nil {
+		return 0
+	}
 	base := n.scoring.Score(peerID)
 	n.scoringMu.RLock()
 	cb := n.scoringCB
@@ -169,6 +175,9 @@ func (n *Node) eligibleForMeshCandidate(peerID string) bool {
 	}
 	if now.Before(peer.meshBlocked) {
 		return false
+	}
+	if peer.relayed {
+		return true
 	}
 	if peer.lastRTT > peerLatencyPruneThreshold {
 		return false
