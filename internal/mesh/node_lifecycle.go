@@ -164,7 +164,9 @@ func (n *Node) Stop() int32 {
 		portMapper.Close()
 	}
 	for _, peer := range peers {
-		_ = peer.session.Close()
+		if peer.session != nil {
+			_ = peer.session.Close()
+		}
 	}
 	n.wg.Wait()
 	return MOSS_OK
@@ -265,10 +267,18 @@ func (n *Node) MeshInfoJSON() string {
 	n.mu.RLock()
 	info.PeerCount = len(n.peers)
 	for _, peer := range n.peers {
+		if peer.relayed {
+			info.RelayedPeerCount++
+		} else {
+			info.DirectPeerCount++
+		}
 		info.Peers = append(info.Peers, peer.addr)
 	}
 	info.KnownPeerCount = len(n.knownPeers)
 	for _, known := range n.knownPeers {
+		if known.natTrusted && known.relayCapable && known.publicReachable {
+			info.RelayCapablePeerCount++
+		}
 		if known.id == "" || known.addr == "" {
 			continue
 		}
@@ -278,6 +288,12 @@ func (n *Node) MeshInfoJSON() string {
 		}
 		info.KnownPeers = append(info.KnownPeers, known.id[:min(8, len(known.id))]+"@"+known.addr+"["+state+"]")
 	}
+	for _, session := range n.relayLocals {
+		if session.established {
+			info.RelaySessionCount++
+		}
+	}
+	info.RelayRouteCount = len(n.relayRoutes)
 	n.mu.RUnlock()
 	sort.Strings(info.Peers)
 	sort.Strings(info.KnownPeers)

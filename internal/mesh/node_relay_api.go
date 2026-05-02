@@ -14,7 +14,7 @@ func (n *Node) OpenRelaySession(viaPeerID, targetPeerID string, timeout time.Dur
 	n.mu.RLock()
 	peer := n.peers[viaPeerID]
 	n.mu.RUnlock()
-	if peer == nil {
+	if peer == nil || peer.relayed {
 		return "", errors.New("relay peer is not connected")
 	}
 	sessionID, err := newRelaySessionID()
@@ -57,13 +57,9 @@ func (n *Node) RelaySend(sessionID string, data []byte) error {
 	if !ok || peer == nil || !session.established {
 		return errors.New("relay session is not established")
 	}
-	n.sendEnvelope(peer, gossip.Envelope{
-		Type:         gossip.TypeRelayData,
-		RelaySession: sessionID,
-		RelaySource:  n.localPeerID(),
-		RelayTarget:  session.remotePeerID,
-		Payload:      append([]byte(nil), data...),
-	})
+	if !n.sendRelayPayload(sessionID, data) {
+		return errors.New("relay send failed")
+	}
 	return nil
 }
 
@@ -72,7 +68,7 @@ func (n *Node) RelaySendTo(targetPeerID string, data []byte, timeout time.Durati
 		return errors.New("target peer ID is required")
 	}
 	n.mu.RLock()
-	if _, direct := n.peers[targetPeerID]; direct {
+	if peer := n.peers[targetPeerID]; peer != nil && !peer.relayed {
 		n.mu.RUnlock()
 		return errors.New("target peer is directly connected")
 	}

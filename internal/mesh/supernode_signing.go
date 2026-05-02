@@ -31,7 +31,18 @@ func supernodeSignaturePayload(env gossip.Envelope) []byte {
 }
 
 func peerAnnouncementSignaturePayload(env gossip.Envelope) []byte {
-	payload := make([]byte, 0, 160)
+	payload := peerAnnouncementSignaturePayloadV1(env)
+	if len(env.AdvertisedNoiseStatic) == 32 {
+		payload = append(payload, 0)
+		payload = append(payload, []byte("v2")...)
+		payload = append(payload, 0)
+		payload = append(payload, env.AdvertisedNoiseStatic...)
+	}
+	return payload
+}
+
+func peerAnnouncementSignaturePayloadV1(env gossip.Envelope) []byte {
+	payload := make([]byte, 0, 200)
 	payload = append(payload, []byte("moss-peer-announcement")...)
 	payload = append(payload, 0)
 	payload = append(payload, []byte(string(env.Type))...)
@@ -64,7 +75,13 @@ func verifyAdvertisedPeerEnvelope(env gossip.Envelope, payload func(gossip.Envel
 }
 
 func verifyPeerAnnouncementEnvelope(env gossip.Envelope) bool {
-	return verifyAdvertisedPeerEnvelope(env, peerAnnouncementSignaturePayload)
+	if len(env.AdvertisedNoiseStatic) > 0 && len(env.AdvertisedNoiseStatic) != 32 {
+		return false
+	}
+	if len(env.AdvertisedNoiseStatic) == 32 {
+		return verifyAdvertisedPeerEnvelope(env, peerAnnouncementSignaturePayload)
+	}
+	return verifyAdvertisedPeerEnvelope(env, peerAnnouncementSignaturePayloadV1)
 }
 
 func verifySupernodeEnvelope(env gossip.Envelope) bool {

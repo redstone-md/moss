@@ -173,7 +173,7 @@ func (n *Node) connectPeerWithHint(ctx context.Context, addr, peerID string) err
 		return nil
 	}
 	n.mu.RLock()
-	if len(n.peers) >= n.config.MaxPeers {
+	if n.directPeerCountLocked() >= n.config.MaxPeers {
 		n.mu.RUnlock()
 		return errors.New("max peers reached")
 	}
@@ -240,14 +240,18 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 		return
 	}
 	if existing, exists := n.peers[peerID]; exists {
-		if !shouldReplaceDuplicatePeer(n.localPeerID(), peerID, existing.outbound, outbound) {
-			n.mu.Unlock()
-			_ = session.Close()
-			return
+		if existing.relayed {
+			replacedPeer = existing
+		} else {
+			if !shouldReplaceDuplicatePeer(n.localPeerID(), peerID, existing.outbound, outbound) {
+				n.mu.Unlock()
+				_ = session.Close()
+				return
+			}
+			replacedPeer = existing
 		}
-		replacedPeer = existing
 	}
-	if replacedPeer == nil && len(n.peers) >= n.config.MaxPeers {
+	if replacedPeer == nil && n.directPeerCountLocked() >= n.config.MaxPeers {
 		overflowPeer = n.selectOverflowPrunePeerLocked()
 		n.mu.Unlock()
 		if overflowPeer != nil {
@@ -282,7 +286,7 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 	}
 	n.scoring.Ensure(peerID)
 	n.mu.Unlock()
-	if replacedPeer != nil {
+	if replacedPeer != nil && replacedPeer.session != nil {
 		_ = replacedPeer.session.Close()
 	}
 	n.recalculateIPColocationPenalties()
@@ -405,4 +409,14 @@ func (n *Node) readPeer(peer *peerConn) {
 		}
 		n.handleEnvelope(peer, env)
 	}
+}
+
+func (n *Node) directPeerCountLocked() int {
+	count := 0
+	for _, peer := range n.peers {
+		if peer != nil && !peer.relayed {
+			count++
+		}
+	}
+	return count
 }

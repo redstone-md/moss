@@ -168,7 +168,7 @@ func (n *Node) bootstrapSeedTargets() []string {
 
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	if len(n.peers) >= n.config.MaxPeers {
+	if n.directPeerCountLocked() >= n.config.MaxPeers {
 		return nil
 	}
 

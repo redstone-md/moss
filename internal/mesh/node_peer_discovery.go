@@ -25,7 +25,7 @@ func (n *Node) discoveredPeerTargets() []discoveredPeerTarget {
 
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	if len(n.peers) >= n.config.MaxPeers {
+	if n.directPeerCountLocked() >= n.config.MaxPeers {
 		return nil
 	}
 
@@ -75,7 +75,7 @@ func (n *Node) discoveredPeerTargets() []discoveredPeerTarget {
 	if limit <= 0 {
 		limit = 2
 	}
-	available := n.config.MaxPeers - len(n.peers)
+	available := n.config.MaxPeers - n.directPeerCountLocked()
 	if available < limit {
 		limit = available
 	}
@@ -91,10 +91,11 @@ func (n *Node) discoveredPeerTargets() []discoveredPeerTarget {
 
 func (n *Node) dialKnownPeer(peerID, addr string) {
 	_ = addr
-	// Discovered peers should use the full direct-connect strategy so the
-	// maintenance loop can escalate from plain TCP dial to binding refresh and
-	// UDP hole-punch coordination through an already connected relay-capable peer.
-	n.tryDirectConnect(peerID, n.config.HandshakeTimeout())
+	// Discovered peers use direct/NAT/hole-punch first. If that path does not
+	// materialize, promote an encrypted relay session into the pubsub peer set.
+	if !n.tryDirectConnect(peerID, n.config.HandshakeTimeout()) && n.establishedRelaySession(peerID) == "" {
+		_, _ = n.OpenRelaySessionAny(peerID, n.config.HandshakeTimeout())
+	}
 	n.mu.Lock()
 	delete(n.peerDials, peerID)
 	n.mu.Unlock()

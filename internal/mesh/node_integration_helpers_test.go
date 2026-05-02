@@ -159,9 +159,9 @@ func waitForDirectPeer(t *testing.T, node *Node, wantPeerID string) {
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		node.mu.RLock()
-		_, ok := node.peers[wantPeerID]
+		peer := node.peers[wantPeerID]
 		node.mu.RUnlock()
-		if ok {
+		if peer != nil && !peer.relayed {
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -174,9 +174,9 @@ func waitForDirectPeerWithin(t *testing.T, node *Node, wantPeerID string, timeou
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		node.mu.RLock()
-		_, ok := node.peers[wantPeerID]
+		peer := node.peers[wantPeerID]
 		node.mu.RUnlock()
-		if ok {
+		if peer != nil && !peer.relayed {
 			return
 		}
 		time.Sleep(25 * time.Millisecond)
