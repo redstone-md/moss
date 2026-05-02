@@ -45,7 +45,7 @@ type Config struct {
 // for high-throughput application traffic where bursts can exceed the
 // default 256-packet queue and would otherwise be silently dropped.
 //
-// Setting HighThroughput=true is a convenient preset (16384 per stream
+// Setting HighThroughput=true is a convenient preset (65536 per stream
 // and per UDP session) suitable for tunneling bulk traffic such as
 // Minecraft chunk loading or media streams. Default values stay at 256
 // to keep memory footprint small for casual chat/discovery workloads.

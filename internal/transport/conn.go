@@ -29,8 +29,12 @@ type Session struct {
 }
 
 func NewSession(carrier carrier, sendCipher, recvCipher *noise.CipherState, remoteID, remoteKey [32]byte, handshake byte) (*Session, error) {
+	return NewSessionWithBuffers(carrier, sendCipher, recvCipher, remoteID, remoteKey, handshake, BufferConfig{})
+}
+
+func NewSessionWithBuffers(carrier carrier, sendCipher, recvCipher *noise.CipherState, remoteID, remoteKey [32]byte, handshake byte, buffers BufferConfig) (*Session, error) {
 	if dc, ok := carrier.(datagramCapable); ok && dc.supportsDatagramSession() {
-		return newDatagramSession(carrier, sendCipher, recvCipher, remoteID, remoteKey, handshake)
+		return newDatagramSession(carrier, sendCipher, recvCipher, remoteID, remoteKey, handshake, buffers)
 	}
 	session := &Session{
 		carrier:    carrier,
@@ -40,7 +44,7 @@ func NewSession(carrier carrier, sendCipher, recvCipher *noise.CipherState, remo
 		remoteKey:  remoteKey,
 		handshake:  handshake,
 	}
-	session.mux = newMultiplexer(session)
+	session.mux = newMultiplexer(session, buffers)
 	return session, nil
 }
 

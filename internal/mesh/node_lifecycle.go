@@ -17,7 +17,7 @@ import (
 
 const highThroughputBufferSize = 65536
 
-func applyTransportTuning(cfg TransportConfig) {
+func transportBufferConfig(cfg TransportConfig) transport.BufferConfig {
 	streamSize := cfg.StreamBufferSize
 	udpSize := cfg.UDPBufferSize
 	if cfg.HighThroughput {
@@ -28,11 +28,9 @@ func applyTransportTuning(cfg TransportConfig) {
 			udpSize = highThroughputBufferSize
 		}
 	}
-	if streamSize > 0 {
-		transport.SetStreamBufferSize(streamSize)
-	}
-	if udpSize > 0 {
-		transport.SetUDPCarrierBufferSize(udpSize)
+	return transport.BufferConfig{
+		StreamBufferSize:     streamSize,
+		UDPCarrierBufferSize: udpSize,
 	}
 }
 
@@ -102,11 +100,11 @@ func (n *Node) Start() int32 {
 	if n.started {
 		return MOSS_ERR_ALREADY_STARTED
 	}
-	applyTransportTuning(n.config.Transport)
 	ln, udpListener, port, err := transport.ListenPair(n.config.ListenPort, transport.HandshakeConfig{
 		MeshID:   n.meshID,
 		PSK:      n.psk,
 		Identity: n.identity,
+		Buffers:  transportBufferConfig(n.config.Transport),
 	})
 	if err != nil {
 		return MOSS_ERR_CONFIG_INVALID

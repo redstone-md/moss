@@ -100,16 +100,22 @@ func (c *Cache) Get(id string) (Envelope, bool) {
 func (c *Cache) RecentIDs(channel string, limit int) []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.purgeLocked(time.Now())
+	now := time.Now()
+	c.purgeLocked(now)
 	type pair struct {
 		id string
 		ts time.Time
 	}
 	var pairs []pair
 	for id, entry := range c.items {
-		if entry.Channel == channel {
-			pairs = append(pairs, pair{id: id, ts: entry.SeenAt})
+		if now.Sub(entry.SeenAt) > c.ttl {
+			delete(c.items, id)
+			continue
 		}
+		if entry.Channel != channel {
+			continue
+		}
+		pairs = append(pairs, pair{id: id, ts: entry.SeenAt})
 	}
 	sort.Slice(pairs, func(i, j int) bool {
 		return pairs[i].ts.After(pairs[j].ts)

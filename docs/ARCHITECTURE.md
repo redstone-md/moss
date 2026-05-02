@@ -127,11 +127,10 @@ udp_session.go     UDP carrier and session lifecycle
 Inbound queue sizing is a runtime tuning knob. Per-stream
 (`multiplexer.go`) and per-UDP-session (`udp_session.go`) channels
 default to 256 packets and silently drop on overflow to keep memory
-predictable. `mesh.applyTransportTuning` reaches in via the package
-setters `SetStreamBufferSize` and `SetUDPCarrierBufferSize` before any
-session is established, so application-driven configuration (e.g. the
-`transport.high_throughput` JSON option) propagates without leaking
-mesh types into transport.
+predictable. `mesh.transportBufferConfig` maps application-driven
+configuration (e.g. the `transport.high_throughput` JSON option) into
+`transport.BufferConfig`, which is attached to listeners and sessions so
+tuned nodes do not mutate process-wide transport defaults.
 
 ### `internal/bootstrap`
 

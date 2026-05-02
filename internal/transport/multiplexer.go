@@ -15,30 +15,23 @@ const maxInboundStreams = 1024
 const defaultStreamBufferSize = 256
 
 var (
-	streamBufferSize       = defaultStreamBufferSize
+	streamOverflowMu       sync.RWMutex
 	streamBufferOnOverflow func(streamID StreamID, queueLen int)
 	errUnknownStream       = errors.New("transport: unknown stream")
 )
-
-// SetStreamBufferSize configures the per-stream inbound queue capacity.
-// Call before opening connections. Values < 1 are ignored.
-// Use larger values for high-throughput application traffic to avoid
-// silent backpressure drops when the consumer cannot keep up with bursts.
-func SetStreamBufferSize(size int) {
-	if size > 0 {
-		streamBufferSize = size
-	}
-}
 
 // SetStreamOverflowHook installs a callback fired whenever an inbound
 // payload is dropped because the stream buffer is full. Useful for
 // surfacing congestion to operators. Pass nil to clear.
 func SetStreamOverflowHook(hook func(streamID StreamID, queueLen int)) {
+	streamOverflowMu.Lock()
+	defer streamOverflowMu.Unlock()
 	streamBufferOnOverflow = hook
 }
 
 type Multiplexer struct {
-	session *Session
+	session    *Session
+	bufferSize int
 
 	mu      sync.RWMutex
 	streams map[StreamID]*Stream
@@ -54,10 +47,11 @@ type Stream struct {
 	once   sync.Once
 }
 
-func newMultiplexer(session *Session) *Multiplexer {
+func newMultiplexer(session *Session, buffers BufferConfig) *Multiplexer {
 	mux := &Multiplexer{
-		session: session,
-		streams: make(map[StreamID]*Stream),
+		session:    session,
+		bufferSize: normalizeStreamBufferSize(buffers.StreamBufferSize),
+		streams:    make(map[StreamID]*Stream),
 	}
 	mux.streams[DefaultStream] = newStream(DefaultStream, mux)
 	go mux.readLoop()
@@ -147,7 +141,7 @@ func newStream(id StreamID, mux *Multiplexer) *Stream {
 	return &Stream{
 		id:     id,
 		mux:    mux,
-		buffer: make(chan []byte, streamBufferSize),
+		buffer: make(chan []byte, mux.bufferSize),
 		closed: make(chan struct{}),
 	}
 }
@@ -189,10 +183,20 @@ func (s *Stream) enqueue(payload []byte) {
 	select {
 	case s.buffer <- packet:
 	default:
-		if hook := streamBufferOnOverflow; hook != nil {
+		streamOverflowMu.RLock()
+		hook := streamBufferOnOverflow
+		streamOverflowMu.RUnlock()
+		if hook != nil {
 			hook(s.id, len(s.buffer))
 		}
 	}
+}
+
+func normalizeStreamBufferSize(size int) int {
+	if size > 0 {
+		return size
+	}
+	return defaultStreamBufferSize
 }
 
 func packStreamPacket(streamID StreamID, payload []byte) []byte {
