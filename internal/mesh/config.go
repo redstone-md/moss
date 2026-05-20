@@ -35,10 +35,22 @@ type Config struct {
 	LANDiscoveryEnabled bool            `json:"lan_discovery_enabled"`
 	LANDiscoveryPort    int             `json:"lan_discovery_port"`
 	LANDiscoveryMS      int             `json:"lan_discovery_ms"`
-	GossipSub           GossipSubConfig `json:"gossipsub"`
-	NAT                 NATConfig       `json:"nat"`
-	Security            SecurityConfig  `json:"security"`
-	Transport           TransportConfig `json:"transport"`
+	// BindInterface forces outbound UDP packets through a specific NIC,
+	// overriding the host routing table. Accepts either an interface name
+	// ("Ethernet 2", "en0") or a numeric index ("3"). Empty value disables
+	// the feature and lets traffic flow through whatever the OS chooses —
+	// which, when a VPN is active, is the VPN tunnel.
+	//
+	// SECURITY: turning this on bypasses any VPN the user has configured,
+	// exposing the host's real IPv4 source address to peers, trackers, and
+	// STUN servers. The Mosh frontend gates this behind an explicit toggle
+	// with a privacy warning and is responsible for never enabling it
+	// silently. See docs/bind-interface.md for the threat model.
+	BindInterface string          `json:"bind_interface"`
+	GossipSub     GossipSubConfig `json:"gossipsub"`
+	NAT           NATConfig       `json:"nat"`
+	Security      SecurityConfig  `json:"security"`
+	Transport     TransportConfig `json:"transport"`
 }
 
 // TransportConfig tunes per-session inbound buffer sizes. Increase these
