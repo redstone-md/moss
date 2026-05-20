@@ -20,6 +20,15 @@ type HandshakeConfig struct {
 	Identity     *mcrypto.Identity
 	RemoteStatic []byte
 	Buffers      BufferConfig
+	// BindIfIndex, when non-zero, forces the UDP listener socket to send
+	// outbound packets through the named OS interface index via
+	// IP_UNICAST_IF (Windows) / SO_BINDTODEVICE (Linux) / IP_BOUND_IF
+	// (macOS). Zero leaves routing-table behaviour intact.
+	//
+	// Surfaced here because ListenUDP is the single creation point for the
+	// session socket and the same option must apply for every datagram it
+	// sends. Callers resolve names → indices via ResolveBindInterface.
+	BindIfIndex int
 }
 
 // BufferConfig tunes inbound queues for sessions created by a handshake.

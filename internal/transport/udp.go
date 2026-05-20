@@ -82,6 +82,10 @@ func ListenUDP(port int, cfg HandshakeConfig) (*UDPListener, int, error) {
 	if err != nil {
 		return nil, 0, err
 	}
+	if err := ApplyBindToUDP(conn, cfg.BindIfIndex); err != nil {
+		_ = conn.Close()
+		return nil, 0, err
+	}
 	listener := &UDPListener{
 		conn:     conn,
 		cfg:      cfg,
