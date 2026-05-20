@@ -57,6 +57,10 @@ func NewNodeWithIdentity(meshID string, psk []byte, cfg Config, identity *mcrypt
 	if err != nil {
 		return nil, err
 	}
+	bindIfIndex, err := transport.ResolveBindInterface(cfg.BindInterface)
+	if err != nil {
+		return nil, err
+	}
 	node := &Node{
 		meshID:           meshID,
 		psk:              append([]byte(nil), psk...),
@@ -64,7 +68,8 @@ func NewNodeWithIdentity(meshID string, psk []byte, cfg Config, identity *mcrypt
 		infoHash:         infoHash,
 		peerID:           peerID,
 		identity:         identity,
-		tracker:          bootstrap.NewManager(time.Duration(cfg.BootstrapTimeoutSec) * time.Second),
+		bindIfIndex:      bindIfIndex,
+		tracker:          bootstrap.NewManagerWithBind(time.Duration(cfg.BootstrapTimeoutSec)*time.Second, bindIfIndex),
 		pubsub:           gossip.NewManager(),
 		cache:            gossip.NewCache(2 * time.Minute),
 		scoring:          gossip.NewEngine(),
@@ -101,10 +106,11 @@ func (n *Node) Start() int32 {
 		return MOSS_ERR_ALREADY_STARTED
 	}
 	ln, udpListener, port, err := transport.ListenPair(n.config.ListenPort, transport.HandshakeConfig{
-		MeshID:   n.meshID,
-		PSK:      n.psk,
-		Identity: n.identity,
-		Buffers:  transportBufferConfig(n.config.Transport),
+		MeshID:      n.meshID,
+		PSK:         n.psk,
+		Identity:    n.identity,
+		Buffers:     transportBufferConfig(n.config.Transport),
+		BindIfIndex: n.bindIfIndex,
 	})
 	if err != nil {
 		return MOSS_ERR_CONFIG_INVALID
