@@ -328,6 +328,26 @@ func TestManagerAnnounceAllLimitsConcurrentTrackers(t *testing.T) {
 	}
 }
 
+func TestNewManagerWithBindPinsHTTPAndUDPTrackers(t *testing.T) {
+	manager := NewManagerWithBind(time.Second, 23)
+
+	httpClient, ok := manager.HTTP.(*HTTPClient)
+	if !ok {
+		t.Fatalf("HTTP client type = %T, want *HTTPClient", manager.HTTP)
+	}
+	if httpClient.BindIfIndex != 23 {
+		t.Fatalf("HTTP BindIfIndex = %d, want 23", httpClient.BindIfIndex)
+	}
+
+	udpClient, ok := manager.UDP.(*UDPClient)
+	if !ok {
+		t.Fatalf("UDP client type = %T, want *UDPClient", manager.UDP)
+	}
+	if udpClient.BindIfIndex != 23 {
+		t.Fatalf("UDP BindIfIndex = %d, want 23", udpClient.BindIfIndex)
+	}
+}
+
 func TestManagerAnnounceAllHonorsContextDeadline(t *testing.T) {
 	client := &blockingTrackerClient{
 		fakeTrackerClient: fakeTrackerClient{

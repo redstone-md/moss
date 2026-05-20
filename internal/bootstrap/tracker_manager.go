@@ -61,7 +61,7 @@ func NewManager(timeout time.Duration) *Manager {
 // override and lets the OS routing table decide).
 func NewManagerWithBind(timeout time.Duration, bindIfIndex int) *Manager {
 	return &Manager{
-		HTTP:          NewHTTPClient(timeout),
+		HTTP:          NewHTTPClientWithBind(timeout, bindIfIndex),
 		UDP:           &UDPClient{BindIfIndex: bindIfIndex},
 		maxConcurrent: defaultTrackerConcurrency,
 		state:         make(map[string]trackerState),
