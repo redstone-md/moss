@@ -69,7 +69,7 @@ func (p *Profiler) WithExternalAddress(profile Profile, externalAddr string) Pro
 	profile.ExternalAddress = externalAddr
 	if addr.IsGlobalUnicast() && !addr.IsPrivate() && !isCarrierGrade(addr) {
 		switch profile.Type {
-		case TypePublic, TypeCGNAT, TypeSymmetric, TypePortRestricted, TypeRestrictedCone:
+		case TypePublic, TypeCGNAT, TypeSymmetric, TypePortRestricted, TypeRestrictedCone, TypeUnknown:
 		case TypeFullCone:
 		default:
 			profile.Type = TypePortRestricted
