@@ -132,7 +132,7 @@ func (n *Node) applyExternalObservation(observed string, deadline time.Time) boo
 	bindingHistory := append([]string(nil), n.bindingHistory...)
 	n.mu.Unlock()
 	profile = n.profiler.WithBindingObservations(profile, bindingHistory)
-	if !publicFromAddr && requiresReachabilityConfirmation(observed) {
+	if !publicFromAddr && requiresReachabilityConfirmation(observed) && !profile.PublicReachable {
 		profile = n.profiler.WithReachability(profile, n.confirmReachability(observed, deadline))
 	}
 	n.natProfile.Store(profile)
