@@ -111,6 +111,19 @@ func (n *Node) applyExternalObservation(observed string, deadline time.Time) boo
 	previous := n.natProfile.Load().(nat.Profile)
 	observed = preferredExternalAddr(previous.ExternalAddress, observed)
 	profile := n.profiler.WithExternalAddress(previous, observed)
+
+	// Fast-path: if we have a public external address but the type is still
+	// Unknown (e.g. because listen was 0.0.0.0), upgrade immediately without
+	// waiting for a second binding observation.
+	if profile.Type == nat.TypeUnknown {
+		if host, _, err := net.SplitHostPort(profile.ExternalAddress); err == nil {
+			if addr, err := netip.ParseAddr(host); err == nil && addr.IsGlobalUnicast() && !addr.IsPrivate() && !isCarrierGradeAddr(addr) {
+				profile.Type = nat.TypePublic
+				profile.PublicReachable = true
+			}
+		}
+	}
+
 	n.mu.Lock()
 	n.bindingHistory = appendObservation(n.bindingHistory, observed)
 	bindingHistory := append([]string(nil), n.bindingHistory...)
