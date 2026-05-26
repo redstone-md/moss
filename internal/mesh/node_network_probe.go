@@ -32,6 +32,7 @@ func (n *Node) probePortMapping(ctx context.Context, listenAddr string, port int
 		_ = n.applyExternalObservation(mappedAddr, time.Now().Add(n.config.HandshakeTimeout()))
 	} else {
 		if observed, observedOK := n.requestSTUNBindingObservation(3 * time.Second); observedOK {
+			_ = n.applyExternalObservation(observed, time.Now().Add(n.config.HandshakeTimeout()))
 			mappedAddr = observed
 			ok = true
 		}
