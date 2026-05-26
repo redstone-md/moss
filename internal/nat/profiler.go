@@ -96,9 +96,17 @@ func (p *Profiler) WithBindingObservations(profile Profile, observations []strin
 			return profile
 		}
 	}
-	if profile.Type == TypeFullCone || profile.Type == TypeUnknown {
-		profile.Type = TypePortRestricted
-	}
+	if profile.Type == TypeFullCone {
+			profile.Type = TypePortRestricted
+		} else if profile.Type == TypeUnknown {
+			profile.Type = TypePortRestricted
+			if host, _, err := net.SplitHostPort(profile.ExternalAddress); err == nil {
+				if addr, err := netip.ParseAddr(host); err == nil && addr.IsGlobalUnicast() && !addr.IsPrivate() && !isCarrierGrade(addr) {
+					profile.Type = TypePublic
+					profile.PublicReachable = true
+				}
+			}
+		}
 	return profile
 }
 
