@@ -8,6 +8,8 @@ import (
 	"net"
 	"net/url"
 	"time"
+
+	"moss/internal/transport"
 )
 
 const (
@@ -16,7 +18,12 @@ const (
 	trackerConnectionID   = 0x41727101980
 )
 
-type UDPClient struct{}
+// UDPClient announces over the binary UDP tracker protocol. Setting
+// BindIfIndex to a non-zero value forces the underlying socket onto a
+// specific NIC (see transport.ResolveBindInterface).
+type UDPClient struct {
+	BindIfIndex int
+}
 
 var (
 	udpTrackerDialTimeout    = 3 * time.Second
@@ -34,7 +41,10 @@ func (c *UDPClient) Announce(ctx context.Context, trackerURL string, req Announc
 	if _, _, err := net.SplitHostPort(host); err != nil {
 		host = net.JoinHostPort(host, "80")
 	}
-	conn, err := net.DialTimeout("udp", host, udpTrackerDialTimeout)
+	dialer := transport.DialerWithBind(net.Dialer{Timeout: udpTrackerDialTimeout}, c.BindIfIndex)
+	dialCtx, cancel := context.WithTimeout(ctx, udpTrackerDialTimeout)
+	defer cancel()
+	conn, err := dialer.DialContext(dialCtx, "udp", host)
 	if err != nil {
 		return nil, err
 	}

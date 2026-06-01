@@ -30,6 +30,7 @@ type Node struct {
 	udpListener   *transport.UDPListener
 	relaySessions *nat.SessionManager
 	listenPort    int
+	bindIfIndex   int
 	startedAt     time.Time
 	dispatchSem   chan struct{}
 

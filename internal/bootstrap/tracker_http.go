@@ -11,15 +11,30 @@ import (
 	"net/url"
 	"strconv"
 	"time"
+
+	"moss/internal/transport"
 )
 
 type HTTPClient struct {
-	Client *http.Client
+	Client      *http.Client
+	BindIfIndex int
 }
 
 func NewHTTPClient(timeout time.Duration) *HTTPClient {
+	return NewHTTPClientWithBind(timeout, 0)
+}
+
+func NewHTTPClientWithBind(timeout time.Duration, bindIfIndex int) *HTTPClient {
+	client := &http.Client{Timeout: timeout}
+	if bindIfIndex != 0 {
+		dialer := transport.DialerWithBind(net.Dialer{Timeout: timeout}, bindIfIndex)
+		tr := http.DefaultTransport.(*http.Transport).Clone()
+		tr.DialContext = dialer.DialContext
+		client.Transport = tr
+	}
 	return &HTTPClient{
-		Client: &http.Client{Timeout: timeout},
+		Client:      client,
+		BindIfIndex: bindIfIndex,
 	}
 }
 

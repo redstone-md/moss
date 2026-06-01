@@ -12,6 +12,7 @@ import (
 	"golang.org/x/net/ipv4"
 
 	"moss/internal/nat"
+	"moss/internal/transport"
 )
 
 const lanDiscoveryGroup = "239.255.77.77"
@@ -57,6 +58,12 @@ func (n *Node) lanDiscoveryLoop(ctx context.Context) {
 	sendConn, err := net.ListenPacket("udp4", ":0")
 	if err != nil {
 		return
+	}
+	if udpConn, ok := sendConn.(*net.UDPConn); ok {
+		if bindErr := transport.ApplyBindToUDP(udpConn, n.bindIfIndex); bindErr != nil {
+			_ = sendConn.Close()
+			return
+		}
 	}
 	defer sendConn.Close()
 	sendPacket := ipv4.NewPacketConn(sendConn)

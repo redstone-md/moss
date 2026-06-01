@@ -53,9 +53,16 @@ type Manager struct {
 const defaultTrackerConcurrency = 5
 
 func NewManager(timeout time.Duration) *Manager {
+	return NewManagerWithBind(timeout, 0)
+}
+
+// NewManagerWithBind constructs a Manager whose UDP tracker client forces
+// outbound packets through the given network interface index (0 disables the
+// override and lets the OS routing table decide).
+func NewManagerWithBind(timeout time.Duration, bindIfIndex int) *Manager {
 	return &Manager{
-		HTTP:          NewHTTPClient(timeout),
-		UDP:           &UDPClient{},
+		HTTP:          NewHTTPClientWithBind(timeout, bindIfIndex),
+		UDP:           &UDPClient{BindIfIndex: bindIfIndex},
 		maxConcurrent: defaultTrackerConcurrency,
 		state:         make(map[string]trackerState),
 	}
