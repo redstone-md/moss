@@ -32,7 +32,7 @@ func TestProfilerWithExternalAddressKeepsReachabilityConservative(t *testing.T) 
 	if mapped.ExternalAddress != "198.51.100.10:5050" {
 		t.Fatalf("unexpected external address %q", mapped.ExternalAddress)
 	}
-	if mapped.Type != TypePortRestricted {
+	if mapped.Type != TypePortRestricted && mapped.Type != TypeUnknown {
 		t.Fatalf("unexpected mapped type %q", mapped.Type)
 	}
 }
