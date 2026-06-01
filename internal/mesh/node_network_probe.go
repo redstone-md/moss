@@ -221,7 +221,6 @@ func appendObservation(history []string, addr string) []string {
 	return history
 }
 
-func withTimeout(ctx context.Context, timeout time.Duration) context.Context {
-	child, _ := context.WithTimeout(ctx, timeout)
-	return child
+func withTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, timeout)
 }
