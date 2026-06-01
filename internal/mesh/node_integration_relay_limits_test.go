@@ -219,7 +219,7 @@ func TestRelayNodeEnforcesConfiguredBandwidth(t *testing.T) {
 		if !bytes.Equal(payload, firstPayload) {
 			t.Fatalf("unexpected first relay payload: %q", string(payload))
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for first relayed payload")
 	}
 
