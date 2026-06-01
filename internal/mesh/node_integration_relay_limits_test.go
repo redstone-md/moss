@@ -165,6 +165,7 @@ func TestRelayNodeEnforcesConfiguredBandwidth(t *testing.T) {
 	cfgA := DefaultConfig()
 	cfgA.Trackers = nil
 	cfgA.GossipSub.HeartbeatMS = 5000
+	cfgA.MaxPeers = 1
 	cfgA.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(relayNode.ListenPort()))}
 	nodeA, err := NewNode("mesh-relay-bandwidth", nil, cfgA)
 	if err != nil {
@@ -178,6 +179,7 @@ func TestRelayNodeEnforcesConfiguredBandwidth(t *testing.T) {
 	cfgB := DefaultConfig()
 	cfgB.Trackers = nil
 	cfgB.GossipSub.HeartbeatMS = 5000
+	cfgB.MaxPeers = 1
 	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(relayNode.ListenPort()))}
 	nodeB, err := NewNode("mesh-relay-bandwidth", nil, cfgB)
 	if err != nil {
@@ -204,6 +206,20 @@ func TestRelayNodeEnforcesConfiguredBandwidth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenRelaySession failed: %v", err)
 	}
+	waitForRelaySession(t, nodeA, sessionID)
+	waitForRelaySession(t, nodeB, sessionID)
+
+	// nodeA-originated mesh-control gossip (peer announcements) is also tunnelled
+	// over the relay as TypeRelayData and shares nodeA's relay bandwidth bucket.
+	// Let that join-time burst settle, then reset the relay's bucket to full so the
+	// assertion below measures only the two test payloads, not the gossip noise.
+	nodeAPub := nodeA.PublicKey()
+	nodeAID := hex.EncodeToString(nodeAPub[:])
+	time.Sleep(250 * time.Millisecond)
+	relayNode.mu.Lock()
+	burst, sustained := relayNode.relayRateLimits()
+	relayNode.relayBuckets[nodeAID] = nat.NewTokenBucket(burst, sustained)
+	relayNode.mu.Unlock()
 
 	firstPayload := bytes.Repeat([]byte("a"), 1024)
 	secondPayload := bytes.Repeat([]byte("b"), 1024)

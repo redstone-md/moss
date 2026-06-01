@@ -120,6 +120,7 @@ type relayLocalSession struct {
 	remotePeerID string
 	established  bool
 	wait         chan struct{}
+	lastSendAt   time.Time
 }
 
 const (
