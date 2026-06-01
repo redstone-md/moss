@@ -9,6 +9,8 @@ import (
 	"moss/internal/gossip"
 )
 
+const relayMigrationGracePeriod = time.Second
+
 func (n *Node) handleRelayRequest(peer *peerConn, env gossip.Envelope) {
 	if env.RelaySession == "" || env.RelaySource == "" || env.RelayTarget == "" {
 		return
@@ -197,9 +199,35 @@ func (n *Node) migrateRelaySessions(peerID string) {
 		}
 	}
 	n.mu.RUnlock()
+	// Always defer the close by a grace period. Tearing the relay session down
+	// the instant a direct connection registers loses any payload still in
+	// flight over the relay — including on a pure receiver, whose lastSendAt is
+	// always zero and would otherwise close immediately.
 	for _, session := range sessions {
-		n.closeRelaySession(session)
+		n.deferRelayMigration(session)
 	}
+}
+
+func (n *Node) deferRelayMigration(session relayLocalSession) {
+	go func() {
+		wait := relayMigrationGracePeriod
+		if !session.lastSendAt.IsZero() {
+			if remaining := relayMigrationGracePeriod - time.Since(session.lastSendAt); remaining > 0 {
+				wait = remaining
+			}
+		}
+		timer := time.NewTimer(wait)
+		defer timer.Stop()
+		<-timer.C
+		n.mu.RLock()
+		started := n.started
+		current, ok := n.relayLocals[session.sessionID]
+		n.mu.RUnlock()
+		if !started || !ok || current.remotePeerID != session.remotePeerID {
+			return
+		}
+		n.closeRelaySession(current)
+	}()
 }
 
 func (n *Node) closeRelaySession(session relayLocalSession) {

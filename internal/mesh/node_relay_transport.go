@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"time"
 
 	"github.com/flynn/noise"
 	"golang.org/x/crypto/chacha20poly1305"
@@ -33,6 +34,12 @@ func (n *Node) sendRelayPayload(sessionID string, data []byte) bool {
 	if !ok || viaPeer == nil || viaPeer.relayed || !session.established {
 		return false
 	}
+	n.mu.Lock()
+	if current, ok := n.relayLocals[sessionID]; ok {
+		current.lastSendAt = time.Now()
+		n.relayLocals[sessionID] = current
+	}
+	n.mu.Unlock()
 	return n.sendDirectEnvelope(viaPeer, gossip.Envelope{
 		Type:         gossip.TypeRelayData,
 		RelaySession: sessionID,
