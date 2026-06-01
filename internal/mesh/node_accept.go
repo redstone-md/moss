@@ -53,7 +53,9 @@ func (n *Node) handleInbound(ctx context.Context, conn net.Conn) {
 			n.enqueueEvent(EventTrackerFailure, map[string]string{"error": fmt.Sprintf("inbound handshake panic: %v", r)})
 		}
 	}()
-	session, err := transport.ServerHandshake(withTimeout(ctx, n.config.HandshakeTimeout()), conn, transport.HandshakeConfig{
+	hsCtx, cancel := withTimeout(ctx, n.config.HandshakeTimeout())
+	defer cancel()
+	session, err := transport.ServerHandshake(hsCtx, conn, transport.HandshakeConfig{
 		MeshID:   n.meshID,
 		PSK:      n.psk,
 		Identity: n.identity,
@@ -99,7 +101,8 @@ func (n *Node) announceAndConnect(ctx context.Context, event bootstrap.Event) {
 		Event:    event,
 		NumWant:  50,
 	}
-	timeoutCtx := withTimeout(ctx, time.Duration(n.config.BootstrapTimeoutSec)*time.Second)
+	timeoutCtx, cancel := withTimeout(ctx, time.Duration(n.config.BootstrapTimeoutSec)*time.Second)
+	defer cancel()
 	peers, err := n.tracker.AnnounceAll(timeoutCtx, n.config.Trackers, req)
 	if err != nil {
 		n.enqueueEvent(EventTrackerFailure, map[string]string{"error": err.Error()})
@@ -204,7 +207,9 @@ func (n *Node) connectPeerOnce(ctx context.Context, addr string, remoteStatic []
 	if err != nil {
 		return err
 	}
-	session, err := transport.ClientHandshake(withTimeout(ctx, n.config.HandshakeTimeout()), conn, transport.HandshakeConfig{
+	hsCtx, cancel := withTimeout(ctx, n.config.HandshakeTimeout())
+	defer cancel()
+	session, err := transport.ClientHandshake(hsCtx, conn, transport.HandshakeConfig{
 		MeshID:       n.meshID,
 		PSK:          n.psk,
 		Identity:     n.identity,
