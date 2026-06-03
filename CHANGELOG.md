@@ -4,6 +4,19 @@ All notable changes to this project are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project
 uses semantic versioning.
 
+## [0.3.1] - 2026-06-03
+
+### Fixed
+- NAT reachability detection no longer infers public reachability from a single
+  reflexive address. The v0.3.0 fast path upgraded any node with a
+  global-unicast external address to `public` + reachable and skipped the
+  inbound probe — but behind NAT the reflexive address is only the NAT's WAN IP,
+  so NATed nodes self-reported "open" and looped on futile direct dials (peer
+  flapping, rapid `peer_joined`/`peer_left`). `applyExternalObservation` now
+  keeps the tentative `public` type but leaves `PublicReachable` to the actual
+  inbound probe, and lets multi-destination binding observations classify
+  `symmetric_nat` (regression tests added).
+
 ## [0.3.0] - 2026-06-02
 
 ### Added
