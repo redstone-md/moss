@@ -1,6 +1,54 @@
 package mesh
 
-import "testing"
+import (
+	"testing"
+	"time"
+
+	"moss/internal/nat"
+)
+
+// A single public reflexive address is only the NAT's WAN IP, not proof of
+// inbound reachability. With no peer to run an inbound probe, the node must not
+// self-report public reachability (regression for the "everyone shows open" NAT
+// misdetection).
+func TestApplyExternalObservationDoesNotClaimReachableWithoutProbe(t *testing.T) {
+	node, err := NewNode("mesh-nat-reachability", nil, DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewNode: %v", err)
+	}
+	node.natProfile.Store(nat.Profile{Type: nat.TypeUnknown})
+
+	node.applyExternalObservation("203.0.113.50:41030", time.Now().Add(time.Second))
+
+	profile := node.natProfile.Load().(nat.Profile)
+	if profile.PublicReachable {
+		t.Fatalf("must not self-report reachable without an inbound probe: %+v", profile)
+	}
+}
+
+// The same node observed from two destinations gets two different mapped ports —
+// the signature of a symmetric NAT — and must be classified as such (and not
+// reachable) so Moss falls back to hole-punch/relay instead of futile direct
+// dials.
+func TestApplyExternalObservationDetectsSymmetricFromVaryingPorts(t *testing.T) {
+	node, err := NewNode("mesh-nat-symmetric", nil, DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewNode: %v", err)
+	}
+	node.natProfile.Store(nat.Profile{Type: nat.TypeUnknown})
+
+	deadline := time.Now().Add(time.Second)
+	node.applyExternalObservation("203.0.113.50:41030", deadline)
+	node.applyExternalObservation("203.0.113.50:41031", deadline)
+
+	profile := node.natProfile.Load().(nat.Profile)
+	if profile.Type != nat.TypeSymmetric {
+		t.Fatalf("expected symmetric NAT from varying mapped ports, got %q", profile.Type)
+	}
+	if profile.PublicReachable {
+		t.Fatalf("symmetric NAT must not be publicly reachable: %+v", profile)
+	}
+}
 
 func TestSameAdvertisedEndpoint(t *testing.T) {
 	tests := []struct {

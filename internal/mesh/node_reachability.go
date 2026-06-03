@@ -112,17 +112,17 @@ func (n *Node) applyExternalObservation(observed string, deadline time.Time) boo
 	observed = preferredExternalAddr(previous.ExternalAddress, observed)
 	profile := n.profiler.WithExternalAddress(previous, observed)
 
-	// Fast-path: if the external address is a global unicast but the type is
-	// still Unknown (e.g. because listen was 0.0.0.0), upgrade immediately —
-	// a public IP from STUN with the same port is proof of direct reachability,
-	// no need for binding observations or peer-based confirmation.
-	var publicFromAddr bool
+	// If the external address is a global unicast but the type is still Unknown
+	// (e.g. because listen was 0.0.0.0), treat it as Public *tentatively*. A
+	// public reflexive IP only reveals the NAT's WAN address — behind any NAT,
+	// STUN returns a public IP — so it is NOT proof of inbound reachability.
+	// Leave PublicReachable for the inbound probe below, and let the binding
+	// observations downgrade to symmetric when the mapped port varies across
+	// destinations.
 	if profile.Type == nat.TypeUnknown {
 		if host, _, err := net.SplitHostPort(profile.ExternalAddress); err == nil {
 			if addr, err := netip.ParseAddr(host); err == nil && addr.IsGlobalUnicast() && !addr.IsPrivate() && !isCarrierGradeAddr(addr) {
 				profile.Type = nat.TypePublic
-				profile.PublicReachable = true
-				publicFromAddr = true
 			}
 		}
 	}
@@ -132,7 +132,7 @@ func (n *Node) applyExternalObservation(observed string, deadline time.Time) boo
 	bindingHistory := append([]string(nil), n.bindingHistory...)
 	n.mu.Unlock()
 	profile = n.profiler.WithBindingObservations(profile, bindingHistory)
-	if !publicFromAddr && requiresReachabilityConfirmation(observed) && !profile.PublicReachable {
+	if requiresReachabilityConfirmation(observed) && !profile.PublicReachable {
 		profile = n.profiler.WithReachability(profile, n.confirmReachability(observed, deadline))
 	}
 	n.natProfile.Store(profile)
