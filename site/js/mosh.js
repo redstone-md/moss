@@ -5,6 +5,15 @@ import { MossRTC, loadMossNode } from "./moss-rtc.js";
 const $ = (id) => document.getElementById(id);
 const log = $("log");
 
+// Restore last-used connection settings (and allow ?signal=&mesh=&channel=).
+(function restore() {
+  const q = new URLSearchParams(location.search);
+  ["signal", "mesh", "channel"].forEach((k) => {
+    const v = q.get(k) || (() => { try { return localStorage.getItem("mosh-" + k); } catch { return null; } })();
+    if (v) $(k).value = v;
+  });
+})();
+
 function line(html, cls = "") {
   const div = document.createElement("div");
   div.className = cls;
@@ -27,6 +36,11 @@ async function join() {
   const mesh = $("mesh").value.trim();
   const channel = $("channel").value.trim();
   if (!signalUrl || !mesh || !channel) return;
+  try {
+    localStorage.setItem("mosh-signal", signalUrl);
+    localStorage.setItem("mosh-mesh", mesh);
+    localStorage.setItem("mosh-channel", channel);
+  } catch {}
 
   $("status").textContent = "loading wasm…";
   await loadMossNode("./moss-node.wasm");

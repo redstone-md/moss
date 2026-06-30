@@ -37,12 +37,40 @@ function parseGateways() {
     .split(",").map((s) => s.trim().replace(/\/+$/, "")).filter(Boolean);
 }
 
+// initialGateways: ?gateways= query wins (shareable links), then the last saved
+// choice, else empty — never a hardcoded host that won't exist for a visitor.
+function initialGateways() {
+  const q = new URLSearchParams(location.search).get("gateways");
+  if (q) return q;
+  try { return localStorage.getItem("moss-gateways") || ""; } catch { return ""; }
+}
+
+// isBlockedMixedContent flags an http:// gateway requested from an https page.
+// Browsers allow http://localhost / 127.0.0.1 from secure contexts, but block
+// other plaintext origins as mixed content.
+function isBlockedMixedContent(gw) {
+  if (location.protocol !== "https:") return false;
+  if (!gw.startsWith("http://")) return false;
+  return !/^http:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(gw);
+}
+
 function connect() {
   state.sources.forEach((s) => s.close());
   state.sources = [];
   state.statsByGw = {};
   state.chainByGw = {};
   state.gateways = parseGateways();
+
+  try { localStorage.setItem("moss-gateways", state.gateways.join(",")); } catch {}
+
+  if (state.gateways.length === 0) {
+    setVerdict("unknown", "no gateway configured — run `moss-gateway` and enter its URL, or point at a public one");
+    return;
+  }
+  const blocked = state.gateways.filter(isBlockedMixedContent);
+  if (blocked.length) {
+    setVerdict("bad", `blocked: ${blocked.length} http gateway on an https page (use https, or http://localhost)`);
+  }
 
   state.gateways.forEach(async (gw) => {
     try {
@@ -219,4 +247,13 @@ function bytes(n) {
 function escapeHtml(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
 
 document.getElementById("connect").addEventListener("click", connect);
-initWasm().then(() => { render(); connect(); }).catch((e) => setVerdict("bad", "failed to load wasm: " + e));
+document.getElementById("gateways").value = initialGateways();
+initWasm()
+  .then(() => {
+    if (document.getElementById("gateways").value.trim()) {
+      connect();
+    } else {
+      setVerdict("unknown", "no gateway configured — run `moss-gateway` and enter its URL above (http://localhost works even here), or point at a public gateway");
+    }
+  })
+  .catch((e) => setVerdict("bad", "failed to load wasm: " + e));
