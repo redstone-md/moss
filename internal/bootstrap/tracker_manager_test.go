@@ -111,26 +111,11 @@ func TestManagerPrefersHealthyTrackersOnNextAnnounce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second AnnounceAll failed: %v", err)
 	}
-	// Early-return: we get at least one peer from a healthy tracker; both are valid.
-	validPeers := map[string]bool{"198.51.100.20:4000": true, "198.51.100.21:4000": true}
-	if len(peers) == 0 {
-		t.Fatal("expected at least one peer from healthy trackers on second announce")
+	if !reflect.DeepEqual(peers, []string{"198.51.100.20:4000", "198.51.100.21:4000"}) {
+		t.Fatalf("unexpected peers %#v", peers)
 	}
-	for _, p := range peers {
-		if !validPeers[p] {
-			t.Fatalf("unexpected peer %q (want only peers from b or c), got %#v", p, peers)
-		}
-	}
-	// Early-return may cancel the sender before all trackers are dispatched;
-	// what matters is that the returned peer came from a healthy tracker (b or c).
-	calls := udp.Calls()
-	if len(calls) == 0 {
-		t.Fatal("expected at least one tracker to be queried on second announce")
-	}
-	for _, call := range calls {
-		if call != "udp://tracker-a/announce" && call != "udp://tracker-b/announce" && call != "udp://tracker-c/announce" {
-			t.Fatalf("unexpected tracker called: %q", call)
-		}
+	if calls := udp.Calls(); len(calls) != 3 {
+		t.Fatalf("expected all trackers to be queried, got %#v", calls)
 	}
 }
 
@@ -154,19 +139,11 @@ func TestManagerAnnounceAllMergesPeersAcrossSuccessfulTrackers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AnnounceAll failed: %v", err)
 	}
-	// Early-return: we get a peer from whichever tracker responds first; both are valid.
-	validPeers := map[string]bool{"198.51.100.10:7000": true, "203.0.113.66:6000": true}
-	if len(peers) == 0 {
-		t.Fatalf("expected at least one peer, got none")
+	if !reflect.DeepEqual(peers, []string{"198.51.100.10:7000", "203.0.113.66:6000"}) {
+		t.Fatalf("expected merged tracker peers, got %#v", peers)
 	}
-	for _, p := range peers {
-		if !validPeers[p] {
-			t.Fatalf("unexpected peer %q, got %#v", p, peers)
-		}
-	}
-	// Early-return may stop the sender before the second tracker is dispatched.
-	if calls := udp.Calls(); len(calls) == 0 {
-		t.Fatalf("expected at least one tracker to be queried, got %#v", calls)
+	if calls := udp.Calls(); len(calls) != 2 {
+		t.Fatalf("expected both trackers to be queried, got %#v", calls)
 	}
 }
 
@@ -198,19 +175,11 @@ func TestManagerAnnounceAllHealthOrderingDoesNotStarveUnknownTrackers(t *testing
 	if err != nil {
 		t.Fatalf("second AnnounceAll failed: %v", err)
 	}
-	// Early-return: we get a peer from whichever tracker responds first; both are valid.
-	validPeers := map[string]bool{"198.51.100.10:7000": true, "203.0.113.66:6000": true}
-	if len(peers) == 0 {
-		t.Fatalf("expected at least one peer after health ordering, got none")
+	if !reflect.DeepEqual(peers, []string{"198.51.100.10:7000", "203.0.113.66:6000"}) {
+		t.Fatalf("expected merged tracker peers after health ordering, got %#v", peers)
 	}
-	for _, p := range peers {
-		if !validPeers[p] {
-			t.Fatalf("unexpected peer %q after health ordering, got %#v", p, peers)
-		}
-	}
-	// Early-return may stop the sender before the second tracker is dispatched.
-	if calls := udp.Calls(); len(calls) == 0 {
-		t.Fatalf("expected at least one tracker to be queried after health ordering, got %#v", calls)
+	if calls := udp.Calls(); len(calls) != 2 || !containsTrackerCall(calls, "udp://honest-tracker/announce") {
+		t.Fatalf("expected health ordering to keep querying honest tracker, got %#v", calls)
 	}
 }
 
@@ -270,50 +239,6 @@ func containsTrackerCall(calls []string, want string) bool {
 		}
 	}
 	return false
-}
-
-type scriptedAnnouncer struct {
-	fast    string // tracker URL that returns peers immediately
-	peers   []string
-	blockMS time.Duration // others block this long (simulate dead/blocked tracker)
-}
-
-func (s *scriptedAnnouncer) Announce(ctx context.Context, trackerURL string, _ AnnounceRequest) ([]string, error) {
-	if trackerURL == s.fast {
-		return s.peers, nil
-	}
-	select {
-	case <-time.After(s.blockMS):
-		return nil, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-}
-
-func TestAnnounceAllReturnsBeforeSlowTrackers(t *testing.T) {
-	a := &scriptedAnnouncer{
-		fast:    "udp://fast.example:1/announce",
-		peers:   []string{"1.2.3.4:5"},
-		blockMS: 10 * time.Second,
-	}
-	m := &Manager{HTTP: a, UDP: a, maxConcurrent: 5, state: map[string]trackerState{}}
-	trackers := []string{
-		"udp://slow1.example:1/announce",
-		"udp://fast.example:1/announce",
-		"udp://slow2.example:1/announce",
-	}
-	start := time.Now()
-	peers, err := m.AnnounceAll(context.Background(), trackers, AnnounceRequest{})
-	elapsed := time.Since(start)
-	if err != nil {
-		t.Fatalf("announce: %v", err)
-	}
-	if len(peers) == 0 {
-		t.Fatal("expected peers from fast tracker")
-	}
-	if elapsed > 2*time.Second {
-		t.Fatalf("AnnounceAll waited on slow trackers: %v", elapsed)
-	}
 }
 
 type blockingTrackerClient struct {
@@ -394,10 +319,10 @@ func TestManagerAnnounceAllLimitsConcurrentTrackers(t *testing.T) {
 	if !reflect.DeepEqual(peers, []string{"198.51.100.10:4000"}) {
 		t.Fatalf("unexpected peers %#v", peers)
 	}
-	_, maxActive := client.Snapshot()
-	// Early-return: we stop dispatching once peers are found, so not every tracker
-	// is necessarily queried. The key invariant is that concurrency never exceeds
-	// maxConcurrent.
+	calls, maxActive := client.Snapshot()
+	if calls != len(trackers) {
+		t.Fatalf("expected every tracker to be queried, got %d", calls)
+	}
 	if maxActive > manager.maxConcurrent {
 		t.Fatalf("expected at most %d concurrent announces, saw %d", manager.maxConcurrent, maxActive)
 	}
@@ -525,5 +450,49 @@ func TestManagerAnnounceAllReturnsLastErrorWhenAllTrackersFail(t *testing.T) {
 	calls := udp.Calls()
 	if len(calls) != 3 {
 		t.Fatalf("expected every tracker to be attempted, got %#v", calls)
+	}
+}
+
+type scriptedAnnouncer struct {
+	fast    string // tracker URL that returns peers immediately
+	peers   []string
+	blockMS time.Duration // others block this long (simulate dead/blocked tracker)
+}
+
+func (s *scriptedAnnouncer) Announce(ctx context.Context, trackerURL string, _ AnnounceRequest) ([]string, error) {
+	if trackerURL == s.fast {
+		return s.peers, nil
+	}
+	select {
+	case <-time.After(s.blockMS):
+		return nil, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func TestAnnounceAllReturnsBeforeSlowTrackers(t *testing.T) {
+	a := &scriptedAnnouncer{
+		fast:    "udp://fast.example:1/announce",
+		peers:   []string{"1.2.3.4:5"},
+		blockMS: 10 * time.Second,
+	}
+	m := &Manager{HTTP: a, UDP: a, maxConcurrent: 5, state: map[string]trackerState{}}
+	trackers := []string{
+		"udp://slow1.example:1/announce",
+		"udp://fast.example:1/announce",
+		"udp://slow2.example:1/announce",
+	}
+	start := time.Now()
+	peers, err := m.AnnounceAll(context.Background(), trackers, AnnounceRequest{})
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("announce: %v", err)
+	}
+	if len(peers) == 0 {
+		t.Fatal("expected peers from fast tracker")
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("AnnounceAll waited on slow trackers: %v", elapsed)
 	}
 }
