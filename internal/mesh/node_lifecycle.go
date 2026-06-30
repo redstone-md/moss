@@ -145,6 +145,15 @@ func (n *Node) Start() int32 {
 			n.rememberTrackerSeeds(addrs)
 		}
 	}()
+	if n.config.DHTEnabled {
+		if src, err := startDHTSource(n.infoHash, n.config.DHTPort, func(addrs []string) {
+			n.rememberTrackerSeeds(addrs)
+			n.kickBootstrapPeers(ctx, addrs)
+		}); err == nil {
+			n.dht = src
+		}
+		// DHT is best-effort: a bind failure must not fail Start.
+	}
 	return MOSS_OK
 }
 
@@ -161,6 +170,8 @@ func (n *Node) Stop() int32 {
 	udpListener := n.udpListener
 	portMapper := n.portMapper
 	n.portMapper = nil
+	dhtSrc := n.dht
+	n.dht = nil
 	peers := make([]*peerConn, 0, len(n.peers))
 	for _, peer := range n.peers {
 		peers = append(peers, peer)
@@ -176,6 +187,9 @@ func (n *Node) Stop() int32 {
 	}
 	if portMapper != nil {
 		portMapper.Close()
+	}
+	if dhtSrc != nil {
+		dhtSrc.Close()
 	}
 	for _, peer := range peers {
 		if peer.session != nil {
