@@ -5,14 +5,14 @@ GO ?= go
 test:
 	$(GO) test ./...
 
-# Build the full static site (landing + explorer + mosh-web): Tailwind CSS,
-# both wasm bundles, and the wasm runtime loader, all staged under ./site.
+# Build the full static site (landing + explorer + showcase + docs) with Vite.
+# Stages the wasm verifier and its loader into site/public, then bundles to
+# site/dist.
 site:
 	npm install
-	npm run build:css
-	GOOS=js GOARCH=wasm $(GO) build -o site/moss.wasm ./cmd/moss-wasm
-	GOOS=js GOARCH=wasm $(GO) build -o site/moss-node.wasm ./cmd/moss-node-wasm
-	cp "$$($(GO) env GOROOT)/lib/wasm/wasm_exec.js" site/wasm_exec.js
+	GOOS=js GOARCH=wasm $(GO) build -o site/public/moss.wasm ./cmd/moss-wasm
+	cp "$$($(GO) env GOROOT)/lib/wasm/wasm_exec.js" site/public/wasm_exec.js
+	npm run build
 
 # Build the read-only telemetry gateway binary.
 gateway:

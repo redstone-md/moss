@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="signal">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Ecosystem — built on Moss</title>
+  <meta name="description" content="Projects and integrations built on the Moss mesh. Submit yours via a GitHub issue." />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <script>(function(){var t;try{t=localStorage.getItem("moss-theme")}catch(e){}if(t!=="signal"&&t!=="light")t="signal";document.documentElement.setAttribute("data-theme",t)})();</script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;800;900&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+</head>
+<body class="min-h-screen">
+
+  <header class="sticky top-0 z-50 border-b border-line/50 bg-bg/70 backdrop-blur-xl">
+    <nav class="mx-auto flex max-w-7xl items-center justify-between px-6 py-3.5">
+      <a href="/" class="flex items-center gap-2.5">
+        <span class="grid h-8 w-8 place-items-center rounded-lg border border-line bg-surface text-accent">❖</span>
+        <span class="font-display text-lg font-extrabold tracking-tightest">moss</span>
+      </a>
+      <div class="hidden items-center gap-8 md:flex">
+        <a href="/" class="nav-link">home</a>
+        <a href="/docs.html" class="nav-link">docs</a>
+        <a href="/explorer.html" class="nav-link">explorer</a>
+        <a href="/showcase.html" class="nav-link text-ink">ecosystem</a>
+        <a href="https://github.com/redstone-md/moss" class="nav-link">source</a>
+      </div>
+      <button data-theme-toggle class="chip hover:border-accent/50" title="switch theme">
+        <span class="h-2 w-2 rounded-full bg-accent"></span><span data-theme-label>signal</span>
+      </button>
+    </nav>
+  </header>
+
+  <main class="mx-auto max-w-7xl px-6 py-16">
+    <header class="mb-12 max-w-2xl">
+      <p class="eyebrow mb-3">ecosystem</p>
+      <h1 class="font-display text-5xl font-black tracking-tightest md:text-6xl">built on moss</h1>
+      <p class="mt-4 text-muted">Applications and reference integrations running on the mesh. Hover a row to see it light up — click through to the source.</p>
+    </header>
+
+    <!-- flowing menu (rendered by showcase.js) -->
+    <div id="flow"></div>
+
+    <!-- submit -->
+    <section class="mt-16 grid gap-6 rounded-2xl border border-line bg-surface/60 p-8 md:grid-cols-[1.4fr_1fr] md:items-center">
+      <div>
+        <h2 class="font-display text-2xl font-bold tracking-tight">Built something on Moss?</h2>
+        <p class="mt-2 text-sm text-muted">Add it to the ecosystem. Open a GitHub issue with your project's name, a one-line description, a link, and how it uses Moss. We review and merge it into this page.</p>
+      </div>
+      <div class="flex md:justify-end">
+        <a id="submit" class="btn-accent" href="https://github.com/redstone-md/moss/issues/new">submit your project →</a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="border-t border-line/60">
+    <div class="mx-auto flex max-w-7xl flex-col items-center justify-between gap-4 px-6 py-10 text-sm text-muted md:flex-row">
+      <div class="flex items-center gap-2"><span class="text-accent">❖</span> moss · MIT</div>
+      <div class="flex items-center gap-6">
+        <a href="/docs.html" class="nav-link">docs</a>
+        <a href="/explorer.html" class="nav-link">explorer</a>
+        <a href="https://github.com/redstone-md/moss" class="nav-link">github</a>
+      </div>
+    </div>
+  </footer>
+
+  <script type="module" src="/src/js/showcase.js"></script>
+</body>
+</html>

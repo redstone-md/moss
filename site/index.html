@@ -5,36 +5,33 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Moss — a peer-to-peer mesh with nothing in the middle</title>
   <meta name="description" content="Moss is an embeddable P2P mesh runtime: serverless discovery, Noise-encrypted transport, and a full peer that runs in the browser over WebRTC." />
-  <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <script>(function(){var t;try{t=localStorage.getItem("moss-theme")}catch(e){}if(t!=="signal"&&t!=="light")t="signal";document.documentElement.setAttribute("data-theme",t)})();</script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;800;900&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="./dist/app.css" />
-  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
-  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/ScrollTrigger.min.js"></script>
 </head>
 <body class="min-h-screen overflow-x-hidden">
 
-  <!-- nav -->
   <header class="fixed inset-x-0 top-0 z-50 border-b border-line/40 bg-bg/60 backdrop-blur-xl">
     <nav class="mx-auto flex max-w-7xl items-center justify-between px-6 py-3.5">
-      <a href="./" class="flex items-center gap-2.5">
+      <a href="/" class="flex items-center gap-2.5">
         <span class="grid h-8 w-8 place-items-center rounded-lg border border-line bg-surface text-accent">❖</span>
         <span class="font-display text-lg font-extrabold tracking-tightest">moss</span>
       </a>
       <div class="hidden items-center gap-8 md:flex">
         <a href="#what" class="nav-link">what</a>
         <a href="#how" class="nav-link">protocol</a>
-        <a href="./explorer.html" class="nav-link">explorer</a>
-        <a href="./mosh.html" class="nav-link">mosh-web</a>
+        <a href="/docs.html" class="nav-link">docs</a>
+        <a href="/explorer.html" class="nav-link">explorer</a>
+        <a href="/showcase.html" class="nav-link">ecosystem</a>
         <a href="https://github.com/redstone-md/moss" class="nav-link">source</a>
       </div>
       <div class="flex items-center gap-2">
         <button data-theme-toggle class="chip hover:border-accent/50" title="switch theme">
           <span class="h-2 w-2 rounded-full bg-accent"></span><span data-theme-label>signal</span>
         </button>
-        <a href="./explorer.html" class="btn-accent hidden sm:inline-flex">live network</a>
+        <a href="/explorer.html" class="btn-accent hidden sm:inline-flex">live network</a>
       </div>
     </nav>
   </header>
@@ -51,12 +48,12 @@
       </h1>
       <p data-anim class="mt-7 max-w-xl text-lg text-muted">
         Moss is an embeddable networking core. Peers find each other with no
-        dedicated infrastructure, talk over Noise-encrypted channels, and — now —
-        run as a full peer inside the browser.
+        dedicated infrastructure, talk over Noise-encrypted channels, and run
+        anywhere — down to a full peer inside the browser.
       </p>
       <div data-anim class="mt-9 flex flex-wrap items-center gap-3">
-        <a href="./explorer.html" class="btn-accent">explore the live network</a>
-        <a href="./mosh.html" class="btn-ghost">run a peer in your browser</a>
+        <a href="/explorer.html" class="btn-accent">explore the live network</a>
+        <a href="/docs.html" class="btn-ghost">read the docs</a>
       </div>
       <div data-anim class="mt-12 flex flex-wrap gap-2.5">
         <span class="chip">Noise XX · ChaCha20-Poly1305</span>
@@ -81,8 +78,6 @@
       </div>
 
       <div class="grid auto-rows-[minmax(0,1fr)] grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-
-        <!-- code tile -->
         <article data-anim class="tile lg:col-span-2 lg:row-span-2">
           <div class="mb-4 flex items-center justify-between">
             <span class="eyebrow">self-verifying telemetry</span>
@@ -97,58 +92,52 @@ Moss_GetNetworkStats() <span class="text-accent">→</span>
   epoch_digest: <span class="text-accent">"24bf70…d9e1ce"</span>,
   prev_digest:  <span class="text-accent">"a1f0…0000"</span>   <span class="text-muted/60">// hash-chained</span>
 <span class="text-ink">}</span></pre>
-          <p class="mt-4 text-sm text-muted">A gossiped, hash-chained CRDT reports the network's size and health without naming a single peer. Counts use HyperLogLog; bandwidth carries differential-privacy noise. Anyone recomputes and verifies it — there is no collector to trust.</p>
+          <p class="mt-4 text-sm text-muted">A gossiped, hash-chained CRDT reports the network's size and health without naming a single peer. Counts use HyperLogLog; bandwidth carries differential-privacy noise. Anyone recomputes and verifies it — there is no collector to trust. <a href="/docs.html#telemetry" class="text-accent hover:underline">How it works →</a></p>
         </article>
 
-        <!-- serverless -->
         <article data-anim class="tile">
           <div class="font-display text-6xl font-black tracking-tightest text-ink">0</div>
           <div class="mt-1 text-sm font-semibold">dedicated servers</div>
           <p class="mt-2 text-sm text-muted">Discovery rides public BitTorrent trackers, the DHT, and WebRTC signaling rooms. Connectivity is peer-promoted.</p>
         </article>
 
-        <!-- encrypted -->
         <article data-anim class="tile">
           <span class="eyebrow">transport</span>
           <h3 class="mt-2 font-display text-xl font-bold">Encrypted &amp; obfuscated</h3>
           <p class="mt-2 text-sm text-muted">Every session is a Noise XX handshake with identity binding. UDP is wrapped to look like noise on the wire, resisting DPI fingerprinting.</p>
         </article>
 
-        <!-- browser-native (wide) -->
         <article data-anim class="tile lg:col-span-2">
           <div class="flex items-start justify-between gap-4">
             <div>
-              <span class="eyebrow">mosh-web</span>
+              <span class="eyebrow">browser-native</span>
               <h3 class="mt-2 font-display text-xl font-bold">A full peer, in a tab</h3>
-              <p class="mt-2 max-w-md text-sm text-muted">Compiled to WebAssembly, Moss runs the encrypted transport and gossip over WebRTC DataChannels — no install, no plugin, no server in the data path.</p>
+              <p class="mt-2 max-w-md text-sm text-muted">Compiled to WebAssembly, Moss runs the encrypted transport and gossip over WebRTC DataChannels — no install, no server in the data path.</p>
             </div>
-            <a href="./mosh.html" class="btn-ghost shrink-0">open →</a>
+            <a href="/docs.html#browser" class="btn-ghost shrink-0">docs →</a>
           </div>
         </article>
 
-        <!-- NAT -->
         <article data-anim class="tile">
           <span class="eyebrow">connectivity</span>
           <h3 class="mt-2 font-display text-xl font-bold">Reaches hard NATs</h3>
           <p class="mt-2 text-sm text-muted">Autonomous hole-punching with supernode relay fallback crosses full-cone, symmetric, and carrier-grade NAT.</p>
         </article>
 
-        <!-- embeddable -->
         <article data-anim class="tile">
           <span class="eyebrow">integration</span>
           <h3 class="mt-2 font-display text-xl font-bold">Embeddable core</h3>
           <p class="mt-2 text-sm text-muted">One small C ABI exports the runtime to C, C++, C#, Python, and Rust. Or target <span class="font-mono text-accent">js/wasm</span>.</p>
         </article>
-
       </div>
     </div>
   </section>
 
-  <!-- protocol / how -->
+  <!-- protocol -->
   <section id="how" class="border-t border-line/60">
     <div class="mx-auto max-w-7xl px-6 py-24">
       <h2 data-anim class="mb-3 font-display text-4xl font-extrabold tracking-tightest md:text-5xl">the protocol, end to end</h2>
-      <p data-anim class="mb-12 max-w-xl text-sm text-muted">Four stages take a node from zero knowledge to a verified view of the whole network.</p>
+      <p data-anim class="mb-12 max-w-xl text-sm text-muted">Four stages take a node from zero knowledge to a verified view of the whole network. <a href="/docs.html" class="text-accent hover:underline">Full documentation →</a></p>
 
       <ol class="grid grid-cols-1 gap-px overflow-hidden rounded-2xl border border-line bg-line md:grid-cols-2 lg:grid-cols-4">
         <li data-anim class="bg-surface p-6">
@@ -174,25 +163,24 @@ Moss_GetNetworkStats() <span class="text-accent">→</span>
       </ol>
 
       <div data-anim class="mt-10 flex flex-wrap gap-3">
-        <a href="./explorer.html" class="btn-accent">open the explorer</a>
-        <a href="https://github.com/redstone-md/moss" class="btn-ghost">read the spec</a>
+        <a href="/explorer.html" class="btn-accent">open the explorer</a>
+        <a href="/showcase.html" class="btn-ghost">see who builds on moss</a>
       </div>
     </div>
   </section>
 
-  <!-- footer -->
   <footer class="border-t border-line/60">
     <div class="mx-auto flex max-w-7xl flex-col items-center justify-between gap-4 px-6 py-10 text-sm text-muted md:flex-row">
       <div class="flex items-center gap-2"><span class="text-accent">❖</span> moss · MIT</div>
       <div class="flex items-center gap-6">
-        <a href="./explorer.html" class="nav-link">explorer</a>
-        <a href="./mosh.html" class="nav-link">mosh-web</a>
+        <a href="/docs.html" class="nav-link">docs</a>
+        <a href="/explorer.html" class="nav-link">explorer</a>
+        <a href="/showcase.html" class="nav-link">ecosystem</a>
         <a href="https://github.com/redstone-md/moss" class="nav-link">github</a>
       </div>
     </div>
   </footer>
 
-  <script type="module" src="./js/landing.js"></script>
-  <script defer src="./js/theme.js"></script>
+  <script type="module" src="/src/js/landing.js"></script>
 </body>
 </html>

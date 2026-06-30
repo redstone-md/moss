@@ -6,9 +6,10 @@ on:
     paths:
       - "site/**"
       - "cmd/moss-wasm/**"
-      - "cmd/moss-node-wasm/**"
       - "internal/**"
+      - "vite.config.mjs"
       - "tailwind.config.js"
+      - "postcss.config.js"
       - "package.json"
       - "package-lock.json"
       - ".github/workflows/pages.yml"
@@ -19,7 +20,6 @@ permissions:
   pages: write
   id-token: write
 
-# Allow one concurrent deployment; newer pushes cancel in-progress runs.
 concurrency:
   group: pages
   cancel-in-progress: true
@@ -41,21 +41,20 @@ jobs:
           node-version: 20
           cache: npm
 
-      - name: Build Tailwind CSS
+      - name: Build wasm verifier + loader into public
+        run: |
+          GOOS=js GOARCH=wasm go build -o site/public/moss.wasm ./cmd/moss-wasm
+          cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" site/public/wasm_exec.js
+
+      - name: Build site (Vite)
         run: |
           npm ci
-          npm run build:css
-
-      - name: Build WebAssembly bundles
-        run: |
-          GOOS=js GOARCH=wasm go build -o site/moss.wasm ./cmd/moss-wasm
-          GOOS=js GOARCH=wasm go build -o site/moss-node.wasm ./cmd/moss-node-wasm
-          cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" site/wasm_exec.js
+          npm run build
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: site
+          path: site/dist
 
   deploy:
     needs: build

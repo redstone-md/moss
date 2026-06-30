@@ -16,9 +16,10 @@ examples/python_chat/.state/
 .state/
 __pycache__/
 *.pyc
-# Web build artifacts (produced by `npm run build:css` + wasm builds / CI)
+
+# Web build artifacts (produced by Vite + wasm builds / CI)
 node_modules/
 site/dist/
-site/moss.wasm
-site/moss-node.wasm
-site/wasm_exec.js
+site/public/moss.wasm
+site/public/moss-node.wasm
+site/public/wasm_exec.js

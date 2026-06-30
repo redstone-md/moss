@@ -57,10 +57,12 @@ function compile(gl, type, src) {
   return s;
 }
 
+const FALLBACK = { "--c-bg": [8, 9, 12], "--c-accent": [90, 200, 250], "--c-accent2": [155, 140, 255], "--c-ember": [255, 180, 84] };
 function rgbVar(name) {
   const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-  const [r, g, b] = v.split(/\s+/).map(Number);
-  return [r / 255, g / 255, b / 255];
+  let parts = v.split(/\s+/).map(Number);
+  if (parts.length !== 3 || parts.some((n) => Number.isNaN(n))) parts = FALLBACK[name] || [0, 0, 0];
+  return [parts[0] / 255, parts[1] / 255, parts[2] / 255];
 }
 
 export function initShader(canvas) {

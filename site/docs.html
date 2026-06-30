@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="signal">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Docs — Moss</title>
+  <meta name="description" content="How Moss works: discovery, encrypted transport, gossip routing, NAT traversal, privacy-preserving telemetry, the browser runtime, and the FFI/API." />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <script>(function(){var t;try{t=localStorage.getItem("moss-theme")}catch(e){}if(t!=="signal"&&t!=="light")t="signal";document.documentElement.setAttribute("data-theme",t)})();</script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;800;900&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+</head>
+<body class="min-h-screen">
+
+  <header class="sticky top-0 z-50 border-b border-line/50 bg-bg/70 backdrop-blur-xl">
+    <nav class="mx-auto flex max-w-7xl items-center justify-between px-6 py-3.5">
+      <a href="/" class="flex items-center gap-2.5">
+        <span class="grid h-8 w-8 place-items-center rounded-lg border border-line bg-surface text-accent">❖</span>
+        <span class="font-display text-lg font-extrabold tracking-tightest">moss<span class="text-muted"> / docs</span></span>
+      </a>
+      <div class="hidden items-center gap-8 md:flex">
+        <a href="/" class="nav-link">home</a>
+        <a href="/docs.html" class="nav-link text-ink">docs</a>
+        <a href="/explorer.html" class="nav-link">explorer</a>
+        <a href="/showcase.html" class="nav-link">ecosystem</a>
+        <a href="https://github.com/redstone-md/moss" class="nav-link">source</a>
+      </div>
+      <button data-theme-toggle class="chip hover:border-accent/50" title="switch theme">
+        <span class="h-2 w-2 rounded-full bg-accent"></span><span data-theme-label>signal</span>
+      </button>
+    </nav>
+  </header>
+
+  <div class="mx-auto grid max-w-7xl gap-10 px-6 py-12 lg:grid-cols-[220px_1fr]">
+    <!-- TOC -->
+    <aside class="hidden lg:block">
+      <nav class="doc-toc sticky top-24">
+        <p class="eyebrow mb-3">contents</p>
+        <a href="#overview">Overview</a>
+        <a href="#quickstart">Quick start</a>
+        <a href="#architecture">Architecture</a>
+        <a href="#discovery">Discovery</a>
+        <a href="#transport">Transport &amp; crypto</a>
+        <a href="#routing">Routing</a>
+        <a href="#nat">NAT traversal</a>
+        <a href="#telemetry">Telemetry</a>
+        <a href="#explorer">Explorer</a>
+        <a href="#browser">Browser runtime</a>
+        <a href="#ffi">FFI / API</a>
+        <a href="#config">Configuration</a>
+        <a href="#ops">Running services</a>
+      </nav>
+    </aside>
+
+    <!-- content -->
+    <article class="prose-moss max-w-3xl">
+      <h1 class="font-display text-4xl font-black tracking-tightest text-ink">Documentation</h1>
+      <p class="mt-3">How Moss works, end to end — and how to build on it. Every heading is linkable; copy the anchor from your address bar to deep-link a section.</p>
+
+      <h2 id="overview">Overview</h2>
+      <p>Moss is a zero-infrastructure peer-to-peer mesh runtime written in Go and compiled to a C-shared library (<code>.dll</code>/<code>.so</code>/<code>.dylib</code>) or to WebAssembly. It gives an application a decentralized data-exchange mesh: peers discover each other without dedicated servers, authenticate and encrypt every link, and route messages over topic-based pub/sub.</p>
+      <p>The defining constraint is the absence of central infrastructure. There is no bootstrap server, no STUN/TURN you operate, and no account system — connectivity is produced by the peers themselves.</p>
+
+      <h2 id="quickstart">Quick start</h2>
+      <p>Build the shared runtime and embed it through the FFI, or build a service binary:</p>
+      <pre><code># shared library (Linux / Windows / macOS)
+CGO_ENABLED=1 go build -buildmode=c-shared -o moss.dll ./cmd/moss-ffi
+
+# a telemetry gateway (node + read-only HTTP API)
+go build -o moss-gateway ./cmd/moss-gateway
+./moss-gateway -mesh my-mesh -http 127.0.0.1:8787</code></pre>
+      <p>Two nodes on one host with telemetry on will discover each other (LAN beacons) and converge to the same network snapshot.</p>
+
+      <h2 id="architecture">Architecture</h2>
+      <p>The core is layered so lower packages never depend on the orchestrator:</p>
+      <ul>
+        <li><code>internal/crypto</code> — identities and key derivation (Ed25519, X25519, HKDF, BLAKE2s).</li>
+        <li><code>internal/transport</code> — Noise handshake and encrypted sessions over a byte-oriented carrier.</li>
+        <li><code>internal/gossip</code> — pub/sub envelopes, message cache, peer scoring.</li>
+        <li><code>internal/bootstrap</code> — tracker clients and infohash derivation.</li>
+        <li><code>internal/nat</code> — NAT profiling, mapping, relay primitives.</li>
+        <li><code>internal/stat</code> — the privacy-preserving telemetry CRDT and hash chain.</li>
+        <li><code>internal/mesh</code> — the <code>Node</code> that composes them all.</li>
+      </ul>
+
+      <h2 id="discovery">Discovery &amp; bootstrapping</h2>
+      <p>A node derives a private infohash from <code>HKDF(mesh_id, psk)</code> and uses it as a rendezvous key. It announces and queries through several independent channels:</p>
+      <ul>
+        <li><strong>BitTorrent trackers</strong> — BEP 15 (UDP) and BEP 3 (HTTP) announces.</li>
+        <li><strong>Mainline DHT</strong> — periodic announce/lookup on a dedicated socket.</li>
+        <li><strong>LAN beacons</strong> — UDP multicast for same-network peers.</li>
+        <li><strong>WebRTC signaling</strong> — for browser peers (no UDP/DHT available there).</li>
+      </ul>
+      <p>The PSK gates discovery: meshes can't be enumerated without it.</p>
+
+      <h2 id="transport">Transport &amp; cryptography</h2>
+      <p>Every session is a Noise XX handshake, suite <code>25519_ChaChaPoly_BLAKE2s</code>, with the peer's Ed25519 identity bound to its Noise static key and the mesh id. Traffic is sealed with ChaCha20-Poly1305. On UDP, datagrams are wrapped by a keyed scramble codec so they look like random noise on the wire, resisting DPI fingerprinting — this is obfuscation, not the security boundary (Noise is).</p>
+
+      <h2 id="routing">Routing (pub/sub)</h2>
+      <p>Messages flow over a GossipSub v1.1-inspired mesh: topic subscriptions form a peer mesh (degree <code>D=6</code>), publishes flood to eligible peers, and lazy <code>IHAVE</code>/<code>IWANT</code> gossip plus <code>IDONTWANT</code> suppression amortize duplicates. Peer scoring resists Sybil/eclipse behavior; a BLAKE2s message id deduplicates via a TTL cache.</p>
+
+      <h2 id="nat">NAT traversal</h2>
+      <p>Moss profiles the local NAT (public, full-cone, restricted, port-restricted, symmetric, CGNAT) from STUN observations and binding behavior. It attempts UDP hole-punching, and falls back to relaying through peer-promoted supernodes when a direct path is impossible. Reachability is only ever asserted after a real inbound probe — a public reflexive address alone never marks a node "open", so CGNAT nodes are classified correctly and never promoted to supernodes.</p>
+
+      <h2 id="telemetry">Telemetry (privacy-preserving)</h2>
+      <p>Opt-in (<code>telemetry.enabled</code>). Nodes gossip a per-epoch CRDT that yields a self-verifying snapshot of the whole network without naming any peer:</p>
+      <ul>
+        <li><strong>Node count</strong> — a HyperLogLog sketch; cardinality only, members can't be enumerated.</li>
+        <li><strong>Bandwidth &amp; distributions</strong> — each node contributes under an unlinkable per-epoch id <code>eid = BLAKE2s(epoch ‖ pubkey)</code>, with values clamped and perturbed by differential-privacy noise.</li>
+        <li><strong>Merge</strong> — an LWW-map CRDT: order-independent, idempotent, so every node converges to identical state.</li>
+        <li><strong>Hash chain</strong> — <code>digest = BLAKE2s(epoch ‖ snapshot ‖ prev_digest)</code>. Because the CRDT converges, honest nodes compute the same digest; integrity is reproducibility, not a signature.</li>
+        <li><strong>k-anonymity</strong> — detailed metrics stay hidden until enough nodes contribute in an epoch.</li>
+      </ul>
+      <p>Read it via <code>Moss_GetNetworkStats</code> or a gateway's <code>/api/stats</code> and <code>/api/chain</code>.</p>
+
+      <h2 id="explorer">Explorer</h2>
+      <p>The <a href="/explorer.html">explorer</a> is a static client that reads telemetry from one or more <strong>gateways</strong> and verifies it in your browser via the wasm verifier: it checks hash-chain continuity and cross-checks that independent gateways agree. The topology view is a <em>simulation</em> seeded by the epoch digest — it reflects aggregate shape (counts, NAT/degree distributions), never real edges or addresses, so it discloses nothing.</p>
+      <p>A gateway is any node with telemetry on serving the read-only API: <code>moss-gateway -http 127.0.0.1:8787</code>. <code>http://localhost</code> works even from the https site; remote gateways must be <code>https</code>.</p>
+
+      <h2 id="browser">Browser runtime (WebAssembly)</h2>
+      <p>Compiled to <code>GOOS=js GOARCH=wasm</code>, Moss runs as a full peer in the browser. JavaScript owns the WebRTC <code>RTCPeerConnection</code>, ICE, and signaling; the wasm module wraps each DataChannel as a connection and runs the same Noise transport and gossip over it. A small <code>moss-signal</code> relay brokers SDP/ICE between browser peers and never sees mesh traffic, which stays end-to-end encrypted.</p>
+
+      <h2 id="ffi">FFI / API</h2>
+      <p>The C ABI is intentionally small. Host applications call into <code>mesh.Node</code> through it:</p>
+      <pre><code>Moss_Init(mesh_id, psk, config) -> handle
+Moss_Start / Moss_Stop
+Moss_Subscribe / Moss_Unsubscribe / Moss_Publish
+Moss_SetCallback / Moss_SetEventCallback / Moss_SetScoringCallback
+Moss_SetKeyStore
+Moss_GetMeshInfo / Moss_GetNetworkStats
+Moss_GetPublicKey / Moss_GetNATType
+Moss_Free</code></pre>
+      <p>Strings and buffers returned by the getters are owned by Moss; release them with <code>Moss_Free</code>. See <a href="https://github.com/redstone-md/moss/blob/main/docs/API.md">docs/API.md</a> for signatures, event ids, and error codes.</p>
+
+      <h2 id="config">Configuration</h2>
+      <p>Configuration is JSON passed to <code>Moss_Init</code> (or flags on the service binaries). Notable blocks:</p>
+      <pre><code>{
+  "trackers": ["udp://tracker.opentrackr.org:1337/announce"],
+  "listen_port": 0,
+  "max_peers": 200,
+  "gossipsub": { "D": 6, "D_lo": 4, "D_high": 12 },
+  "nat": { "relay_max_sessions": 50, "relay_max_bandwidth_kbps": 256 },
+  "telemetry": { "enabled": false, "epoch_sec": 300, "dp_epsilon": 1.0, "k_anon": 5 }
+}</code></pre>
+      <p>Omit <code>trackers</code> for the built-in set; pass <code>[]</code> to disable tracker bootstrap. Partial nested objects fall back to defaults.</p>
+
+      <h2 id="ops">Running services</h2>
+      <pre><code># telemetry gateway (read-only HTTP/SSE for the explorer)
+go build -o moss-gateway ./cmd/moss-gateway
+./moss-gateway -mesh moss -http 127.0.0.1:8787
+
+# offline two-node demo (no trackers, static peer)
+./moss-gateway -mesh local -http :8810 -listen-port 41001 -trackers=false
+./moss-gateway -mesh local -http :8811 -listen-port 41002 -static 127.0.0.1:41001 -trackers=false
+
+# WebRTC signaling relay (for browser peers)
+go build -o moss-signal ./cmd/moss-signal
+./moss-signal -addr 127.0.0.1:8788</code></pre>
+      <p class="mt-10 border-t border-line pt-6 text-sm">Source, full spec, and issues: <a href="https://github.com/redstone-md/moss">github.com/redstone-md/moss</a>.</p>
+    </article>
+  </div>
+
+  <script type="module" src="/src/js/docs.js"></script>
+</body>
+</html>
