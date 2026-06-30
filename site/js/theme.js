@@ -1,10 +1,12 @@
-// Theme switcher: cycles through palettes and persists the choice. The initial
-// theme is applied by a tiny inline script in <head> to avoid a flash; this
-// module wires the toggle button and keeps the visible label in sync.
-const THEMES = ["moss", "midnight", "light"];
+// Theme switcher: toggles between the cool "signal" dark theme and "light".
+// Initial theme is applied by a tiny inline script in <head> to avoid a flash;
+// this only wires the toggle and keeps labels in sync. The shader observes the
+// data-theme attribute itself and recolors.
+const THEMES = ["signal", "light"];
 
 function current() {
-  return document.documentElement.getAttribute("data-theme") || "moss";
+  const t = document.documentElement.getAttribute("data-theme");
+  return THEMES.includes(t) ? t : "signal";
 }
 
 function apply(theme) {
@@ -13,12 +15,8 @@ function apply(theme) {
   document.querySelectorAll("[data-theme-label]").forEach((el) => (el.textContent = theme));
 }
 
-function cycle() {
-  const i = THEMES.indexOf(current());
-  apply(THEMES[(i + 1) % THEMES.length]);
-}
-
 document.addEventListener("DOMContentLoaded", () => {
   apply(current());
-  document.querySelectorAll("[data-theme-toggle]").forEach((b) => b.addEventListener("click", cycle));
+  document.querySelectorAll("[data-theme-toggle]").forEach((b) =>
+    b.addEventListener("click", () => apply(THEMES[(THEMES.indexOf(current()) + 1) % THEMES.length])));
 });

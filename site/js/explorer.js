@@ -171,7 +171,14 @@ function histogram(id, hist, gated) {
 function renderTree(stats) {
   const canvas = document.getElementById("tree");
   const ctx = canvas.getContext("2d");
-  const W = canvas.width, H = canvas.height;
+  // Fit the backing store to the displayed size at device-pixel resolution for
+  // crisp lines; work in CSS pixels via a DPR transform.
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const W = canvas.clientWidth || 1200;
+  const H = Math.round(W * 560 / 1200);
+  const bw = Math.round(W * dpr), bh = Math.round(H * dpr);
+  if (canvas.width !== bw || canvas.height !== bh) { canvas.width = bw; canvas.height = bh; }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, W, H);
   const nodes = JSON.parse(mossSimulateTree(JSON.stringify({
     seed: stats.epoch_digest || "seed",
