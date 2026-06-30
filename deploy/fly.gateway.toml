@@ -1,0 +1,31 @@
+# Fly.io config for a Moss telemetry gateway: a node with telemetry on, serving
+# the read-only HTTP/SSE API the explorer reads and verifies. Fly terminates TLS
+# on *.fly.dev, so the gateway is reachable at https:// — no mixed-content issues
+# when the explorer is loaded over https.
+#
+#   fly launch --no-deploy --copy-config --config deploy/fly.gateway.toml
+#   fly deploy --config deploy/fly.gateway.toml
+#
+# Then point the explorer at  https://<your-app>.fly.dev  (add it in the gateways
+# box, or share a link with ?gateways=https://<your-app>.fly.dev).
+
+app = "moss-gateway"
+primary_region = "iad"
+
+[build]
+  dockerfile = "deploy/Dockerfile"
+
+# Telemetry gateway: join the mesh and expose the read-only API on :8787.
+[processes]
+  app = "/usr/local/bin/moss-gateway -mesh moss -http 0.0.0.0:8787"
+
+[http_service]
+  internal_port = 8787
+  force_https = true
+  auto_stop_machines = "suspend"
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

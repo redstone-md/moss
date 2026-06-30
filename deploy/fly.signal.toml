@@ -1,0 +1,28 @@
+# Fly.io config for a Moss WebRTC signaling relay. It only brokers SDP/ICE
+# between browser peers in a room (mesh id) — it never sees mesh traffic, which
+# stays end-to-end encrypted over the DataChannel. Fly's TLS makes it reachable
+# at wss://<your-app>.fly.dev/signal, which browsers require from https pages.
+#
+#   fly launch --no-deploy --copy-config --config deploy/fly.signal.toml
+#   fly deploy --config deploy/fly.signal.toml
+
+app = "moss-signal"
+primary_region = "iad"
+
+[build]
+  dockerfile = "deploy/Dockerfile"
+
+[processes]
+  app = "/usr/local/bin/moss-signal -addr 0.0.0.0:8788"
+
+# http_service proxies WebSocket upgrades, so wss:// works through Fly's edge.
+[http_service]
+  internal_port = 8788
+  force_https = true
+  auto_stop_machines = "suspend"
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
