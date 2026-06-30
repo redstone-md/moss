@@ -144,3 +144,13 @@ func (n *Node) StatsJSON() string {
 	}
 	return n.statAgg.ReportJSON()
 }
+
+// StatsChainJSON returns up to limit most-recent finalized epoch digests as a
+// JSON array, or "[]" when telemetry is disabled. An explorer uses this to
+// verify hash-chain continuity client-side.
+func (n *Node) StatsChainJSON(limit int) string {
+	if n.statAgg == nil {
+		return "[]"
+	}
+	return n.statAgg.ChainJSON(limit)
+}

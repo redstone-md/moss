@@ -18,11 +18,11 @@ type SimNode struct {
 // TreeParams drives the simulation. None of the inputs reveal real topology:
 // they are aggregate counts and a public digest used only as a render seed.
 type TreeParams struct {
-	Seed       string         // epoch digest; identical seed → identical tree everywhere
-	NodeCount  int            // estimated participant count
-	MaxRender  int            // cap on rendered vertices (0 → 256)
-	NATHist    map[string]int // NAT-type distribution to sample node kinds/labels
-	DegreeHist map[string]int // degree distribution to shape fan-out (optional)
+	Seed       string         `json:"seed"`             // epoch digest; identical seed → identical tree everywhere
+	NodeCount  int            `json:"node_count"`       // estimated participant count
+	MaxRender  int            `json:"max_render"`       // cap on rendered vertices (0 → 256)
+	NATHist    map[string]int `json:"nat_histogram"`    // NAT-type distribution to sample node kinds/labels
+	DegreeHist map[string]int `json:"degree_histogram"` // degree distribution to shape fan-out (optional)
 }
 
 // SimulateTree produces a deterministic, plausible network tree from aggregate
