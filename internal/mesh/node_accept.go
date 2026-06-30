@@ -80,6 +80,7 @@ func (n *Node) bootstrapLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			n.announceAndConnect(ctx, bootstrap.EventNone)
+			n.savePeerCacheSnapshot()
 		}
 	}
 }

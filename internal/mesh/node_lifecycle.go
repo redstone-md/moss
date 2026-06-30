@@ -111,6 +111,8 @@ func (n *Node) Start() int32 {
 		Identity:    n.identity,
 		Buffers:     transportBufferConfig(n.config.Transport),
 		BindIfIndex: n.bindIfIndex,
+		ObfsPadMax:  n.config.obfsPadMax(),
+		ObfsPadData: !n.config.Transport.HighThroughput,
 	})
 	if err != nil {
 		return MOSS_ERR_CONFIG_INVALID
@@ -138,10 +140,41 @@ func (n *Node) Start() int32 {
 		go n.lanDiscoveryLoop(ctx)
 	}
 	go n.probePortMapping(ctx, ln.Addr().String(), port)
+	go func() {
+		if addrs := loadPeerCache(n.config.PeerCachePath, n.config.peerCacheTTL()); len(addrs) > 0 {
+			n.rememberTrackerSeeds(addrs)
+		}
+	}()
+	if n.config.DHTEnabled {
+		n.wg.Add(1)
+		go func() {
+			defer n.wg.Done()
+			src, err := startDHTSource(n.infoHash, n.config.DHTPort, n.config.AnnounceInterval(), n.announcePort, func(addrs []string) {
+				n.rememberTrackerSeeds(addrs)
+				n.kickBootstrapPeers(ctx, addrs)
+			})
+			if err != nil {
+				return // best-effort: DHT bind/announce failure must not affect the node
+			}
+			n.mu.Lock()
+			stopped := !n.started
+			if !stopped {
+				n.dht = src
+			}
+			n.mu.Unlock()
+			if stopped {
+				src.Close() // Stop() already ran; don't orphan the source
+				return
+			}
+			<-ctx.Done() // run until shutdown
+			src.Close()
+		}()
+	}
 	return MOSS_OK
 }
 
 func (n *Node) Stop() int32 {
+	n.savePeerCacheSnapshot()
 	n.mu.Lock()
 	if !n.started {
 		n.mu.Unlock()

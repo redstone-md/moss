@@ -114,14 +114,14 @@ func TestFFIExamplesRun(t *testing.T) {
 		runExampleCommand(t, filepath.Join(root, "examples", "c_example"), []string{
 			"gcc", "-I../..", "-o", "moss_c_test.exe", "main.c", "-L../..", "-lmoss",
 		})
-		runExampleCommand(t, filepath.Join(root, "examples", "c_example"), []string{"cmd", "/c", "moss_c_test.exe"})
+		runExampleCommand(t, filepath.Join(root, "examples", "c_example"), []string{"cmd", "/c", ".\\moss_c_test.exe"})
 	})
 
 	t.Run("cpp", func(t *testing.T) {
 		runExampleCommand(t, filepath.Join(root, "examples", "cpp_example"), []string{
 			"g++", "-I../..", "-o", "moss_cpp_test.exe", "main.cpp", "-L../..", "-lmoss",
 		})
-		runExampleCommand(t, filepath.Join(root, "examples", "cpp_example"), []string{"cmd", "/c", "moss_cpp_test.exe"})
+		runExampleCommand(t, filepath.Join(root, "examples", "cpp_example"), []string{"cmd", "/c", ".\\moss_cpp_test.exe"})
 	})
 
 	t.Run("python", func(t *testing.T) {

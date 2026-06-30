@@ -452,3 +452,47 @@ func TestManagerAnnounceAllReturnsLastErrorWhenAllTrackersFail(t *testing.T) {
 		t.Fatalf("expected every tracker to be attempted, got %#v", calls)
 	}
 }
+
+type scriptedAnnouncer struct {
+	fast    string // tracker URL that returns peers immediately
+	peers   []string
+	blockMS time.Duration // others block this long (simulate dead/blocked tracker)
+}
+
+func (s *scriptedAnnouncer) Announce(ctx context.Context, trackerURL string, _ AnnounceRequest) ([]string, error) {
+	if trackerURL == s.fast {
+		return s.peers, nil
+	}
+	select {
+	case <-time.After(s.blockMS):
+		return nil, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func TestAnnounceAllReturnsBeforeSlowTrackers(t *testing.T) {
+	a := &scriptedAnnouncer{
+		fast:    "udp://fast.example:1/announce",
+		peers:   []string{"1.2.3.4:5"},
+		blockMS: 10 * time.Second,
+	}
+	m := &Manager{HTTP: a, UDP: a, maxConcurrent: 5, state: map[string]trackerState{}}
+	trackers := []string{
+		"udp://slow1.example:1/announce",
+		"udp://fast.example:1/announce",
+		"udp://slow2.example:1/announce",
+	}
+	start := time.Now()
+	peers, err := m.AnnounceAll(context.Background(), trackers, AnnounceRequest{})
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("announce: %v", err)
+	}
+	if len(peers) == 0 {
+		t.Fatal("expected peers from fast tracker")
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("AnnounceAll waited on slow trackers: %v", elapsed)
+	}
+}
