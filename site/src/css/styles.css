@@ -79,36 +79,61 @@
     background-size: 28px 28px;
   }
 
-  /* ---- Flowing menu (showcase) ---- */
-  .flow-row {
-    @apply relative block overflow-hidden border-b border-line;
+  /* ---- Flowing menu (showcase) — follows the reactbits structure: GSAP owns
+     both the infinite X scroll and the Y reveal on .marquee__inner, so they
+     never fight over `transform`. ---- */
+  .menu { display: flex; flex-direction: column; }
+  .menu__item {
+    position: relative;
+    overflow: hidden;
+    border-top: 1px solid rgb(var(--c-line));
   }
-  .flow-row:first-child { @apply border-t; }
-  .flow-link {
-    @apply relative flex items-center justify-between gap-6 px-1 py-8 md:py-10;
+  .menu__item:first-child { border-top: none; }
+  .menu__item-link {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1.5rem;
+    height: 7.5rem;
+    padding: 0 0.25rem;
+    position: relative;
+    cursor: pointer;
+    text-decoration: none;
+    white-space: nowrap;
   }
-  .flow-title {
-    @apply font-display text-4xl font-extrabold tracking-tightest text-ink transition-colors duration-300 md:text-6xl;
+  .menu__title {
+    font-family: "Archivo", ui-sans-serif, system-ui, sans-serif;
+    font-weight: 800;
+    letter-spacing: -0.04em;
+    font-size: clamp(2rem, 6vw, 3.75rem);
+    color: rgb(var(--c-ink));
   }
-  /* The marquee layer slides in over the row on hover (driven by GSAP). The CSS
-     transform hides it before the script runs (no load flash); GSAP then owns
-     yPercent. Only the marquee is animated — the inner track keeps its own CSS
-     translateX scroll, so GSAP never fights it for the transform. */
-  .flow-marquee {
-    @apply pointer-events-none absolute inset-0 z-10 flex items-center overflow-hidden bg-accent text-on-accent;
-    transform: translateY(101%);
-    will-change: transform;
+  .menu__tag { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 0.8rem; color: rgb(var(--c-muted)); }
+  .menu__arrow { color: rgb(var(--c-muted)); font-size: 1.5rem; }
+  .marquee {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    pointer-events: none;
+    background: rgb(var(--c-accent));
+    transform: translate3d(0, 101%, 0);
   }
-  .flow-track {
-    @apply flex shrink-0 items-center whitespace-nowrap;
-    animation: flow-scroll 18s linear infinite;
+  .marquee__inner-wrap { height: 100%; width: 100%; }
+  .marquee__inner { display: flex; align-items: center; height: 100%; width: fit-content; will-change: transform; }
+  .marquee__part { display: flex; align-items: center; flex-shrink: 0; color: rgb(var(--c-on-accent)); }
+  .marquee__part span {
+    font-family: "Archivo", ui-sans-serif, system-ui, sans-serif;
+    font-weight: 800;
+    letter-spacing: -0.04em;
+    font-size: clamp(2rem, 6vw, 3.75rem);
+    padding: 0 1.5rem;
+    white-space: nowrap;
   }
-  .flow-token {
-    @apply flex items-center font-display text-4xl font-extrabold tracking-tightest md:text-6xl;
-  }
-  @keyframes flow-scroll {
-    from { transform: translateX(0); }
-    to { transform: translateX(-50%); }
+  .marquee__chip {
+    width: 5rem;
+    height: 2.75rem;
+    border-radius: 999px;
+    background: linear-gradient(90deg, rgb(var(--c-accent2)), rgb(var(--c-on-accent) / 0.25));
   }
 
   /* ---- Docs prose ---- */
