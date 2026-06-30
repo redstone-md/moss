@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -30,6 +31,8 @@ func main() {
 	listenPort := flag.Int("listen-port", 0, "mesh listen port (0 = ephemeral)")
 	epochSec := flag.Int("epoch-sec", 300, "telemetry epoch length in seconds")
 	kAnon := flag.Int("k-anon", 5, "suppress detailed metrics below this many contributors")
+	static := flag.String("static", "", "comma-separated static peers (host:port) for offline/local testing")
+	trackers := flag.Bool("trackers", true, "use public BitTorrent trackers for discovery (set false for offline local tests)")
 	flag.Parse()
 
 	cfg := mesh.DefaultConfig()
@@ -38,6 +41,12 @@ func main() {
 		Enabled:  true,
 		EpochSec: *epochSec,
 		KAnon:    *kAnon,
+	}
+	if !*trackers {
+		cfg.Trackers = nil
+	}
+	if *static != "" {
+		cfg.StaticPeers = splitCSV(*static)
 	}
 
 	node, err := mesh.NewNode(*meshID, nil, cfg)
@@ -65,6 +74,16 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(ctx)
+}
+
+func splitCSV(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func newHandler(node *mesh.Node) http.Handler {
