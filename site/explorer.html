@@ -1,118 +1,119 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="moss">
+<html lang="en" data-theme="signal">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Mossscan — network explorer</title>
   <meta name="description" content="Trustless explorer for the Moss mesh: node count, bandwidth, and a simulated topology, verified in your browser." />
   <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
-  <script>(function(){var t;try{t=localStorage.getItem("moss-theme")}catch(e){}if(!t)t=matchMedia("(prefers-color-scheme: light)").matches?"light":"moss";document.documentElement.setAttribute("data-theme",t)})();</script>
+  <script>(function(){var t;try{t=localStorage.getItem("moss-theme")}catch(e){}if(t!=="signal"&&t!=="light")t="signal";document.documentElement.setAttribute("data-theme",t)})();</script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;800;900&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="./dist/app.css" />
 </head>
-<body class="grid-bg min-h-screen">
+<body class="min-h-screen">
 
-  <header class="sticky top-0 z-40 border-b border-line/70 bg-bg/80 backdrop-blur">
-    <nav class="mx-auto flex max-w-6xl items-center justify-between px-5 py-4">
+  <header class="sticky top-0 z-50 border-b border-line/50 bg-bg/70 backdrop-blur-xl">
+    <nav class="mx-auto flex max-w-7xl items-center justify-between px-6 py-3.5">
       <a href="./" class="flex items-center gap-2.5">
-        <span class="grid h-9 w-9 place-items-center rounded-xl bg-accent/15 text-accent text-lg">❖</span>
-        <span class="text-lg font-bold tracking-tight">moss<span class="text-muted">scan</span></span>
+        <span class="grid h-8 w-8 place-items-center rounded-lg border border-line bg-surface text-accent">❖</span>
+        <span class="font-display text-lg font-extrabold tracking-tightest">moss<span class="text-muted">scan</span></span>
       </a>
-      <div class="hidden items-center gap-7 md:flex">
+      <div class="hidden items-center gap-8 md:flex">
         <a href="./" class="nav-link">home</a>
         <a href="./explorer.html" class="nav-link text-ink">explorer</a>
         <a href="./mosh.html" class="nav-link">mosh-web</a>
-        <a href="https://github.com/redstone-md/moss" class="nav-link">github</a>
+        <a href="https://github.com/redstone-md/moss" class="nav-link">source</a>
       </div>
       <button data-theme-toggle class="chip hover:border-accent/50" title="switch theme">
-        <span class="h-2.5 w-2.5 rounded-full bg-accent"></span>
-        <span data-theme-label class="font-mono">moss</span>
+        <span class="h-2 w-2 rounded-full bg-accent"></span><span data-theme-label>signal</span>
       </button>
     </nav>
   </header>
 
-  <main class="mx-auto max-w-6xl px-5 py-8">
-    <div class="mb-6 flex flex-col gap-2">
-      <h1 class="text-3xl font-extrabold tracking-tight">network explorer</h1>
-      <p class="text-sm text-muted">Telemetry is gossiped, hash-chained, and verified in your browser — no trusted collector. The topology is a simulation seeded by the epoch digest, not real wiring.</p>
+  <main class="mx-auto max-w-7xl px-6 py-10">
+    <!-- title + verdict -->
+    <div class="mb-6 flex flex-wrap items-start justify-between gap-4">
+      <div>
+        <p class="eyebrow mb-2">live · verified in-browser</p>
+        <h1 class="font-display text-4xl font-extrabold tracking-tightest md:text-5xl">network explorer</h1>
+      </div>
+      <div id="verdict" class="inline-flex items-center gap-2 rounded-full border border-line px-4 py-2 text-sm text-muted">
+        <span id="verdict-dot" class="h-2.5 w-2.5 rounded-full bg-muted"></span>
+        <span id="verdict-text">not connected</span>
+      </div>
     </div>
 
-    <!-- controls -->
-    <div class="card mb-2 flex flex-col gap-3 p-4 sm:flex-row sm:items-center">
-      <label for="gateways" class="font-mono text-xs uppercase tracking-widest text-muted">gateways</label>
+    <!-- gateway control -->
+    <div class="tile mb-2 flex flex-col gap-3 p-4 sm:flex-row sm:items-center">
+      <label for="gateways" class="eyebrow">gateways</label>
       <input id="gateways" spellcheck="false"
              class="flex-1 rounded-lg border border-line bg-bg px-3 py-2 font-mono text-sm text-ink outline-none focus:border-accent/60"
              placeholder="http://localhost:8787, https://gateway.example…" />
-      <button id="connect" class="btn-primary">connect</button>
+      <button id="connect" class="btn-accent">connect</button>
     </div>
-    <p class="mb-6 text-xs text-muted">
-      The explorer reads telemetry from one or more <span class="text-ink">gateways</span> (a node with telemetry on, serving a read-only API) and verifies it here.
-      Run one locally with <code class="font-mono text-accent2">moss-gateway -http 127.0.0.1:8787</code> — <code class="font-mono">http://localhost</code> works even on this https page. Add several to cross-check.
+    <p class="mb-8 text-xs text-muted">
+      Telemetry is read from one or more <span class="text-ink">gateways</span> — a node with telemetry on, serving a read-only API — and verified here against the hash chain.
+      Run one with <code class="font-mono text-accent">moss-gateway -http 127.0.0.1:8787</code>; <code class="font-mono">http://localhost</code> works even on this https page. Add several to cross-check them.
     </p>
 
-    <!-- verdict -->
-    <div id="verdict" class="card mb-6 flex items-center gap-3 border-line p-4 text-sm">
-      <span id="verdict-dot" class="h-2.5 w-2.5 rounded-full bg-muted"></span>
-      <span id="verdict-text" class="text-muted">not connected</span>
-    </div>
-
-    <!-- metrics -->
-    <div class="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-      <div class="card p-5 lg:col-span-1">
-        <div class="font-mono text-xs uppercase tracking-widest text-muted">estimated nodes</div>
-        <div id="node-count" class="mt-1 text-5xl font-extrabold text-accent">—</div>
-        <div class="text-xs text-muted">HyperLogLog · not enumerable</div>
+    <!-- metrics bento -->
+    <div class="mb-4 grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <div class="tile col-span-2 row-span-2 flex flex-col justify-between">
+        <p class="eyebrow">estimated nodes</p>
+        <div id="node-count" class="font-display text-7xl font-black tracking-tightest text-accent md:text-8xl">—</div>
+        <p class="text-xs text-muted">HyperLogLog cardinality — individual peers are never enumerated.</p>
       </div>
-      <div class="card p-5">
-        <div class="font-mono text-xs uppercase tracking-widest text-muted">bandwidth in / epoch</div>
-        <div id="bw-in" class="mt-1 text-3xl font-bold text-accent2">—</div>
-        <div class="text-xs text-muted">DP-noised aggregate</div>
+      <div class="tile">
+        <p class="eyebrow">bandwidth in / epoch</p>
+        <div id="bw-in" class="mt-2 font-display text-3xl font-bold text-accent2">—</div>
+        <p class="mt-1 text-xs text-muted">DP-noised</p>
       </div>
-      <div class="card p-5">
-        <div class="font-mono text-xs uppercase tracking-widest text-muted">bandwidth out / epoch</div>
-        <div id="bw-out" class="mt-1 text-3xl font-bold text-accent2">—</div>
-        <div class="text-xs text-muted">DP-noised aggregate</div>
+      <div class="tile">
+        <p class="eyebrow">bandwidth out / epoch</p>
+        <div id="bw-out" class="mt-2 font-display text-3xl font-bold text-accent2">—</div>
+        <p class="mt-1 text-xs text-muted">DP-noised</p>
       </div>
-      <div class="card p-5">
-        <div class="font-mono text-xs uppercase tracking-widest text-muted">contributors · epoch</div>
-        <div class="mt-1 flex items-baseline gap-2">
-          <span id="contributors" class="text-3xl font-bold text-ink">—</span>
-          <span id="epoch" class="font-mono text-xs text-muted">—</span>
+      <div class="tile col-span-2">
+        <div class="flex items-baseline justify-between">
+          <p class="eyebrow">contributors</p>
+          <span id="epoch" class="font-mono text-xs text-muted">epoch —</span>
         </div>
-        <div class="text-xs text-muted">below k-anon → metrics hidden</div>
+        <div id="contributors" class="mt-2 font-display text-3xl font-bold text-ink">—</div>
+        <p class="mt-1 text-xs text-muted">Below the k-anonymity threshold, detailed metrics stay hidden.</p>
       </div>
     </div>
 
     <!-- histograms -->
-    <div class="mb-6 grid gap-4 md:grid-cols-2">
-      <div class="card p-5">
-        <h2 class="mb-4 text-sm font-semibold">NAT distribution</h2>
+    <div class="mb-4 grid gap-4 md:grid-cols-2">
+      <div class="tile">
+        <h2 class="mb-4 font-display text-base font-bold">NAT distribution</h2>
         <div id="nat-hist" class="space-y-2"></div>
       </div>
-      <div class="card p-5">
-        <h2 class="mb-4 text-sm font-semibold">degree distribution</h2>
+      <div class="tile">
+        <h2 class="mb-4 font-display text-base font-bold">degree distribution</h2>
         <div id="degree-hist" class="space-y-2"></div>
       </div>
     </div>
 
-    <!-- tree -->
-    <div class="card p-5">
-      <h2 class="mb-3 text-sm font-semibold">network topology <span class="font-normal text-muted">— simulation seeded by epoch digest</span></h2>
-      <canvas id="tree" width="1200" height="560" class="w-full rounded-xl border border-line bg-bg"></canvas>
-      <div class="mt-3 flex flex-wrap gap-5 text-xs text-muted">
-        <span class="flex items-center gap-1.5"><i class="h-2.5 w-2.5 rounded-full bg-accent"></i> supernode</span>
-        <span class="flex items-center gap-1.5"><i class="h-2.5 w-2.5 rounded-full bg-accent2"></i> relay</span>
-        <span class="flex items-center gap-1.5"><i class="h-2.5 w-2.5 rounded-full bg-muted"></i> leaf</span>
+    <!-- topology -->
+    <div class="tile">
+      <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <h2 class="font-display text-base font-bold">topology <span class="font-normal text-muted">— simulation, seeded by epoch digest</span></h2>
+        <div class="flex flex-wrap gap-4 text-xs text-muted">
+          <span class="flex items-center gap-1.5"><i class="h-2.5 w-2.5 rounded-full bg-accent"></i> supernode</span>
+          <span class="flex items-center gap-1.5"><i class="h-2.5 w-2.5 rounded-full bg-accent2"></i> relay</span>
+          <span class="flex items-center gap-1.5"><i class="h-2.5 w-2.5 rounded-full bg-muted"></i> leaf</span>
+        </div>
       </div>
+      <canvas id="tree" width="1200" height="560" class="aspect-[12/5.6] w-full rounded-xl border border-line bg-bg"></canvas>
+      <p id="digest" class="mt-3 break-all font-mono text-xs text-muted">digest —</p>
     </div>
-
-    <p id="digest" class="mt-6 break-all font-mono text-xs text-muted">digest —</p>
   </main>
 
   <script src="./wasm_exec.js"></script>
   <script src="./js/explorer.js"></script>
-  <script src="./js/theme.js"></script>
+  <script defer src="./js/theme.js"></script>
 </body>
 </html>

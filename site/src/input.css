@@ -2,78 +2,75 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ---- Theme tokens (space-separated RGB triplets for Tailwind alpha) ---- */
+/* ---- Theme tokens (space-separated RGB triplets for Tailwind alpha) ----
+   Default "signal": cool graphite with a sky→violet signal accent and an amber
+   live-state accent. Green is intentionally near-absent. */
 :root,
-[data-theme="moss"] {
-  --c-bg: 9 14 11;
-  --c-surface: 16 24 19;
-  --c-surface-2: 21 32 25;
-  --c-line: 32 49 40;
-  --c-ink: 215 230 221;
-  --c-muted: 122 150 137;
-  --c-accent: 95 221 142;
-  --c-accent2: 79 214 194;
-  --c-on-accent: 4 21 12;
-}
-
-[data-theme="midnight"] {
-  --c-bg: 8 11 20;
-  --c-surface: 15 19 33;
-  --c-surface-2: 21 27 45;
-  --c-line: 35 43 70;
-  --c-ink: 218 224 245;
-  --c-muted: 130 140 175;
-  --c-accent: 124 152 255;
-  --c-accent2: 159 122 255;
-  --c-on-accent: 8 11 24;
+[data-theme="signal"] {
+  --c-bg: 8 9 12;
+  --c-surface: 14 17 22;
+  --c-surface-2: 20 25 34;
+  --c-line: 34 43 56;
+  --c-ink: 231 235 242;
+  --c-muted: 139 149 167;
+  --c-accent: 90 200 250;
+  --c-accent2: 155 140 255;
+  --c-ember: 255 180 84;
+  --c-on-accent: 6 10 18;
 }
 
 [data-theme="light"] {
-  --c-bg: 246 248 245;
+  --c-bg: 244 246 250;
   --c-surface: 255 255 255;
-  --c-surface-2: 240 244 239;
-  --c-line: 219 228 221;
-  --c-ink: 20 32 26;
-  --c-muted: 90 110 99;
-  --c-accent: 22 138 80;
-  --c-accent2: 13 124 138;
+  --c-surface-2: 237 241 248;
+  --c-line: 214 222 234;
+  --c-ink: 18 24 36;
+  --c-muted: 92 104 124;
+  --c-accent: 20 122 196;
+  --c-accent2: 109 86 232;
+  --c-ember: 199 122 20;
   --c-on-accent: 255 255 255;
 }
 
 @layer base {
-  html {
-    scroll-behavior: smooth;
-  }
-  body {
-    @apply bg-bg text-ink font-sans antialiased;
-  }
-  ::selection {
-    @apply bg-accent/30;
+  html { scroll-behavior: smooth; }
+  body { @apply bg-bg text-ink font-sans antialiased; }
+  ::selection { @apply bg-accent/25; }
+  /* Respect reduced-motion at the platform level too. */
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
   }
 }
 
 @layer components {
   .btn {
-    @apply inline-flex items-center justify-center gap-2 rounded-xl px-5 py-2.5 text-sm font-semibold transition focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60;
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-5 py-2.5 text-sm font-semibold tracking-tight transition focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60;
   }
   .btn-primary {
+    @apply btn bg-ink text-bg hover:bg-white;
+  }
+  .btn-accent {
     @apply btn bg-accent text-on-accent hover:shadow-glow hover:brightness-110;
   }
   .btn-ghost {
-    @apply btn border border-line bg-surface/60 text-ink hover:border-accent/50 hover:bg-surface;
+    @apply btn border border-line text-ink hover:border-accent/50 hover:bg-surface;
   }
-  .card {
-    @apply rounded-2xl border border-line bg-surface/70 backdrop-blur;
+  /* Bento tile */
+  .tile {
+    @apply relative overflow-hidden rounded-2xl border border-line bg-surface/60 p-6 shadow-tile;
+  }
+  .eyebrow {
+    @apply font-mono text-xs uppercase tracking-[0.22em] text-muted;
   }
   .chip {
-    @apply inline-flex items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1 text-xs font-medium text-muted;
+    @apply inline-flex items-center gap-1.5 rounded-full border border-line bg-surface/70 px-3 py-1 font-mono text-xs text-muted backdrop-blur;
   }
-  .nav-link {
-    @apply text-sm text-muted transition hover:text-ink;
-  }
-  .grid-bg {
-    background-image:
-      radial-gradient(60rem 40rem at 80% -10%, rgb(var(--c-accent) / 0.10), transparent 60%),
-      radial-gradient(50rem 30rem at -10% 10%, rgb(var(--c-accent2) / 0.08), transparent 55%);
+  .nav-link { @apply text-sm text-muted transition hover:text-ink; }
+  .hairline { @apply h-px w-full bg-line; }
+  /* Subtle dotted grid texture for section backgrounds */
+  .dotgrid {
+    background-image: radial-gradient(rgb(var(--c-line) / 0.6) 1px, transparent 1px);
+    background-size: 28px 28px;
   }
 }
