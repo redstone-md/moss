@@ -16,5 +16,9 @@ examples/python_chat/.state/
 .state/
 __pycache__/
 *.pyc
-explorer/moss.wasm
-web/mosh/moss-node.wasm
+# Web build artifacts (produced by `npm run build:css` + wasm builds / CI)
+node_modules/
+site/dist/
+site/moss.wasm
+site/moss-node.wasm
+site/wasm_exec.js
