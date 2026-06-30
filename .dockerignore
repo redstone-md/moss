@@ -1,0 +1,14 @@
+# Keep the build context small and the image clean — only the Go module is
+# needed to build the service binaries.
+.git
+node_modules
+site
+bin
+obj
+*.dll
+*.so
+*.dylib
+*.exe
+.gocache
+.gotmp
+examples/rust_example/target

@@ -10,20 +10,25 @@ Running more independent gateways is good for the network: the explorer
 cross-checks them, so no single one has to be trusted.
 
 > Run all commands **from the repo root** — the Docker build context must include
-> the Go module. Always pass **`--dockerfile`** so Fly builds these images and
-> does not fall back to its Nixpacks builder (whose placeholder `run-app` start
-> command is what made earlier deploys crash with "Permission denied"). And
-> never deploy with `--image` pointing at a previously built Nixpacks image.
+> the Go module. The configs pin `[build].dockerfile`, so Fly builds these images
+> instead of falling back to its Nixpacks builder (whose placeholder `run-app`
+> start command made earlier deploys crash with "Permission denied"). With
+> `fly launch`, also pass `--dockerfile` (it may otherwise re-detect Nixpacks),
+> and never deploy with `--image` pointing at a previously built Nixpacks image.
 
 ## Gateway
 
-Create the app once, then deploy with the matching config + Dockerfile and the
-name Fly gave you:
+The gateway config lives at the repo **root** (`fly.toml`) so Fly's GitHub
+"Deploy app" button and a bare `fly deploy` both find it. It builds
+`deploy/Dockerfile.gateway`.
 
-```bash
-fly launch --no-deploy --copy-config --config deploy/fly.gateway.toml --dockerfile deploy/Dockerfile.gateway
-fly deploy -a <your-app> --config deploy/fly.gateway.toml --dockerfile deploy/Dockerfile.gateway
-```
+- **GitHub deploy:** connect the repo to your Fly app — the root `fly.toml` is
+  picked up automatically. Set `app` in `fly.toml` to your app name first.
+- **CLI:**
+
+  ```bash
+  fly deploy -a <your-app>      # uses ./fly.toml + deploy/Dockerfile.gateway
+  ```
 
 Then open the explorer and add `https://<your-app>.fly.dev` in the gateways box,
 or share a deep link: `https://moss.surf/explorer.html?gateways=https://<your-app>.fly.dev`.
@@ -53,10 +58,10 @@ for a relay only when you specifically want to donate connectivity capacity.
 ## Recovering a crash-looping app
 
 If an earlier deploy built with Nixpacks, its machines crash-loop on `run-app`.
-Redeploy forcing the Dockerfile:
+Redeploy with the root config (it pins the Dockerfile):
 
 ```bash
-fly deploy -a <your-app> --config deploy/fly.gateway.toml --dockerfile deploy/Dockerfile.gateway
+fly deploy -a <your-app>
 ```
 
 If machines are stuck (`max restart count`, rate-limit spam), reset them:
