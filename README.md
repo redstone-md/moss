@@ -115,6 +115,7 @@ Current exported functions:
 - `Moss_SetScoringCallback`
 - `Moss_SetKeyStore`
 - `Moss_GetMeshInfo`
+- `Moss_GetNetworkStats`
 - `Moss_GetPublicKey`
 - `Moss_GetNATType`
 - `Moss_Free`

@@ -236,6 +236,43 @@ Returns the current NAT type string, for example:
 - `symmetric_nat`
 - `cgnat`
 
+### `Moss_GetNetworkStats`
+
+```c
+const char* Moss_GetNetworkStats(MossHandle handle);
+```
+
+Returns a JSON document with the current **privacy-preserving, decentralized**
+network telemetry snapshot, or `{}` when telemetry is disabled (`telemetry.enabled`
+is `false`, the default).
+
+The snapshot is computed from a gossiped CRDT, so every honest node converges to
+the same values; the `epoch_digest` is reproducible and hash-chained to
+`prev_digest`, letting any observer verify history without trusting a collector.
+No field exposes a peer's address or stable identity. Detailed metrics are
+suppressed until at least `k_anon` nodes contribute (`k_anon_ok`).
+
+```json
+{
+  "epoch": 5829142,
+  "node_count_estimate": 1284,
+  "contributors": 47,
+  "k_anon_ok": true,
+  "bandwidth_in_total": 90431122,
+  "bandwidth_out_total": 88210044,
+  "nat_histogram": {"public": 12, "symmetric_nat": 20, "cgnat": 15},
+  "degree_histogram": {"1-2": 9, "3-5": 22, "6-10": 16},
+  "epoch_digest": "hex-blake2s-256",
+  "prev_digest": "hex-blake2s-256",
+  "chain_head": 5829141
+}
+```
+
+- `node_count_estimate`: HyperLogLog cardinality (cannot enumerate members).
+- `bandwidth_*_total`: DP-noised, per-epoch byte sums (omitted when `k_anon_ok` is false).
+- `nat_histogram` / `degree_histogram`: aggregate distributions for topology
+  *simulation* — no real edges or addresses are ever published.
+
 ### `Moss_Free`
 
 ```c
@@ -247,6 +284,7 @@ Frees memory returned by:
 - `Moss_GetMeshInfo`
 - `Moss_GetPublicKey`
 - `Moss_GetNATType`
+- `Moss_GetNetworkStats`
 
 ## Error Codes
 
@@ -305,6 +343,14 @@ Top-level config schema:
     "high_throughput": false,
     "stream_buffer_size": 0,
     "udp_buffer_size": 0
+  },
+  "telemetry": {
+    "enabled": false,
+    "epoch_sec": 300,
+    "dp_epsilon": 1.0,
+    "bandwidth_cap_bytes": 1073741824,
+    "degree_cap": 256,
+    "k_anon": 5
   }
 }
 ```
@@ -340,6 +386,26 @@ custom queue sizes. Values <= 0 fall back to defaults / the preset.
 
 Default is `high_throughput: false` so existing integrations keep
 their original memory footprint.
+
+### Telemetry (privacy-preserving network observability)
+
+The `telemetry` block is **off by default**. When `enabled` is `true`, the node
+joins a decentralized, gossiped CRDT that yields a self-verifying, hash-chained
+snapshot of the network, readable via `Moss_GetNetworkStats`. There is no
+collector and no trusted signer: integrity comes from reproducibility.
+
+- `epoch_sec`: snapshot period. Each epoch is hashed and chained to the previous.
+- `dp_epsilon`: differential-privacy budget for numeric metrics; smaller = more
+  noise / stronger privacy. `<= 0` disables noise.
+- `bandwidth_cap_bytes`: per-epoch per-node clamp that bounds DP sensitivity.
+- `degree_cap`: per-node connection-count clamp.
+- `k_anon`: detailed metrics (bandwidth sums, histograms) are suppressed until at
+  least this many nodes contribute in the epoch.
+
+Privacy properties: a node contributes under a per-epoch **unlinkable** id
+(`BLAKE2s(epoch ‖ pubkey)`), never its address or public key; node count uses
+HyperLogLog (cannot enumerate members); topology is exposed only as aggregate
+NAT/degree histograms for client-side *simulation*, never as real edges.
 
 ## Current Examples
 
