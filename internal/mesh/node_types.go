@@ -178,6 +178,7 @@ type meshInfo struct {
 	NATType               string   `json:"nat_type"`
 	PublicKey             string   `json:"public_key"`
 	SupernodeReady        bool     `json:"supernode_ready"`
+	TelemetryEnabled      bool     `json:"telemetry_enabled"`
 }
 
 const (

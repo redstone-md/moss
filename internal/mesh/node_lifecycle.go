@@ -313,13 +313,14 @@ func (n *Node) MeshInfoJSON() string {
 	profile := n.natProfile.Load().(nat.Profile)
 	pubKey := n.identity.PublicKey()
 	info := meshInfo{
-		MeshID:         n.meshID,
-		ListenPort:     n.listenPort,
-		AdvertisedAddr: n.advertisedListenAddr(),
-		Channels:       n.pubsub.SnapshotLocal(),
-		NATType:        string(profile.Type),
-		PublicKey:      hex.EncodeToString(pubKey[:]),
-		SupernodeReady: n.supernodeReady(profile),
+		MeshID:           n.meshID,
+		ListenPort:       n.listenPort,
+		AdvertisedAddr:   n.advertisedListenAddr(),
+		Channels:         n.pubsub.SnapshotLocal(),
+		NATType:          string(profile.Type),
+		PublicKey:        hex.EncodeToString(pubKey[:]),
+		SupernodeReady:   n.supernodeReady(profile),
+		TelemetryEnabled: n.statAgg != nil,
 	}
 	n.mu.RLock()
 	info.PeerCount = len(n.peers)
