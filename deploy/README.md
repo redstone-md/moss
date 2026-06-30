@@ -10,18 +10,19 @@ Running more independent gateways is good for the network: the explorer
 cross-checks them, so no single one has to be trusted.
 
 > Run all commands **from the repo root** — the Docker build context must include
-> the Go module. Each image runs its binary via an exec-form `ENTRYPOINT`, so do
-> not add a `[processes]` block to the Fly config: a stray process command is
-> what makes Fly try (and fail) to run a placeholder `run-app`.
+> the Go module. Always pass **`--dockerfile`** so Fly builds these images and
+> does not fall back to its Nixpacks builder (whose placeholder `run-app` start
+> command is what made earlier deploys crash with "Permission denied"). And
+> never deploy with `--image` pointing at a previously built Nixpacks image.
 
 ## Gateway
 
-Create the app once, then deploy with the matching config and the name Fly gave
-you:
+Create the app once, then deploy with the matching config + Dockerfile and the
+name Fly gave you:
 
 ```bash
-fly launch --no-deploy --copy-config --config deploy/fly.gateway.toml   # names the app
-fly deploy -a <your-app> --config deploy/fly.gateway.toml
+fly launch --no-deploy --copy-config --config deploy/fly.gateway.toml --dockerfile deploy/Dockerfile.gateway
+fly deploy -a <your-app> --config deploy/fly.gateway.toml --dockerfile deploy/Dockerfile.gateway
 ```
 
 Then open the explorer and add `https://<your-app>.fly.dev` in the gateways box,
@@ -34,8 +35,8 @@ telemetry; Fly's default networking is enough.
 ## Signaling relay
 
 ```bash
-fly launch --no-deploy --copy-config --config deploy/fly.signal.toml
-fly deploy -a <your-app> --config deploy/fly.signal.toml
+fly launch --no-deploy --copy-config --config deploy/fly.signal.toml --dockerfile deploy/Dockerfile.signal
+fly deploy -a <your-app> --config deploy/fly.signal.toml --dockerfile deploy/Dockerfile.signal
 ```
 
 Use `wss://<your-app>.fly.dev/signal` as the signaling URL for browser peers.
@@ -48,6 +49,24 @@ TCP/UDP ports reachable from the internet. On Fly that means a dedicated IP and
 UDP services (`fly ips allocate-v4`, plus `[[services]]` for the UDP/TCP mesh
 port) — heavier than the gateway above. Most operators want the gateway; reach
 for a relay only when you specifically want to donate connectivity capacity.
+
+## Recovering a crash-looping app
+
+If an earlier deploy built with Nixpacks, its machines crash-loop on `run-app`.
+Redeploy forcing the Dockerfile:
+
+```bash
+fly deploy -a <your-app> --config deploy/fly.gateway.toml --dockerfile deploy/Dockerfile.gateway
+```
+
+If machines are stuck (`max restart count`, rate-limit spam), reset them:
+
+```bash
+fly machine list -a <your-app>
+fly machine destroy <id> -a <your-app> --force   # for each bad machine
+# or start completely clean:
+fly apps destroy <your-app>
+```
 
 ## Plain Docker
 
