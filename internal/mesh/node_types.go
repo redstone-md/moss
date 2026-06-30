@@ -33,6 +33,7 @@ type Node struct {
 	bindIfIndex   int
 	startedAt     time.Time
 	dispatchSem   chan struct{}
+	dht           *dhtSource
 
 	natProfile atomic.Value
 	seq        uint64

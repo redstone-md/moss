@@ -126,10 +126,11 @@ func (l *UDPListener) finishDial(key string, pending *udpClientHandshake, result
 }
 
 func (l *UDPListener) writeDatagram(remote *net.UDPAddr, kind byte, payload []byte) error {
-	packet := make([]byte, 1+len(payload))
-	packet[0] = kind
-	copy(packet[1:], payload)
-	return l.writeRawDatagram(remote, packet)
+	wire, err := l.codec.Seal(kind, payload)
+	if err != nil {
+		return err
+	}
+	return l.writeRawDatagram(remote, wire)
 }
 
 func (l *UDPListener) writeRawDatagram(remote *net.UDPAddr, packet []byte) error {

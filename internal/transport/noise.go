@@ -29,6 +29,10 @@ type HandshakeConfig struct {
 	// session socket and the same option must apply for every datagram it
 	// sends. Callers resolve names → indices via ResolveBindInterface.
 	BindIfIndex int
+	// ObfsPadMax bounds the random padding added to each obfuscated datagram.
+	ObfsPadMax int
+	// ObfsPadData also pads data datagrams; set false in high-throughput mode.
+	ObfsPadData bool
 }
 
 // BufferConfig tunes inbound queues for sessions created by a handshake.

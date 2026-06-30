@@ -23,8 +23,11 @@ func (l *UDPListener) readLoop() {
 		if l.handleSTUNResponse(packet) {
 			continue
 		}
-		payload := packet[1:]
-		switch packet[0] {
+		kind, payload, ok := l.codec.Open(packet)
+		if !ok {
+			continue
+		}
+		switch kind {
 		case udpMessageHandshakeInit:
 			l.handleHandshakeInit(remote, payload)
 		case udpMessageHandshakeResp:

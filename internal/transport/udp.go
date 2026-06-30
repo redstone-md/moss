@@ -30,6 +30,7 @@ var pendingUDPServerHandshakeTTL = 5 * time.Second
 type UDPListener struct {
 	conn    *net.UDPConn
 	cfg     HandshakeConfig
+	codec   datagramCodec
 	buffers BufferConfig
 	acceptC chan *Session
 	closed  chan struct{}
@@ -98,6 +99,12 @@ func ListenUDP(port int, cfg HandshakeConfig) (*UDPListener, int, error) {
 		observes: make(map[string]chan string),
 		stunTx:   make(map[string]chan string),
 	}
+	codec, err := newScrambleCodec(cfg.MeshID, cfg.PSK, cfg.ObfsPadMax, cfg.ObfsPadData)
+	if err != nil {
+		_ = conn.Close()
+		return nil, 0, err
+	}
+	listener.codec = codec
 	go listener.readLoop()
 	return listener, conn.LocalAddr().(*net.UDPAddr).Port, nil
 }
