@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mossscan — decentralized network explorer</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="leaf">❖</span>
+      <div>
+        <h1>Mossscan</h1>
+        <p class="sub">trustless explorer for the <a href="https://moss.surf">moss</a> mesh</p>
+      </div>
+    </div>
+    <div class="epoch">
+      <span class="epoch-label">epoch</span>
+      <span id="epoch" class="epoch-value">—</span>
+    </div>
+  </header>
+
+  <section class="controls">
+    <label for="gateways">gateways</label>
+    <input id="gateways" type="text" spellcheck="false"
+           value="http://127.0.0.1:8787"
+           placeholder="comma-separated gateway URLs" />
+    <button id="connect">connect</button>
+  </section>
+
+  <section id="verdict" class="verdict unknown">
+    <span class="dot"></span>
+    <span id="verdict-text">not connected</span>
+  </section>
+
+  <section class="grid">
+    <div class="card big">
+      <div class="card-label">estimated nodes</div>
+      <div id="node-count" class="metric">—</div>
+      <div class="card-note">HyperLogLog · members never enumerated</div>
+    </div>
+    <div class="card">
+      <div class="card-label">bandwidth in / epoch</div>
+      <div id="bw-in" class="metric small">—</div>
+      <div class="card-note">DP-noised aggregate</div>
+    </div>
+    <div class="card">
+      <div class="card-label">bandwidth out / epoch</div>
+      <div id="bw-out" class="metric small">—</div>
+      <div class="card-note">DP-noised aggregate</div>
+    </div>
+    <div class="card">
+      <div class="card-label">contributors</div>
+      <div id="contributors" class="metric small">—</div>
+      <div class="card-note">below k-anon → metrics hidden</div>
+    </div>
+  </section>
+
+  <section class="panels">
+    <div class="panel">
+      <h2>NAT distribution</h2>
+      <div id="nat-hist" class="hist"></div>
+    </div>
+    <div class="panel">
+      <h2>degree distribution</h2>
+      <div id="degree-hist" class="hist"></div>
+    </div>
+  </section>
+
+  <section class="panel tree-panel">
+    <h2>network topology — <span class="muted">simulation, seeded by epoch digest (not real wiring)</span></h2>
+    <canvas id="tree" width="1200" height="560"></canvas>
+    <div class="legend">
+      <span><i class="sw super"></i> supernode</span>
+      <span><i class="sw relay"></i> relay</span>
+      <span><i class="sw leaf"></i> leaf</span>
+    </div>
+  </section>
+
+  <footer>
+    <span id="digest" class="digest">digest —</span>
+    <span class="foot-note">snapshots are reproducible &amp; hash-chained — verified in your browser, no trusted collector</span>
+  </footer>
+
+  <script src="wasm_exec.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

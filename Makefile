@@ -1,9 +1,18 @@
 GO ?= go
 
-.PHONY: test build-linux build-windows build-darwin clean
+.PHONY: test build-linux build-windows build-darwin explorer gateway clean
 
 test:
 	$(GO) test ./...
+
+# Build the WebAssembly verifier and stage the explorer's runtime support file.
+explorer:
+	GOOS=js GOARCH=wasm $(GO) build -o explorer/moss.wasm ./cmd/moss-wasm
+	cp "$$($(GO) env GOROOT)/lib/wasm/wasm_exec.js" explorer/wasm_exec.js
+
+# Build the read-only telemetry gateway binary.
+gateway:
+	$(GO) build -o bin/moss-gateway ./cmd/moss-gateway
 
 build-linux:
 	CGO_ENABLED=1 GOOS=linux GOARCH=amd64 $(GO) build -buildmode=c-shared -o libmoss.so ./cmd/moss-ffi
