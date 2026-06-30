@@ -1,0 +1,13 @@
+{
+  "name": "moss-site",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Marketing site + explorer + mosh-web for the Moss mesh",
+  "scripts": {
+    "build:css": "tailwindcss -i ./site/src/input.css -o ./site/dist/app.css --minify",
+    "watch:css": "tailwindcss -i ./site/src/input.css -o ./site/dist/app.css --watch"
+  },
+  "devDependencies": {
+    "tailwindcss": "^3.4.17"
+  }
+}

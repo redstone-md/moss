@@ -122,6 +122,28 @@ Current exported functions:
 
 See [docs/API.md](docs/API.md) for signatures, config fields, event IDs, and error codes.
 
+## Web frontend & telemetry
+
+`site/` is the static site (landing page, network explorer, and `mosh-web`),
+built with Tailwind and deployed to GitHub Pages (see `.github/workflows/pages.yml`).
+
+```bash
+make site      # build Tailwind CSS + both wasm bundles into ./site
+# serve locally:
+python -m http.server 8095 --directory site
+```
+
+Supporting commands:
+
+- `cmd/moss-gateway` — node with telemetry on, serving a read-only HTTP/SSE API
+  the explorer reads and verifies (`make gateway`).
+- `cmd/moss-signal` — WebRTC signaling relay for browser peers (`make signal`).
+- `cmd/moss-wasm` — browser telemetry verifier; `cmd/moss-node-wasm` — full peer in wasm.
+
+Telemetry is opt-in (`telemetry.enabled`), privacy-preserving (HyperLogLog node
+count, DP-noised bandwidth, unlinkable per-epoch ids), and self-verifying via a
+BLAKE2s hash chain. See [docs/API.md](docs/API.md#telemetry-privacy-preserving-network-observability).
+
 ## Stability Notes
 
 - The repository is public-ready as a runtime/core project.

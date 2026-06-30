@@ -1,0 +1,79 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---- Theme tokens (space-separated RGB triplets for Tailwind alpha) ---- */
+:root,
+[data-theme="moss"] {
+  --c-bg: 9 14 11;
+  --c-surface: 16 24 19;
+  --c-surface-2: 21 32 25;
+  --c-line: 32 49 40;
+  --c-ink: 215 230 221;
+  --c-muted: 122 150 137;
+  --c-accent: 95 221 142;
+  --c-accent2: 79 214 194;
+  --c-on-accent: 4 21 12;
+}
+
+[data-theme="midnight"] {
+  --c-bg: 8 11 20;
+  --c-surface: 15 19 33;
+  --c-surface-2: 21 27 45;
+  --c-line: 35 43 70;
+  --c-ink: 218 224 245;
+  --c-muted: 130 140 175;
+  --c-accent: 124 152 255;
+  --c-accent2: 159 122 255;
+  --c-on-accent: 8 11 24;
+}
+
+[data-theme="light"] {
+  --c-bg: 246 248 245;
+  --c-surface: 255 255 255;
+  --c-surface-2: 240 244 239;
+  --c-line: 219 228 221;
+  --c-ink: 20 32 26;
+  --c-muted: 90 110 99;
+  --c-accent: 22 138 80;
+  --c-accent2: 13 124 138;
+  --c-on-accent: 255 255 255;
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+  body {
+    @apply bg-bg text-ink font-sans antialiased;
+  }
+  ::selection {
+    @apply bg-accent/30;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-5 py-2.5 text-sm font-semibold transition focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60;
+  }
+  .btn-primary {
+    @apply btn bg-accent text-on-accent hover:shadow-glow hover:brightness-110;
+  }
+  .btn-ghost {
+    @apply btn border border-line bg-surface/60 text-ink hover:border-accent/50 hover:bg-surface;
+  }
+  .card {
+    @apply rounded-2xl border border-line bg-surface/70 backdrop-blur;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1 text-xs font-medium text-muted;
+  }
+  .nav-link {
+    @apply text-sm text-muted transition hover:text-ink;
+  }
+  .grid-bg {
+    background-image:
+      radial-gradient(60rem 40rem at 80% -10%, rgb(var(--c-accent) / 0.10), transparent 60%),
+      radial-gradient(50rem 30rem at -10% 10%, rgb(var(--c-accent2) / 0.08), transparent 55%);
+  }
+}
