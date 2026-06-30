@@ -10,6 +10,7 @@ import (
 	mcrypto "moss/internal/crypto"
 	"moss/internal/gossip"
 	"moss/internal/nat"
+	"moss/internal/stat"
 	"moss/internal/transport"
 )
 
@@ -34,6 +35,7 @@ type Node struct {
 	startedAt     time.Time
 	dispatchSem   chan struct{}
 	dht           *dhtSource
+	statAgg       *stat.Aggregator
 
 	natProfile atomic.Value
 	seq        uint64
