@@ -1,14 +1,18 @@
 GO ?= go
 
-.PHONY: test build-linux build-windows build-darwin explorer gateway signal mosh-web clean
+.PHONY: test build-linux build-windows build-darwin site gateway signal clean
 
 test:
 	$(GO) test ./...
 
-# Build the WebAssembly verifier and stage the explorer's runtime support file.
-explorer:
-	GOOS=js GOARCH=wasm $(GO) build -o explorer/moss.wasm ./cmd/moss-wasm
-	cp "$$($(GO) env GOROOT)/lib/wasm/wasm_exec.js" explorer/wasm_exec.js
+# Build the full static site (landing + explorer + mosh-web): Tailwind CSS,
+# both wasm bundles, and the wasm runtime loader, all staged under ./site.
+site:
+	npm install
+	npm run build:css
+	GOOS=js GOARCH=wasm $(GO) build -o site/moss.wasm ./cmd/moss-wasm
+	GOOS=js GOARCH=wasm $(GO) build -o site/moss-node.wasm ./cmd/moss-node-wasm
+	cp "$$($(GO) env GOROOT)/lib/wasm/wasm_exec.js" site/wasm_exec.js
 
 # Build the read-only telemetry gateway binary.
 gateway:
@@ -17,11 +21,6 @@ gateway:
 # Build the WebRTC signaling relay binary.
 signal:
 	$(GO) build -o bin/moss-signal ./cmd/moss-signal
-
-# Build the full browser node wasm + stage wasm_exec.js for mosh-web.
-mosh-web:
-	GOOS=js GOARCH=wasm $(GO) build -o web/mosh/moss-node.wasm ./cmd/moss-node-wasm
-	cp "$$($(GO) env GOROOT)/lib/wasm/wasm_exec.js" web/mosh/wasm_exec.js
 
 build-linux:
 	CGO_ENABLED=1 GOOS=linux GOARCH=amd64 $(GO) build -buildmode=c-shared -o libmoss.so ./cmd/moss-ffi

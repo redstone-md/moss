@@ -1,5 +1,5 @@
-// mosh-web chat demo: boots a full Moss node in the browser, connects peers via
-// WebRTC, and exchanges encrypted pub/sub messages over a channel.
+// mosh-web chat: boots a full Moss node in the browser, connects peers over
+// WebRTC, and exchanges encrypted pub/sub on a channel.
 import { MossRTC, loadMossNode } from "./moss-rtc.js";
 
 const $ = (id) => document.getElementById(id);
@@ -29,42 +29,37 @@ async function join() {
   if (!signalUrl || !mesh || !channel) return;
 
   $("status").textContent = "loading wasm…";
-  await loadMossNode("moss-node.wasm");
+  await loadMossNode("./moss-node.wasm");
 
-  const err = mossNodeStart(mesh, ""); // open mesh (no PSK) for the demo
+  const err = mossNodeStart(mesh, "");
   if (err) { $("status").textContent = "node error: " + err; return; }
 
-  mossOnMessage((ch, senderHex, text) => {
-    line(`<span class="who">${senderHex.slice(0, 8)}</span> ${escapeHtml(text)}`, "msg");
-  });
+  mossOnMessage((ch, senderHex, text) =>
+    line(`<span class="text-accent2">${senderHex.slice(0, 8)}</span> <span class="text-ink">${escapeHtml(text)}</span>`));
   mossSubscribe(channel);
 
   const selfId = randId();
-  const rtc = new MossRTC({ signalUrl, room: mesh, selfId });
-  rtc.start();
+  new MossRTC({ signalUrl, room: mesh, selfId }).start();
 
   started = true;
   $("send").disabled = false;
   $("join").disabled = true;
-  $("status").textContent = `joined mesh "${mesh}" · channel "${channel}" · id ${selfId.slice(0, 8)}`;
-  line("connected — waiting for peers…", "sysmsg");
+  $("status").textContent = `mesh "${mesh}" · channel "${channel}" · id ${selfId.slice(0, 8)}`;
+  line(`<span class="italic text-muted">connected — waiting for peers…</span>`);
 
-  // Live peer/telemetry heartbeat.
   setInterval(() => {
     try {
-      const stats = JSON.parse(mossStats() || "{}");
-      if (stats.node_count_estimate !== undefined) {
-        $("status").textContent =
-          `mesh "${mesh}" · channel "${channel}" · ~${stats.node_count_estimate} nodes · id ${selfId.slice(0, 8)}`;
-      }
+      const s = JSON.parse(mossStats() || "{}");
+      if (s.node_count_estimate !== undefined)
+        $("status").textContent = `mesh "${mesh}" · channel "${channel}" · ~${s.node_count_estimate} nodes · id ${selfId.slice(0, 8)}`;
     } catch {}
   }, 3000);
 
   $("send").onclick = () => {
-    const text = $("text").value;
-    if (!text) return;
-    mossPublish(channel, text);
-    line(`<span class="me">you</span> ${escapeHtml(text)}`, "msg");
+    const t = $("text").value;
+    if (!t) return;
+    mossPublish(channel, t);
+    line(`<span class="text-accent">you</span> <span class="text-ink">${escapeHtml(t)}</span>`);
     $("text").value = "";
   };
   $("text").addEventListener("keydown", (e) => { if (e.key === "Enter") $("send").onclick(); });
