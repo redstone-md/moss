@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>mosh-web — Moss in the browser</title>
   <meta name="description" content="A full Moss peer running in your browser over WebRTC — encrypted, serverless pub/sub." />
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
   <script>(function(){var t;try{t=localStorage.getItem("moss-theme")}catch(e){}if(!t)t=matchMedia("(prefers-color-scheme: light)").matches?"light":"moss";document.documentElement.setAttribute("data-theme",t)})();</script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -48,10 +49,15 @@
           <input id="channel" value="lobby" class="rounded-lg border border-line bg-bg px-3 py-2 text-sm text-ink outline-none focus:border-accent/60" /></label>
       </div>
     </div>
-    <div class="mb-4 flex items-center gap-3">
+    <div class="mb-2 flex items-center gap-3">
       <button id="join" class="btn-primary">join</button>
       <span id="status" class="text-sm text-muted">not connected</span>
     </div>
+    <p class="mb-4 text-xs text-muted">
+      Needs a signaling server to broker WebRTC. Run one with
+      <code class="font-mono text-accent2">moss-signal -addr 127.0.0.1:8788</code> — <code class="font-mono">ws://localhost</code> works even here;
+      a remote server must be <code class="font-mono">wss://</code>. Open this page on two devices/tabs with the same mesh &amp; channel.
+    </p>
 
     <div id="log" class="card mb-3 h-[50vh] space-y-1 overflow-auto p-4 font-mono text-sm"></div>
 

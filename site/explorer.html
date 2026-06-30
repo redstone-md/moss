@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Mossscan — network explorer</title>
   <meta name="description" content="Trustless explorer for the Moss mesh: node count, bandwidth, and a simulated topology, verified in your browser." />
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
   <script>(function(){var t;try{t=localStorage.getItem("moss-theme")}catch(e){}if(!t)t=matchMedia("(prefers-color-scheme: light)").matches?"light":"moss";document.documentElement.setAttribute("data-theme",t)})();</script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -39,14 +40,17 @@
     </div>
 
     <!-- controls -->
-    <div class="card mb-4 flex flex-col gap-3 p-4 sm:flex-row sm:items-center">
+    <div class="card mb-2 flex flex-col gap-3 p-4 sm:flex-row sm:items-center">
       <label for="gateways" class="font-mono text-xs uppercase tracking-widest text-muted">gateways</label>
       <input id="gateways" spellcheck="false"
-             value="http://127.0.0.1:8810,http://127.0.0.1:8811"
              class="flex-1 rounded-lg border border-line bg-bg px-3 py-2 font-mono text-sm text-ink outline-none focus:border-accent/60"
-             placeholder="comma-separated gateway URLs" />
+             placeholder="http://localhost:8787, https://gateway.example…" />
       <button id="connect" class="btn-primary">connect</button>
     </div>
+    <p class="mb-6 text-xs text-muted">
+      The explorer reads telemetry from one or more <span class="text-ink">gateways</span> (a node with telemetry on, serving a read-only API) and verifies it here.
+      Run one locally with <code class="font-mono text-accent2">moss-gateway -http 127.0.0.1:8787</code> — <code class="font-mono">http://localhost</code> works even on this https page. Add several to cross-check.
+    </p>
 
     <!-- verdict -->
     <div id="verdict" class="card mb-6 flex items-center gap-3 border-line p-4 text-sm">
