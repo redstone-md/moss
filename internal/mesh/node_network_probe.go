@@ -113,29 +113,20 @@ func isCarrierGradeAddr(addr netip.Addr) bool {
 	return netip.MustParsePrefix("100.64.0.0/10").Contains(addr)
 }
 
-// labelExternalReachability finalizes the NAT type for a public reflexive
-// address based on confirmed inbound reachability rather than address shape.
-//
-//   - reachable  → the host is genuinely open; promote Unknown to Public.
-//   - unreachable + clearly behind NAT (no local interface holds the reflexive
-//     address and the host's own addresses are private/CGNAT) → carrier/provider
-//     NAT, labelled CGNAT so it is never advertised as public or promoted to a
-//     supernode.
-//
-// Anything else is left as the binding observations classified it.
+// labelExternalReachability promotes a node to Public only when an inbound probe
+// actually reached it. It never guesses CGNAT from address shape: a host behind
+// ordinary NAT with a port-forward looks identical (RFC1918 local + public
+// reflexive) to a carrier-NATed host, and mislabelling it CGNAT makes peers skip
+// hole-punch and wait for a relay (breaking direct connectivity). Genuine
+// carrier NAT is still caught observationally — varying mapped ports classify as
+// symmetric via the binding observations, and an RFC6598 local address is
+// classified CGNAT by Detect. Everything else keeps its cone classification.
 func (n *Node) labelExternalReachability(profile nat.Profile, observed string) nat.Profile {
-	extAddr, ok := publicReflexiveAddr(observed)
-	if !ok {
+	if _, ok := publicReflexiveAddr(observed); !ok {
 		return profile
 	}
-	if profile.PublicReachable {
-		if profile.Type == nat.TypeUnknown {
-			profile.Type = nat.TypePublic
-		}
-		return profile
-	}
-	if n.hostBehindNAT(extAddr) && (profile.Type == nat.TypeUnknown || profile.Type == nat.TypePublic) {
-		profile.Type = nat.TypeCGNAT
+	if profile.PublicReachable && profile.Type == nat.TypeUnknown {
+		profile.Type = nat.TypePublic
 	}
 	return profile
 }
@@ -156,34 +147,6 @@ func publicReflexiveAddr(addr string) (netip.Addr, bool) {
 		return netip.Addr{}, false
 	}
 	return parsed, true
-}
-
-// hostBehindNAT reports whether this host clearly sits behind a NAT relative to
-// the given public reflexive address: no local interface actually holds that
-// address, yet the host has at least one private/CGNAT local address. This is
-// true evidence of NAT (the user's case: local 10.x, reflexive a public WAN IP),
-// while a directly-addressed public host (the reflexive IP is on its NIC) or a
-// reachable 1:1-NAT cloud host (handled earlier via PublicReachable) are not
-// mislabelled.
-func (n *Node) hostBehindNAT(reflexive netip.Addr) bool {
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return false
-	}
-	hasPrivateLocal := false
-	for _, a := range addrs {
-		parsed, ok := addrToNetip(a)
-		if !ok || parsed.IsLoopback() || parsed.IsLinkLocalUnicast() {
-			continue
-		}
-		if parsed == reflexive {
-			return false // host directly holds the public address: not behind NAT
-		}
-		if parsed.IsPrivate() || isCarrierGradeAddr(parsed) {
-			hasPrivateLocal = true
-		}
-	}
-	return hasPrivateLocal
 }
 
 func preferredExternalAddr(current, candidate string) string {
