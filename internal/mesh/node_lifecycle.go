@@ -111,6 +111,8 @@ func (n *Node) Start() int32 {
 		Identity:    n.identity,
 		Buffers:     transportBufferConfig(n.config.Transport),
 		BindIfIndex: n.bindIfIndex,
+		ObfsPadMax:  n.config.obfsPadMax(),
+		ObfsPadData: !n.config.Transport.HighThroughput,
 	})
 	if err != nil {
 		return MOSS_ERR_CONFIG_INVALID

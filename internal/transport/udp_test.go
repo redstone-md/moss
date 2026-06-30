@@ -169,8 +169,9 @@ func TestUDPIKRejectsEmptyHandshakeDone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("server identity failed: %v", err)
 	}
+	const meshID = "mesh-udp-ik-done"
 	serverListener, port, err := ListenUDP(0, HandshakeConfig{
-		MeshID:   "mesh-udp-ik-done",
+		MeshID:   meshID,
 		Identity: serverIdentity,
 	})
 	if err != nil {
@@ -184,9 +185,15 @@ func TestUDPIKRejectsEmptyHandshakeDone(t *testing.T) {
 	}
 	defer clientConn.Close()
 
+	// Build a client-side codec matching the server (same MeshID, no PSK).
+	clientCodec, err := newScrambleCodec(meshID, nil, 0, false)
+	if err != nil {
+		t.Fatalf("newScrambleCodec failed: %v", err)
+	}
+
 	remote := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: port}
 	hs, err := newHandshakeState(HandshakeConfig{
-		MeshID:       "mesh-udp-ik-done",
+		MeshID:       meshID,
 		Identity:     clientIdentity,
 		RemoteStatic: serverIdentity.NoiseStaticPublic(),
 	}, true, HandshakeModeIK)
@@ -194,7 +201,7 @@ func TestUDPIKRejectsEmptyHandshakeDone(t *testing.T) {
 		t.Fatalf("newHandshakeState failed: %v", err)
 	}
 	payload1, err := marshalIdentityPayload(HandshakeConfig{
-		MeshID:   "mesh-udp-ik-done",
+		MeshID:   meshID,
 		Identity: clientIdentity,
 	})
 	if err != nil {
@@ -204,8 +211,12 @@ func TestUDPIKRejectsEmptyHandshakeDone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WriteMessage failed: %v", err)
 	}
-	initPacket := append([]byte{udpMessageHandshakeInit, HandshakeModeIK}, msg1...)
-	if _, err := clientConn.WriteToUDP(initPacket, remote); err != nil {
+	// Seal the init packet via codec before sending (flag-day: all Moss datagrams obfuscated).
+	initWire, err := clientCodec.Seal(udpMessageHandshakeInit, append([]byte{HandshakeModeIK}, msg1...))
+	if err != nil {
+		t.Fatalf("Seal init failed: %v", err)
+	}
+	if _, err := clientConn.WriteToUDP(initWire, remote); err != nil {
 		t.Fatalf("handshake init write failed: %v", err)
 	}
 	if err := clientConn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
@@ -216,10 +227,16 @@ func TestUDPIKRejectsEmptyHandshakeDone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handshake response read failed: %v", err)
 	}
-	if n == 0 || buf[0] != udpMessageHandshakeResp {
-		t.Fatalf("expected handshake response, got %x", buf[:n])
+	kind, _, ok := clientCodec.Open(buf[:n])
+	if !ok || kind != udpMessageHandshakeResp {
+		t.Fatalf("expected sealed handshake response, got ok=%v kind=%d", ok, kind)
 	}
-	if _, err := clientConn.WriteToUDP([]byte{udpMessageHandshakeDone}, remote); err != nil {
+	// Send a sealed empty handshakeDone (missing the required 32-byte challenge token).
+	doneWire, err := clientCodec.Seal(udpMessageHandshakeDone, nil)
+	if err != nil {
+		t.Fatalf("Seal done failed: %v", err)
+	}
+	if _, err := clientConn.WriteToUDP(doneWire, remote); err != nil {
 		t.Fatalf("empty handshake done write failed: %v", err)
 	}
 

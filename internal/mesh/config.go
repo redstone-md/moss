@@ -26,15 +26,15 @@ var defaultSTUNServers = []string{
 }
 
 type Config struct {
-	Trackers            []string        `json:"trackers"`
-	AnnounceIntervalSec int             `json:"announce_interval_sec"`
-	ListenPort          int             `json:"listen_port"`
-	MaxPeers            int             `json:"max_peers"`
-	StaticPeers         []string        `json:"static_peers"`
-	BootstrapTimeoutSec int             `json:"bootstrap_timeout_sec"`
-	LANDiscoveryEnabled bool            `json:"lan_discovery_enabled"`
-	LANDiscoveryPort    int             `json:"lan_discovery_port"`
-	LANDiscoveryMS      int             `json:"lan_discovery_ms"`
+	Trackers            []string `json:"trackers"`
+	AnnounceIntervalSec int      `json:"announce_interval_sec"`
+	ListenPort          int      `json:"listen_port"`
+	MaxPeers            int      `json:"max_peers"`
+	StaticPeers         []string `json:"static_peers"`
+	BootstrapTimeoutSec int      `json:"bootstrap_timeout_sec"`
+	LANDiscoveryEnabled bool     `json:"lan_discovery_enabled"`
+	LANDiscoveryPort    int      `json:"lan_discovery_port"`
+	LANDiscoveryMS      int      `json:"lan_discovery_ms"`
 	// BindInterface forces outbound UDP packets through a specific NIC,
 	// overriding the host routing table. Accepts either an interface name
 	// ("Ethernet 2", "en0") or a numeric index ("3"). Empty value disables
@@ -51,6 +51,7 @@ type Config struct {
 	NAT           NATConfig       `json:"nat"`
 	Security      SecurityConfig  `json:"security"`
 	Transport     TransportConfig `json:"transport"`
+	ObfsPadMax    int             `json:"obfs_pad_max"`
 }
 
 // TransportConfig tunes per-session inbound buffer sizes. Increase these
@@ -127,7 +128,15 @@ func DefaultConfig() Config {
 			RateLimitBurst:      256000,
 			RateLimitSustained:  64000,
 		},
+		ObfsPadMax: 256,
 	}
+}
+
+func (c Config) obfsPadMax() int {
+	if c.ObfsPadMax <= 0 {
+		return 256
+	}
+	return c.ObfsPadMax
 }
 
 func ParseConfig(raw string) (Config, error) {
