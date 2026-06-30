@@ -9,11 +9,19 @@ gateway is reachable over `https` and the relay over `wss` with no extra setup.
 Running more independent gateways is good for the network: the explorer
 cross-checks them, so no single one has to be trusted.
 
+> Run all commands **from the repo root** — the Docker build context must include
+> the Go module. Each image runs its binary via an exec-form `ENTRYPOINT`, so do
+> not add a `[processes]` block to the Fly config: a stray process command is
+> what makes Fly try (and fail) to run a placeholder `run-app`.
+
 ## Gateway
 
+Create the app once, then deploy with the matching config and the name Fly gave
+you:
+
 ```bash
-fly launch --no-deploy --copy-config --config deploy/fly.gateway.toml
-fly deploy --config deploy/fly.gateway.toml
+fly launch --no-deploy --copy-config --config deploy/fly.gateway.toml   # names the app
+fly deploy -a <your-app> --config deploy/fly.gateway.toml
 ```
 
 Then open the explorer and add `https://<your-app>.fly.dev` in the gateways box,
@@ -26,7 +34,8 @@ telemetry; Fly's default networking is enough.
 ## Signaling relay
 
 ```bash
-fly deploy --config deploy/fly.signal.toml
+fly launch --no-deploy --copy-config --config deploy/fly.signal.toml
+fly deploy -a <your-app> --config deploy/fly.signal.toml
 ```
 
 Use `wss://<your-app>.fly.dev/signal` as the signaling URL for browser peers.
@@ -43,7 +52,9 @@ for a relay only when you specifically want to donate connectivity capacity.
 ## Plain Docker
 
 ```bash
-docker build -f deploy/Dockerfile -t moss .
-docker run -p 8787:8787 moss                      # gateway (default)
-docker run -p 8788:8788 moss /usr/local/bin/moss-signal -addr 0.0.0.0:8788
+docker build -f deploy/Dockerfile.gateway -t moss-gateway .
+docker run -p 8787:8787 moss-gateway
+
+docker build -f deploy/Dockerfile.signal -t moss-signal .
+docker run -p 8788:8788 moss-signal
 ```

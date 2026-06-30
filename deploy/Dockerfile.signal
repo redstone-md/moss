@@ -1,0 +1,12 @@
+# Moss WebRTC signaling relay as a static, CGO-free distroless image.
+# Build context must be the repo root:
+#   docker build -f deploy/Dockerfile.signal -t moss-signal .
+FROM golang:1.25 AS build
+WORKDIR /src
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/moss-signal ./cmd/moss-signal
+
+FROM gcr.io/distroless/static-debian12
+COPY --from=build /out/moss-signal /usr/local/bin/moss-signal
+ENTRYPOINT ["/usr/local/bin/moss-signal"]
+CMD ["-addr", "0.0.0.0:8788"]

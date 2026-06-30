@@ -3,17 +3,16 @@
 # stays end-to-end encrypted over the DataChannel. Fly's TLS makes it reachable
 # at wss://<your-app>.fly.dev/signal, which browsers require from https pages.
 #
-#   fly launch --no-deploy --copy-config --config deploy/fly.signal.toml
-#   fly deploy --config deploy/fly.signal.toml
+# Run from the REPO ROOT. Use the app name `fly launch` created:
+#   fly deploy -a <your-app> --config deploy/fly.signal.toml
+#
+# The run command comes from the image ENTRYPOINT — do NOT add [processes].
 
 app = "moss-signal"
 primary_region = "iad"
 
 [build]
-  dockerfile = "deploy/Dockerfile"
-
-[processes]
-  app = "/usr/local/bin/moss-signal -addr 0.0.0.0:8788"
+  dockerfile = "deploy/Dockerfile.signal"
 
 # http_service proxies WebSocket upgrades, so wss:// works through Fly's edge.
 [http_service]
