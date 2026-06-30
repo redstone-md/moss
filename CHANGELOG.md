@@ -30,6 +30,18 @@ uses semantic versioning.
   self-verifying, BLAKE2s hash-chained snapshot readable via the new
   `Moss_GetNetworkStats` FFI export. No collector, no trusted signer; integrity
   comes from reproducibility. New `telemetry` config block.
+- `internal/observe` + `cmd/moss-wasm`: pure, wasm-safe client-side verification
+  (hash-chain continuity, multi-gateway cross-check) and a deterministic topology
+  *simulation* seeded by the epoch digest.
+- `cmd/moss-gateway`: read-only HTTP/SSE server exposing the aggregate snapshot
+  and digest chain for browser explorers (CORS, no addresses/identities).
+- `explorer/` (Mossscan): self-hostable web app that verifies telemetry in the
+  browser and renders node count, bandwidth, histograms, and the simulated tree.
+- Browser runtime: `cmd/moss-node-wasm` runs a full Moss peer in the browser over
+  WebRTC (Noise + gossip over a DataChannel via `transport.WebRTCConn` and
+  `Node.StartWebRTC`/`AttachDataChannel`); `cmd/moss-signal` is a minimal SDP/ICE
+  rendezvous relay; `web/mosh/` is a chat demo. WebRTC/ICE require a real browser
+  to validate end to end.
 
 ### Changed
 
