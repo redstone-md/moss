@@ -3,21 +3,21 @@
 # on *.fly.dev, so the gateway is reachable at https:// — no mixed-content issues
 # when the explorer is loaded over https.
 #
-#   fly launch --no-deploy --copy-config --config deploy/fly.gateway.toml
-#   fly deploy --config deploy/fly.gateway.toml
+# Run from the REPO ROOT (the build context must include the Go module).
+# Use the app name `fly launch` created for you:
+#   fly deploy -a <your-app> --config deploy/fly.gateway.toml
 #
 # Then point the explorer at  https://<your-app>.fly.dev  (add it in the gateways
 # box, or share a link with ?gateways=https://<your-app>.fly.dev).
+#
+# The run command comes from the image ENTRYPOINT — do NOT add [processes]; a
+# stray process command is what made Fly try to run a placeholder "run-app".
 
 app = "moss-gateway"
 primary_region = "iad"
 
 [build]
-  dockerfile = "deploy/Dockerfile"
-
-# Telemetry gateway: join the mesh and expose the read-only API on :8787.
-[processes]
-  app = "/usr/local/bin/moss-gateway -mesh moss -http 0.0.0.0:8787"
+  dockerfile = "deploy/Dockerfile.gateway"
 
 [http_service]
   internal_port = 8787

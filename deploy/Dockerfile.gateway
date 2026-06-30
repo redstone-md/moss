@@ -1,0 +1,13 @@
+# Moss telemetry gateway as a static, CGO-free distroless image.
+# Build context must be the repo root (so the Go module is available):
+#   docker build -f deploy/Dockerfile.gateway -t moss-gateway .
+FROM golang:1.25 AS build
+WORKDIR /src
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/moss-gateway ./cmd/moss-gateway
+
+FROM gcr.io/distroless/static-debian12
+COPY --from=build /out/moss-gateway /usr/local/bin/moss-gateway
+# Exec-form entrypoint so Fly/Docker run the binary directly (no shell needed).
+ENTRYPOINT ["/usr/local/bin/moss-gateway"]
+CMD ["-mesh", "moss", "-http", "0.0.0.0:8787"]
