@@ -10,6 +10,7 @@ import (
 	mcrypto "moss/internal/crypto"
 	"moss/internal/gossip"
 	"moss/internal/nat"
+	"moss/internal/stat"
 	"moss/internal/transport"
 )
 
@@ -34,6 +35,7 @@ type Node struct {
 	startedAt     time.Time
 	dispatchSem   chan struct{}
 	dht           *dhtSource
+	statAgg       *stat.Aggregator
 
 	natProfile atomic.Value
 	seq        uint64
@@ -176,6 +178,7 @@ type meshInfo struct {
 	NATType               string   `json:"nat_type"`
 	PublicKey             string   `json:"public_key"`
 	SupernodeReady        bool     `json:"supernode_ready"`
+	TelemetryEnabled      bool     `json:"telemetry_enabled"`
 }
 
 const (

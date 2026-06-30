@@ -58,6 +58,28 @@ type Config struct {
 	PeerCacheMax    int             `json:"peer_cache_max"`
 	PeerCacheTTLSec int             `json:"peer_cache_ttl_sec"`
 	PeerCachePath   string          `json:"peer_cache_path"`
+	Telemetry       TelemetryConfig `json:"telemetry"`
+}
+
+// TelemetryConfig controls the privacy-preserving network observability layer.
+// It is disabled by default. When enabled, the node contributes DP-noised,
+// per-epoch aggregate metrics under an unlinkable ephemeral id and gossips a
+// self-verifying, hash-chained snapshot of the network (see internal/stat).
+// Nothing here exposes a node's address or stable identity.
+type TelemetryConfig struct {
+	Enabled      bool    `json:"enabled"`
+	EpochSec     int     `json:"epoch_sec"`
+	DPEpsilon    float64 `json:"dp_epsilon"`
+	BandwidthCap uint64  `json:"bandwidth_cap_bytes"`
+	DegreeCap    int     `json:"degree_cap"`
+	KAnon        int     `json:"k_anon"`
+}
+
+func (c TelemetryConfig) epochSec() int {
+	if c.EpochSec <= 0 {
+		return 300
+	}
+	return c.EpochSec
 }
 
 // TransportConfig tunes per-session inbound buffer sizes. Increase these
