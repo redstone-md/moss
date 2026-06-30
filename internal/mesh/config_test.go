@@ -1,6 +1,9 @@
 package mesh
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestParseConfigRespectsExplicitEmptyTrackers(t *testing.T) {
 	cfg, err := ParseConfig(`{"trackers":[],"listen_port":41030}`)
@@ -69,5 +72,18 @@ func TestTransportBufferConfigKeepsExplicitOverrides(t *testing.T) {
 	}
 	if buffers.UDPCarrierBufferSize != 2048 {
 		t.Fatalf("expected explicit udp size 2048, got %d", buffers.UDPCarrierBufferSize)
+	}
+}
+
+func TestDefaultConfigDiscoveryDefaults(t *testing.T) {
+	c := DefaultConfig()
+	if !c.DHTEnabled {
+		t.Fatal("DHT should default on")
+	}
+	if c.peerCacheMax() != 256 {
+		t.Fatalf("peerCacheMax default = %d, want 256", c.peerCacheMax())
+	}
+	if c.peerCacheTTL() != 7*24*time.Hour {
+		t.Fatalf("peerCacheTTL default = %v, want 7d", c.peerCacheTTL())
 	}
 }
