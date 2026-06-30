@@ -71,3 +71,23 @@ func TestScrambleRejectsShort(t *testing.T) {
 		t.Fatal("short datagram accepted")
 	}
 }
+
+func TestScrambleClampsPadMax(t *testing.T) {
+	c, err := newScrambleCodec("mesh-1", []byte("s"), 70000, true) // > uint16 max
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.padMax > 65535 {
+		t.Fatalf("padMax not clamped: %d", c.padMax)
+	}
+	// round-trip must stay intact under a huge configured bound
+	payload := []byte("payload-intact")
+	wire, err := c.Seal(udpMessageHandshakeInit, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kind, got, ok := c.Open(wire)
+	if !ok || kind != udpMessageHandshakeInit || !bytes.Equal(got, payload) {
+		t.Fatalf("large padMax corrupted round-trip: ok=%v kind=%d payload=%q", ok, kind, got)
+	}
+}

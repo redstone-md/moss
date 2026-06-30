@@ -46,6 +46,13 @@ func newScrambleCodec(meshID string, psk []byte, padMax int, padData bool) (*scr
 	if padMax < 0 {
 		padMax = 0
 	}
+	// padLen is encoded as a uint16; clamp so a large config value cannot
+	// wrap on Seal and corrupt the payload. Padding above the UDP datagram
+	// size is pointless anyway.
+	const maxObfsPad = 65535
+	if padMax > maxObfsPad {
+		padMax = maxObfsPad
+	}
 	return &scrambleCodec{aead: aead, padMax: padMax, padData: padData}, nil
 }
 
@@ -81,7 +88,9 @@ func (c *scrambleCodec) Seal(kind byte, payload []byte) ([]byte, error) {
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, err
 	}
-	// wire = nonce || ciphertext || tag
+	// dst==nonce aliasing is safe: chacha20poly1305 allocates a fresh backing
+	// array (nonce cap is exactly 12) and reads nonce before writing the
+	// result. wire = nonce || ciphertext || tag.
 	return c.aead.Seal(nonce, nonce, plain, nil), nil
 }
 
@@ -91,6 +100,8 @@ func (c *scrambleCodec) Open(wire []byte) (byte, []byte, bool) {
 		return 0, nil, false
 	}
 	plain, err := c.aead.Open(nil, wire[:ns], wire[ns:], nil)
+	// len(plain) < 3 is unreachable given the length guard above; kept as
+	// defense-in-depth if that guard is ever changed.
 	if err != nil || len(plain) < 3 {
 		return 0, nil, false
 	}
