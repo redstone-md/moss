@@ -96,17 +96,16 @@ func (p *Profiler) WithBindingObservations(profile Profile, observations []strin
 			return profile
 		}
 	}
-	if profile.Type == TypeFullCone {
-			profile.Type = TypePortRestricted
-		} else if profile.Type == TypeUnknown {
-			profile.Type = TypePortRestricted
-			if host, _, err := net.SplitHostPort(profile.ExternalAddress); err == nil {
-				if addr, err := netip.ParseAddr(host); err == nil && addr.IsGlobalUnicast() && !addr.IsPrivate() && !isCarrierGrade(addr) {
-					profile.Type = TypePublic
-					profile.PublicReachable = true
-				}
-			}
-		}
+	switch profile.Type {
+	case TypeFullCone, TypeUnknown:
+		// A stable mapped port across destinations indicates a cone NAT, not an
+		// open host. A public *reflexive* address is merely the NAT's WAN
+		// address and says nothing about inbound reachability — under CGNAT it
+		// is always public. Never infer Public or PublicReachable from address
+		// shape here; only a successful inbound probe (WithReachability) may set
+		// PublicReachable.
+		profile.Type = TypePortRestricted
+	}
 	return profile
 }
 

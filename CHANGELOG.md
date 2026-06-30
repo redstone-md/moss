@@ -24,6 +24,12 @@ uses semantic versioning.
   peers (grace window), instead of blocking on dead trackers.
 - New config fields: `obfs_pad_max`, `dht_enabled`, `dht_port`,
   `peer_cache_max`, `peer_cache_ttl_sec`, `peer_cache_path`.
+- Privacy-preserving, decentralized network telemetry (opt-in, off by default).
+  Nodes gossip a per-epoch CRDT — HyperLogLog node count, DP-noised bandwidth,
+  NAT/degree histograms — under an unlinkable per-epoch ephemeral id, producing a
+  self-verifying, BLAKE2s hash-chained snapshot readable via the new
+  `Moss_GetNetworkStats` FFI export. No collector, no trusted signer; integrity
+  comes from reproducibility. New `telemetry` config block.
 
 ### Changed
 
@@ -31,6 +37,19 @@ uses semantic versioning.
   (`open.stealth.si`, `tracker1.bt.moack.co.kr`, HTTP opentrackr mirror);
   added `open.demonii.com`, `tracker.torrent.eu.org`, `open.tracker.cl`,
   `tracker.openbittorrent.com` HTTP mirror.
+
+### Fixed
+
+- CGNAT nodes were misclassified as `public` and promoted to supernodes. The
+  v0.3.1 fix closed the `applyExternalObservation` shape path but two holes
+  remained: `WithBindingObservations` still upgraded an `Unknown` profile to
+  `public` + `PublicReachable` from a public *reflexive* address alone, and the
+  hole-punch / `freshObservedUDPAddr` paths reach it without any inbound probe.
+  A node behind carrier NAT (e.g. local `10.x`, WAN `188.x`) thus self-reported
+  "open" and was made a relay it could not serve. `WithBindingObservations` no
+  longer infers reachability from address shape; reachability comes only from a
+  successful inbound probe, and a public reflexive address with a private local
+  interface and no confirmed inbound reach is now labelled `cgnat`.
 
 ### Dependencies
 

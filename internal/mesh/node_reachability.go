@@ -112,21 +112,6 @@ func (n *Node) applyExternalObservation(observed string, deadline time.Time) boo
 	observed = preferredExternalAddr(previous.ExternalAddress, observed)
 	profile := n.profiler.WithExternalAddress(previous, observed)
 
-	// If the external address is a global unicast but the type is still Unknown
-	// (e.g. because listen was 0.0.0.0), treat it as Public *tentatively*. A
-	// public reflexive IP only reveals the NAT's WAN address — behind any NAT,
-	// STUN returns a public IP — so it is NOT proof of inbound reachability.
-	// Leave PublicReachable for the inbound probe below, and let the binding
-	// observations downgrade to symmetric when the mapped port varies across
-	// destinations.
-	if profile.Type == nat.TypeUnknown {
-		if host, _, err := net.SplitHostPort(profile.ExternalAddress); err == nil {
-			if addr, err := netip.ParseAddr(host); err == nil && addr.IsGlobalUnicast() && !addr.IsPrivate() && !isCarrierGradeAddr(addr) {
-				profile.Type = nat.TypePublic
-			}
-		}
-	}
-
 	n.mu.Lock()
 	n.bindingHistory = appendObservation(n.bindingHistory, observed)
 	bindingHistory := append([]string(nil), n.bindingHistory...)
@@ -135,6 +120,11 @@ func (n *Node) applyExternalObservation(observed string, deadline time.Time) boo
 	if requiresReachabilityConfirmation(observed) && !profile.PublicReachable {
 		profile = n.profiler.WithReachability(profile, n.confirmReachability(observed, deadline))
 	}
+	// Decide the public/CGNAT label from *confirmed inbound reachability*, never
+	// from address shape. A public reflexive address with no inbound reach and a
+	// private local interface is carrier/provider NAT (CGNAT) — it must not be
+	// labelled public nor become a supernode.
+	profile = n.labelExternalReachability(profile, observed)
 	n.natProfile.Store(profile)
 	if profile.ExternalAddress != previous.ExternalAddress || profile.Type != previous.Type || profile.PublicReachable != previous.PublicReachable {
 		n.broadcastPeerAnnouncement(n.localKnownPeer(), "")
