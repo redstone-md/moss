@@ -73,4 +73,46 @@
     background-image: radial-gradient(rgb(var(--c-line) / 0.6) 1px, transparent 1px);
     background-size: 28px 28px;
   }
+
+  /* ---- Flowing menu (showcase) ---- */
+  .flow-row {
+    @apply relative block overflow-hidden border-b border-line;
+  }
+  .flow-row:first-child { @apply border-t; }
+  .flow-link {
+    @apply relative flex items-center justify-between gap-6 px-1 py-8 md:py-10;
+  }
+  .flow-title {
+    @apply font-display text-4xl font-extrabold tracking-tightest text-ink transition-colors duration-300 md:text-6xl;
+  }
+  /* The marquee layer slides in over the row on hover (driven by GSAP). */
+  .flow-marquee {
+    @apply pointer-events-none absolute inset-0 z-10 flex items-center bg-accent text-on-accent;
+    transform: translateY(101%);
+  }
+  .flow-track {
+    @apply flex shrink-0 items-center whitespace-nowrap;
+    animation: flow-scroll 18s linear infinite;
+  }
+  .flow-token {
+    @apply flex items-center font-display text-4xl font-extrabold tracking-tightest md:text-6xl;
+  }
+  @keyframes flow-scroll {
+    from { transform: translateX(0); }
+    to { transform: translateX(-50%); }
+  }
+
+  /* ---- Docs prose ---- */
+  .prose-moss { @apply text-[15px] leading-relaxed text-muted; }
+  .prose-moss h2 { @apply mt-12 mb-3 scroll-mt-24 font-display text-2xl font-bold tracking-tight text-ink; }
+  .prose-moss h3 { @apply mt-8 mb-2 scroll-mt-24 font-display text-lg font-bold text-ink; }
+  .prose-moss p { @apply my-3; }
+  .prose-moss a { @apply text-accent underline-offset-2 hover:underline; }
+  .prose-moss code { @apply rounded bg-surface-2 px-1.5 py-0.5 font-mono text-[13px] text-ink; }
+  .prose-moss pre { @apply my-4 overflow-x-auto rounded-xl border border-line bg-bg/70 p-4 font-mono text-[13px] leading-relaxed text-muted; }
+  .prose-moss pre code { @apply bg-transparent p-0 text-muted; }
+  .prose-moss ul { @apply my-3 list-disc space-y-1.5 pl-5; }
+  .prose-moss li::marker { @apply text-accent; }
+  .doc-toc a { @apply block py-1 text-sm text-muted transition hover:text-ink; }
+  .doc-toc a.active { @apply text-accent; }
 }

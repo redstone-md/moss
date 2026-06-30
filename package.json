@@ -4,10 +4,18 @@
   "private": true,
   "description": "Marketing site + explorer + mosh-web for the Moss mesh",
   "scripts": {
-    "build:css": "tailwindcss -i ./site/src/input.css -o ./site/dist/app.css --minify",
-    "watch:css": "tailwindcss -i ./site/src/input.css -o ./site/dist/app.css --watch"
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview --port 8097"
   },
   "devDependencies": {
-    "tailwindcss": "^3.4.17"
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "vite": "^5.4.11"
+  },
+  "dependencies": {
+    "gsap": "^3.12.5",
+    "lenis": "^1.1.18"
   }
 }
