@@ -146,13 +146,29 @@ func (n *Node) Start() int32 {
 		}
 	}()
 	if n.config.DHTEnabled {
-		if src, err := startDHTSource(n.infoHash, n.config.DHTPort, func(addrs []string) {
-			n.rememberTrackerSeeds(addrs)
-			n.kickBootstrapPeers(ctx, addrs)
-		}); err == nil {
-			n.dht = src
-		}
-		// DHT is best-effort: a bind failure must not fail Start.
+		n.wg.Add(1)
+		go func() {
+			defer n.wg.Done()
+			src, err := startDHTSource(n.infoHash, n.config.DHTPort, n.config.AnnounceInterval(), func(addrs []string) {
+				n.rememberTrackerSeeds(addrs)
+				n.kickBootstrapPeers(ctx, addrs)
+			})
+			if err != nil {
+				return // best-effort: DHT bind/announce failure must not affect the node
+			}
+			n.mu.Lock()
+			stopped := !n.started
+			if !stopped {
+				n.dht = src
+			}
+			n.mu.Unlock()
+			if stopped {
+				src.Close() // Stop() already ran; don't orphan the source
+				return
+			}
+			<-ctx.Done() // run until shutdown
+			src.Close()
+		}()
 	}
 	return MOSS_OK
 }
@@ -170,8 +186,6 @@ func (n *Node) Stop() int32 {
 	udpListener := n.udpListener
 	portMapper := n.portMapper
 	n.portMapper = nil
-	dhtSrc := n.dht
-	n.dht = nil
 	peers := make([]*peerConn, 0, len(n.peers))
 	for _, peer := range n.peers {
 		peers = append(peers, peer)
@@ -187,9 +201,6 @@ func (n *Node) Stop() int32 {
 	}
 	if portMapper != nil {
 		portMapper.Close()
-	}
-	if dhtSrc != nil {
-		dhtSrc.Close()
 	}
 	for _, peer := range peers {
 		if peer.session != nil {
