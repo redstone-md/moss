@@ -51,3 +51,16 @@ func TestLoadPeerCacheMissingFile(t *testing.T) {
 		t.Fatalf("missing file should yield nil, got %v", got)
 	}
 }
+
+func TestSavePeerCacheEmptyPreservesExisting(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "peers.json")
+	if err := savePeerCache(path, []cachedPeer{{Addr: "1.1.1.1:1", LastSeenUnix: time.Now().Unix()}}, 256); err != nil {
+		t.Fatal(err)
+	}
+	if err := savePeerCache(path, nil, 256); err != nil { // empty must NOT clobber
+		t.Fatal(err)
+	}
+	if got := loadPeerCache(path, time.Hour); len(got) != 1 {
+		t.Fatalf("empty save clobbered cache: %v", got)
+	}
+}
