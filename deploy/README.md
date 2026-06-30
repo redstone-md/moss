@@ -33,9 +33,9 @@ The gateway config lives at the repo **root** (`fly.toml`) so Fly's GitHub
 Then open the explorer and add `https://<your-app>.fly.dev` in the gateways box,
 or share a deep link: `https://moss.surf/explorer.html?gateways=https://<your-app>.fly.dev`.
 
-The gateway joins the mesh as an ordinary member and serves `/api/stats`,
-`/api/chain`, and `/api/events`. It needs only outbound connectivity to read
-telemetry; Fly's default networking is enough.
+The gateway joins the standard public mesh **`global`** by default (override with
+`-mesh`) and serves `/api/stats`, `/api/chain`, and `/api/events`. It needs only
+outbound connectivity to read telemetry; Fly's default networking is enough.
 
 ## Signaling relay
 

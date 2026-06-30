@@ -26,7 +26,7 @@ import (
 )
 
 func main() {
-	meshID := flag.String("mesh", "moss", "mesh id to join")
+	meshID := flag.String("mesh", "global", "mesh id to join (\"global\" is the standard public mesh maintained by the Moss developers)")
 	httpAddr := flag.String("http", "127.0.0.1:8787", "HTTP listen address for the read-only API")
 	listenPort := flag.Int("listen-port", 0, "mesh listen port (0 = ephemeral)")
 	epochSec := flag.Int("epoch-sec", 300, "telemetry epoch length in seconds")

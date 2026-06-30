@@ -69,8 +69,9 @@ CGO_ENABLED=1 go build -buildmode=c-shared -o moss.dll ./cmd/moss-ffi
 
 # a telemetry gateway (node + read-only HTTP API)
 go build -o moss-gateway ./cmd/moss-gateway
-./moss-gateway -mesh my-mesh -http 127.0.0.1:8787</code></pre>
+./moss-gateway -mesh global -http 127.0.0.1:8787</code></pre>
       <p>Two nodes on one host with telemetry on will discover each other (LAN beacons) and converge to the same network snapshot.</p>
+      <p><strong>The standard public mesh is <code>global</code></strong> — maintained by the Moss developers and the id every product should use to join the shared network. Pick a unique mesh id only when you want a private, isolated mesh (optionally gated further with a PSK).</p>
 
       <h2 id="architecture">Architecture</h2>
       <p>The core is layered so lower packages never depend on the orchestrator:</p>
@@ -148,7 +149,7 @@ Moss_Free</code></pre>
       <h2 id="ops">Running services</h2>
       <pre><code># telemetry gateway (read-only HTTP/SSE for the explorer)
 go build -o moss-gateway ./cmd/moss-gateway
-./moss-gateway -mesh moss -http 127.0.0.1:8787
+./moss-gateway -mesh global -http 127.0.0.1:8787
 
 # offline two-node demo (no trackers, static peer)
 ./moss-gateway -mesh local -http :8810 -listen-port 41001 -trackers=false
