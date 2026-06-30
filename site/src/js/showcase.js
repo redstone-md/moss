@@ -16,6 +16,7 @@ const PROJECTS = [
   { name: "MOSH", tag: "desktop chat client built on Moss", href: "https://github.com/redstone-md/mosh" },
   { name: "MossyMod", tag: "Minecraft Fabric mod · mesh world discovery · Java", href: "https://github.com/redstone-md/mossymod" },
   { name: "GSE Moss", tag: "Steam emu with Moss in the Steam API · P2P multiplayer · C++", href: "https://github.com/redstone-md/gse_moss" },
+  { name: "MossSpore", tag: "headless relay daemon — grow the mesh · Go", href: "https://github.com/redstone-md/MossSpore" },
   { name: "Python chat", tag: "ctypes integration · examples/python_chat", href: `${REPO}/tree/main/examples/python_chat` },
   { name: "Rust FFI", tag: "native binding · examples/rust_example", href: `${REPO}/tree/main/examples/rust_example` },
   { name: "C · C++ · C#", tag: "reference integrations · examples", href: `${REPO}/tree/main/examples` },
