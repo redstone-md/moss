@@ -17,3 +17,4 @@ examples/python_chat/.state/
 __pycache__/
 *.pyc
 explorer/moss.wasm
+web/mosh/moss-node.wasm
