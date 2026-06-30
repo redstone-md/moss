@@ -140,10 +140,16 @@ func (n *Node) Start() int32 {
 		go n.lanDiscoveryLoop(ctx)
 	}
 	go n.probePortMapping(ctx, ln.Addr().String(), port)
+	go func() {
+		if addrs := loadPeerCache(n.config.PeerCachePath, n.config.peerCacheTTL()); len(addrs) > 0 {
+			n.rememberTrackerSeeds(addrs)
+		}
+	}()
 	return MOSS_OK
 }
 
 func (n *Node) Stop() int32 {
+	n.savePeerCacheSnapshot()
 	n.mu.Lock()
 	if !n.started {
 		n.mu.Unlock()

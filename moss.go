@@ -28,20 +28,20 @@ type Config struct {
 	BootstrapTimeoutSec int      `json:"bootstrap_timeout_sec,omitempty"`
 	LANDiscoveryEnabled *bool    `json:"lan_discovery_enabled,omitempty"`
 
-	RelayMaxBandwidthKBPS int  `json:"relay_max_bandwidth_kbps,omitempty"`
-	RelayMaxSessions      int  `json:"relay_max_sessions,omitempty"`
-	RelaySessionTTLSec    int  `json:"relay_session_ttl_sec,omitempty"`
-	SuperNodeMinUptimeSec int  `json:"supernode_min_uptime_sec,omitempty"`
+	RelayMaxBandwidthKBPS int   `json:"relay_max_bandwidth_kbps,omitempty"`
+	RelayMaxSessions      int   `json:"relay_max_sessions,omitempty"`
+	RelaySessionTTLSec    int   `json:"relay_session_ttl_sec,omitempty"`
+	SuperNodeMinUptimeSec int   `json:"supernode_min_uptime_sec,omitempty"`
 	UPnPEnabled           *bool `json:"upnp_enabled,omitempty"`
 	NATPMPEnabled         *bool `json:"natpmp_enabled,omitempty"`
 	PCPEnabled            *bool `json:"pcp_enabled,omitempty"`
-	HolePunchAttempts     int  `json:"hole_punch_attempts,omitempty"`
+	HolePunchAttempts     int   `json:"hole_punch_attempts,omitempty"`
 
-	HighThroughput    *bool `json:"high_throughput,omitempty"`
-	StreamBufferSize  int   `json:"stream_buffer_size,omitempty"`
-	UDPBufferSize     int   `json:"udp_buffer_size,omitempty"`
-	HandshakeTimeoutSec int `json:"handshake_timeout_sec,omitempty"`
-	MaxMessageSizeBytes int `json:"max_message_size_bytes,omitempty"`
+	HighThroughput      *bool `json:"high_throughput,omitempty"`
+	StreamBufferSize    int   `json:"stream_buffer_size,omitempty"`
+	UDPBufferSize       int   `json:"udp_buffer_size,omitempty"`
+	HandshakeTimeoutSec int   `json:"handshake_timeout_sec,omitempty"`
+	MaxMessageSizeBytes int   `json:"max_message_size_bytes,omitempty"`
 
 	IdentityPath string `json:"identity_path,omitempty"`
 }
@@ -107,6 +107,9 @@ func (c Config) toMeshConfig() mesh.Config {
 	}
 	if c.MaxMessageSizeBytes > 0 {
 		base.Security.MaxMessageSizeBytes = c.MaxMessageSizeBytes
+	}
+	if c.IdentityPath != "" {
+		base.PeerCachePath = filepath.Join(filepath.Dir(c.IdentityPath), "peers.json")
 	}
 	return base
 }
