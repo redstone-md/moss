@@ -56,6 +56,7 @@ type Config struct {
 	DHTPort         int             `json:"dht_port"`
 	PeerCacheMax    int             `json:"peer_cache_max"`
 	PeerCacheTTLSec int             `json:"peer_cache_ttl_sec"`
+	PeerCachePath   string          `json:"peer_cache_path"`
 }
 
 // TransportConfig tunes per-session inbound buffer sizes. Increase these
