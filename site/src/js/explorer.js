@@ -1,10 +1,11 @@
-// Mossscan explorer entry. Loads the wasm verifier, pulls aggregate telemetry
-// from gateways, verifies the hash chain + cross-gateway agreement IN THE
-// BROWSER, and renders a live topology with gossip pulses, a node-count
-// sparkline, and animated readouts. Trust comes from recomputation, never from
-// a single gateway. See internal/observe for the primitives.
+// Mossscan — an immersive, full-screen network observatory. Loads the wasm
+// verifier, pulls aggregate telemetry from gateways, verifies the hash chain +
+// cross-gateway agreement IN THE BROWSER, and renders a living topology
+// (curved edges, glowing nodes, travelling gossip pulses, slow drift) behind a
+// floating HUD. Trust comes from recomputation, never from a single gateway.
 import "../css/styles.css";
 import "./theme.js";
+import "./cmdk.js";
 import gsap from "gsap";
 
 const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -15,17 +16,20 @@ const state = {
   statsByGw: {},
   chainByGw: {},
   sources: [],
-  samples: [],            // recent node-count estimates for the sparkline
-  topo: null,             // { nodes, layout, edges, w, h }
+  samples: [],
+  topo: null,
   pulses: [],
   shownCount: 0,
 };
 
-/* ---------- wasm ---------- */
-function cssRGB(name) {
+/* ---------- helpers ---------- */
+function rgb(name) {
   const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-  return v ? `rgb(${v.split(/\s+/).join(",")})` : "#8892a6";
+  return v ? v.split(/\s+/).map(Number) : [136, 146, 166];
 }
+function cssRGB(name) { const [r, g, b] = rgb(name); return `rgb(${r},${g},${b})`; }
+function rgba(name, a) { const [r, g, b] = rgb(name); return `rgba(${r},${g},${b},${a})`; }
+
 async function instantiateWasm(url, importObject) {
   try { return await WebAssembly.instantiateStreaming(fetch(url), importObject); }
   catch { const b = await (await fetch(url)).arrayBuffer(); return WebAssembly.instantiate(b, importObject); }
@@ -59,12 +63,9 @@ function connect() {
   state.gateways = parseGateways();
   try { localStorage.setItem("moss-gateways", state.gateways.join(",")); } catch {}
 
-  if (!state.gateways.length) {
-    setVerdict("unknown", "no gateway configured — run `moss-gateway` and enter its URL above (http://localhost works here), or point at a public gateway");
-    return;
-  }
+  if (!state.gateways.length) { setVerdict("unknown", "no gateway — open the gateways panel"); return; }
   const blocked = state.gateways.filter(isBlockedMixedContent);
-  if (blocked.length) setVerdict("bad", `blocked: ${blocked.length} http gateway on an https page (use https, or http://localhost)`);
+  if (blocked.length) setVerdict("bad", `blocked: ${blocked.length} http gateway on https (use https / localhost)`);
 
   state.gateways.forEach(async (gw) => {
     try { const c = await (await fetch(`${gw}/api/chain?limit=128`)).json(); state.chainByGw[gw] = Array.isArray(c) ? c : []; }
@@ -91,21 +92,21 @@ function verify() {
     if (pts.length >= 2) { anyChain = true; if (!JSON.parse(mossVerifyChain(JSON.stringify(pts))).ok) allOk = false; }
   }
   const agree = JSON.parse(mossCrossCheck(JSON.stringify(state.chainByGw)));
-  const disagreements = Object.values(agree).filter((v) => v === false).length;
-  return { allOk, anyChain, disagreements, liveGateways: Object.keys(state.statsByGw).length };
+  const dis = Object.values(agree).filter((v) => v === false).length;
+  return { allOk, anyChain, dis, live: Object.keys(state.statsByGw).length };
 }
 function pickStats() {
   const all = Object.values(state.statsByGw);
   return all.find((s) => s.k_anon_ok) || all[0] || null;
 }
-function setVerdict(kind, text) {
+function setVerdict(kind, msg) {
   const v = document.getElementById("verdict"), dot = document.getElementById("verdict-dot");
-  document.getElementById("verdict-text").textContent = text;
-  v.className = "inline-flex items-center gap-2 rounded-full border px-4 py-2 text-sm";
+  document.getElementById("verdict-text").textContent = msg;
+  v.className = "glass inline-flex items-center gap-2 px-4 py-2 text-sm";
   dot.className = "h-2.5 w-2.5 rounded-full";
-  if (kind === "ok") { v.classList.add("border-accent/50", "text-ink"); dot.classList.add("bg-accent", "shadow-glow"); }
-  else if (kind === "bad") { v.classList.add("border-red-500/50", "text-red-300"); dot.classList.add("bg-red-500"); }
-  else { v.classList.add("border-line", "text-muted"); dot.classList.add("bg-muted"); }
+  if (kind === "ok") { v.classList.add("text-ink"); dot.classList.add("bg-accent", "shadow-glow"); }
+  else if (kind === "bad") { v.classList.add("text-red-300"); dot.classList.add("bg-red-500"); }
+  else { v.classList.add("text-muted"); dot.classList.add("bg-muted"); }
 }
 
 /* ---------- render ---------- */
@@ -113,63 +114,58 @@ function render() {
   if (!state.ready) return;
   const v = verify();
   if (!state.gateways.length) setVerdict("unknown", "not connected");
-  else if (!v.allOk || v.disagreements > 0)
-    setVerdict("bad", `verification FAILED — ${!v.allOk ? "broken chain" : ""}${v.disagreements ? ` ${v.disagreements} epoch(s) disagree` : ""}`);
-  else setVerdict("ok", `verified — ${v.liveGateways} gateway(s)` + (v.anyChain ? ", chain intact" : ", awaiting chain") + (v.liveGateways > 1 ? ", all agree" : ""));
+  else if (!v.allOk || v.dis > 0) setVerdict("bad", `verification failed${!v.allOk ? " — broken chain" : ""}${v.dis ? ` — ${v.dis} epoch(s) disagree` : ""}`);
+  else setVerdict("ok", `verified · ${v.live} gateway${v.live > 1 ? "s" : ""}${v.anyChain ? " · chain intact" : ""}${v.live > 1 ? " · agree" : ""}`);
 
   const s = pickStats();
   if (!s) return;
-
   countTo("node-count", s.node_count_estimate);
   text("contributors", fmt(s.contributors));
   text("epoch", "epoch " + (s.epoch ?? "—"));
-  text("bw-in", s.k_anon_ok ? bytes(s.bandwidth_in_total) : "hidden");
-  text("bw-out", s.k_anon_ok ? bytes(s.bandwidth_out_total) : "hidden");
-  text("digest", "digest " + (s.epoch_digest || "—"));
+  text("bw-in", s.k_anon_ok ? bytes(s.bandwidth_in_total) : "—");
+  text("bw-out", s.k_anon_ok ? bytes(s.bandwidth_out_total) : "—");
+  text("digest", (s.epoch_digest || "—").slice(0, 18) + "…");
   histogram("nat-hist", s.nat_histogram, s.k_anon_ok);
   histogram("degree-hist", s.degree_histogram, s.k_anon_ok);
 
   const n = Number(s.node_count_estimate) || 0;
-  const last = state.samples[state.samples.length - 1];
-  if (last === undefined || last !== n) state.samples.push(n);
-  if (state.samples.length > 64) state.samples.shift();
+  if (state.samples[state.samples.length - 1] !== n) state.samples.push(n);
+  if (state.samples.length > 80) state.samples.shift();
   drawSpark();
-
   buildTopology(s);
 }
 
 function countTo(id, value) {
   const el = document.getElementById(id);
   const target = Number(value) || 0;
-  if (reduce) { el.textContent = fmt(target); state.shownCount = target; return; }
-  gsap.to(state, { shownCount: target, duration: 0.8, ease: "power2.out", onUpdate: () => (el.textContent = fmt(Math.round(state.shownCount))) });
+  if (reduce) { el.textContent = fmt(target); return; }
+  gsap.to(state, { shownCount: target, duration: 0.9, ease: "power2.out", onUpdate: () => (el.textContent = fmt(Math.round(state.shownCount))) });
 }
 
 function histogram(id, hist, gated) {
   const el = document.getElementById(id);
   el.innerHTML = "";
   if (!gated || !hist || !Object.keys(hist).length) {
-    el.innerHTML = `<div class="text-xs text-muted">${gated ? "no data yet" : "hidden until k-anonymity threshold is met"}</div>`;
+    el.innerHTML = `<div class="text-[11px] text-muted">${gated ? "—" : "hidden (k-anon)"}</div>`;
     return;
   }
-  const entries = Object.entries(hist).sort((a, b) => b[1] - a[1]);
+  const entries = Object.entries(hist).sort((a, b) => b[1] - a[1]).slice(0, 5);
   const max = Math.max(...entries.map((e) => e[1]), 1);
   for (const [label, count] of entries) {
     const row = document.createElement("div");
-    row.className = "grid grid-cols-[7rem_1fr_3rem] items-center gap-3";
+    row.className = "grid grid-cols-[1fr_3rem] items-center gap-2";
     row.innerHTML =
-      `<span class="truncate font-mono text-xs text-ink">${escapeHtml(label)}</span>` +
-      `<span class="h-3 overflow-hidden rounded bg-surface-2"><span class="block h-full rounded bg-gradient-to-r from-accent2 to-accent" style="width:${(count / max * 100).toFixed(1)}%"></span></span>` +
-      `<span class="text-right font-mono text-xs text-muted">${count}</span>`;
+      `<span class="truncate font-mono text-[11px] text-ink" title="${escapeHtml(label)}">${escapeHtml(label)}</span>` +
+      `<span class="h-2 overflow-hidden rounded bg-surface-2"><span class="block h-full rounded bg-gradient-to-r from-accent2 to-accent" style="width:${(count / max * 100).toFixed(1)}%"></span></span>`;
     el.appendChild(row);
   }
 }
 
-/* ---------- canvases ---------- */
-function fitCanvas(canvas, aspect) {
+/* ---------- canvas ---------- */
+function fit(canvas, fixedH) {
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   const w = canvas.clientWidth || 600;
-  const h = aspect ? Math.round(w / aspect) : (canvas.clientHeight || 40);
+  const h = fixedH || canvas.clientHeight || 40;
   const bw = Math.round(w * dpr), bh = Math.round(h * dpr);
   if (canvas.width !== bw || canvas.height !== bh) { canvas.width = bw; canvas.height = bh; }
   const ctx = canvas.getContext("2d");
@@ -178,38 +174,34 @@ function fitCanvas(canvas, aspect) {
 }
 
 function drawSpark() {
-  const canvas = document.getElementById("spark");
-  const { ctx, w, h } = fitCanvas(canvas, null);
+  const { ctx, w, h } = fit(document.getElementById("spark"));
   ctx.clearRect(0, 0, w, h);
   const s = state.samples;
   if (s.length < 2) return;
   const max = Math.max(...s), min = Math.min(...s), span = Math.max(max - min, 1);
-  const x = (i) => (i / (s.length - 1)) * w;
-  const y = (val) => h - 4 - ((val - min) / span) * (h - 8);
-  ctx.beginPath();
-  s.forEach((v, i) => (i ? ctx.lineTo(x(i), y(v)) : ctx.moveTo(x(i), y(v))));
+  const X = (i) => (i / (s.length - 1)) * w, Y = (v) => h - 3 - ((v - min) / span) * (h - 6);
+  ctx.beginPath(); s.forEach((v, i) => (i ? ctx.lineTo(X(i), Y(v)) : ctx.moveTo(X(i), Y(v))));
   ctx.strokeStyle = cssRGB("--c-accent"); ctx.lineWidth = 1.5; ctx.stroke();
   ctx.lineTo(w, h); ctx.lineTo(0, h); ctx.closePath();
-  ctx.fillStyle = cssRGB("--c-accent").replace("rgb(", "rgba(").replace(")", ",0.10)");
-  ctx.fill();
+  ctx.fillStyle = rgba("--c-accent", 0.12); ctx.fill();
 }
 
 function buildTopology(stats) {
   const nodes = JSON.parse(mossSimulateTree(JSON.stringify({
     seed: stats.epoch_digest || "seed",
     node_count: Math.max(stats.node_count_estimate || stats.contributors || 0, 0),
-    max_render: 240,
+    max_render: 260,
     nat_histogram: stats.nat_histogram || {},
     degree_histogram: stats.degree_histogram || {},
   })));
   const edges = [];
   for (const n of nodes) if (n.parent >= 0) edges.push([n.parent, n.id]);
   state.topo = { nodes, edges, layout: null, w: 0, h: 0 };
-  const count = Math.min(edges.length, 18);
+  const count = Math.min(edges.length, 26);
   state.pulses = Array.from({ length: count }, (_, i) => ({
     e: edges.length ? (i * 7) % edges.length : 0,
     t: count ? i / count : 0,
-    speed: 0.25 + (i % 5) * 0.06,
+    speed: 0.22 + (i % 6) * 0.05,
   }));
 }
 
@@ -223,61 +215,96 @@ function radialLayout(nodes, W, H) {
   const count = (id, d) => { depth.set(id, d); const k = children.get(id) || []; if (!k.length) { leaves.set(id, 1); return 1; } let s = 0; for (const c of k) s += count(c, d + 1); leaves.set(id, s); return s; };
   let total = 0; for (const r of roots) total += count(r, 0); total = Math.max(total, 1);
   let maxDepth = 0; for (const d of depth.values()) maxDepth = Math.max(maxDepth, d);
-  const cx = W / 2, cy = H / 2, ring = (Math.min(W, H) / 2 - 36) / (maxDepth + 1);
+  const cx = W / 2, cy = H / 2, ring = (Math.min(W, H) * 0.46) / (maxDepth + 1);
   const pos = {};
   const assign = (id, a0, a1) => {
-    const ang = (a0 + a1) / 2, rad = 26 + depth.get(id) * ring;
+    const ang = (a0 + a1) / 2, rad = 30 + depth.get(id) * ring;
     pos[id] = { x: cx + Math.cos(ang) * rad, y: cy + Math.sin(ang) * rad };
     let cur = a0; for (const c of children.get(id) || []) { const sp = (a1 - a0) * (leaves.get(c) / leaves.get(id)); assign(c, cur, cur + sp); cur += sp; }
   };
-  let cur = 0; for (const r of roots) { const sp = Math.PI * 2 * (leaves.get(r) / total); assign(r, cur, cur + sp); cur += sp; }
+  let cur = -Math.PI / 2; for (const r of roots) { const sp = Math.PI * 2 * (leaves.get(r) / total); assign(r, cur, cur + sp); cur += sp; }
   return pos;
 }
 
-let lastTime = 0;
-function drawTopology(now) {
+function glowDot(ctx, x, y, r, color) {
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r * 4.5);
+  g.addColorStop(0, color.replace("rgb(", "rgba(").replace(")", ",0.5)"));
+  g.addColorStop(1, color.replace("rgb(", "rgba(").replace(")", ",0)"));
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r * 4.5, 0, Math.PI * 2); ctx.fill();
+}
+
+let last = 0;
+function frame(now) {
   const canvas = document.getElementById("tree");
-  const { ctx, w, h } = fitCanvas(canvas, 16 / 10);
+  const { ctx, w, h } = fit(canvas, window.innerHeight);
   ctx.clearRect(0, 0, w, h);
+  const cx = w / 2, cy = h / 2;
   const topo = state.topo;
+
+  // ambient depth rings, always (gives the empty state life too)
+  ctx.strokeStyle = rgba("--c-line", 0.5);
+  ctx.lineWidth = 1;
+  const maxR = Math.min(w, h) * 0.46;
+  for (let r = maxR / 5; r <= maxR; r += maxR / 5) { ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke(); }
+
   if (!topo || !topo.nodes.length) {
-    ctx.fillStyle = cssRGB("--c-muted"); ctx.font = "14px ui-monospace, monospace";
-    ctx.fillText(state.gateways.length ? "awaiting telemetry…" : "connect a gateway to view the network", 18, 28);
-    if (!reduce) requestAnimationFrame(drawTopology);
+    ctx.fillStyle = cssRGB("--c-muted"); ctx.font = "13px ui-monospace, monospace"; ctx.textAlign = "center";
+    ctx.fillText(state.gateways.length ? "awaiting telemetry…" : "open the gateways panel to view the live network", cx, cy);
+    ctx.textAlign = "left";
+    if (!reduce) requestAnimationFrame(frame);
     return;
   }
   if (!topo.layout || topo.w !== w || topo.h !== h) { topo.layout = radialLayout(topo.nodes, w, h); topo.w = w; topo.h = h; }
   const L = topo.layout;
+  const dt = Math.min((now - last) / 1000 || 0, 0.05); last = now;
 
-  ctx.strokeStyle = cssRGB("--c-line"); ctx.globalAlpha = 0.35;
-  for (let r = 60; r < Math.min(w, h) / 2; r += 60) { ctx.beginPath(); ctx.arc(w / 2, h / 2, r, 0, Math.PI * 2); ctx.stroke(); }
-  ctx.globalAlpha = 1;
+  ctx.save();
+  // slow drift + breathing
+  const theta = reduce ? 0 : now * 0.000018;
+  const breathe = reduce ? 1 : 1 + Math.sin(now * 0.0006) * 0.012;
+  ctx.translate(cx, cy); ctx.rotate(theta); ctx.scale(breathe, breathe); ctx.translate(-cx, -cy);
 
-  ctx.strokeStyle = cssRGB("--c-line"); ctx.lineWidth = 1; ctx.globalAlpha = 0.7;
-  for (const [a, b] of topo.edges) { const p = L[a], q = L[b]; if (!p || !q) continue; ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke(); }
-  ctx.globalAlpha = 1;
+  // curved edges, bowing toward centre
+  ctx.strokeStyle = rgba("--c-line", 0.85); ctx.lineWidth = 1;
+  for (const [a, b] of topo.edges) {
+    const p = L[a], q = L[b]; if (!p || !q) continue;
+    const mx = (p.x + q.x) / 2 + (cx - (p.x + q.x) / 2) * 0.12;
+    const my = (p.y + q.y) / 2 + (cy - (p.y + q.y) / 2) * 0.12;
+    ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.quadraticCurveTo(mx, my, q.x, q.y); ctx.stroke();
+  }
 
-  const dt = Math.min((now - lastTime) / 1000 || 0, 0.05); lastTime = now;
+  // gossip pulses (additive glow)
+  ctx.globalCompositeOperation = "lighter";
   const acc = cssRGB("--c-accent");
   for (const pulse of state.pulses) {
     const edge = topo.edges[pulse.e]; if (!edge) continue;
     const p = L[edge[0]], q = L[edge[1]]; if (!p || !q) continue;
     if (!reduce) { pulse.t += pulse.speed * dt; if (pulse.t > 1) { pulse.t = 0; pulse.e = (pulse.e + 13) % topo.edges.length; } }
     const x = p.x + (q.x - p.x) * pulse.t, y = p.y + (q.y - p.y) * pulse.t;
-    ctx.beginPath(); ctx.arc(x, y, 2.2, 0, Math.PI * 2);
-    ctx.fillStyle = acc; ctx.shadowColor = acc; ctx.shadowBlur = 10; ctx.fill(); ctx.shadowBlur = 0;
+    glowDot(ctx, x, y, 2, acc);
+    ctx.fillStyle = acc; ctx.beginPath(); ctx.arc(x, y, 1.8, 0, Math.PI * 2); ctx.fill();
   }
 
-  const colSuper = cssRGB("--c-accent"), colRelay = cssRGB("--c-accent2"), colLeaf = cssRGB("--c-muted");
+  // node halos for hubs (additive)
+  const cSuper = cssRGB("--c-accent"), cRelay = cssRGB("--c-accent2"), cLeaf = cssRGB("--c-muted");
   for (const n of topo.nodes) {
     const p = L[n.id]; if (!p) continue;
-    const r = n.kind === "supernode" ? 5.5 : n.kind === "relay" ? 3.6 : 2.3;
-    ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
-    ctx.fillStyle = n.kind === "supernode" ? colSuper : n.kind === "relay" ? colRelay : colLeaf;
-    if (n.kind === "supernode") { ctx.shadowColor = colSuper; ctx.shadowBlur = 12; }
-    ctx.fill(); ctx.shadowBlur = 0;
+    if (n.kind === "supernode") glowDot(ctx, p.x, p.y, 4, cSuper);
+    else if (n.kind === "relay") glowDot(ctx, p.x, p.y, 2.4, cRelay);
   }
-  if (!reduce) requestAnimationFrame(drawTopology);
+  ctx.globalCompositeOperation = "source-over";
+
+  // node cores
+  for (const n of topo.nodes) {
+    const p = L[n.id]; if (!p) continue;
+    const r = n.kind === "supernode" ? 4.5 : n.kind === "relay" ? 3 : 1.8;
+    ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+    ctx.fillStyle = n.kind === "supernode" ? cSuper : n.kind === "relay" ? cRelay : cLeaf;
+    ctx.fill();
+  }
+  ctx.restore();
+
+  if (!reduce) requestAnimationFrame(frame);
 }
 
 /* ---------- utils ---------- */
@@ -292,12 +319,16 @@ function bytes(n) {
 function escapeHtml(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
 
 /* ---------- boot ---------- */
-document.getElementById("connect").addEventListener("click", connect);
+const gwToggle = document.getElementById("gw-toggle");
+const gwPanel = document.getElementById("gw-panel");
+gwToggle.addEventListener("click", () => gwPanel.classList.toggle("hidden"));
+document.getElementById("connect").addEventListener("click", () => { connect(); gwPanel.classList.add("hidden"); });
 document.getElementById("gateways").value = initialGateways();
-if (reduce) drawTopology(0); else requestAnimationFrame(drawTopology);
+
+if (reduce) frame(0); else requestAnimationFrame(frame);
 initWasm()
   .then(() => {
     if (document.getElementById("gateways").value.trim()) connect();
-    else setVerdict("unknown", "no gateway configured — run `moss-gateway` and enter its URL above (http://localhost works here), or point at a public gateway");
+    else { setVerdict("unknown", "no gateway configured"); gwPanel.classList.remove("hidden"); }
   })
   .catch((e) => setVerdict("bad", "failed to load wasm: " + e));

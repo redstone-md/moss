@@ -4,6 +4,7 @@
 import "../css/styles.css";
 import "lenis/dist/lenis.css";
 import "./theme.js";
+import "./cmdk.js";
 import Lenis from "lenis";
 
 const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;

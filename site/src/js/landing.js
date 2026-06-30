@@ -4,6 +4,7 @@
 import "../css/styles.css";
 import "lenis/dist/lenis.css";
 import "./theme.js";
+import "./cmdk.js";
 import { initShader } from "./shader.js";
 import gsap from "gsap";
 import ScrollTrigger from "gsap/ScrollTrigger";

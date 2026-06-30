@@ -4,6 +4,7 @@
 // integrations — and the page invites submissions via a prefilled GitHub issue.
 import "../css/styles.css";
 import "./theme.js";
+import "./cmdk.js";
 import gsap from "gsap";
 
 const REPO = "https://github.com/redstone-md/moss";
@@ -43,21 +44,25 @@ const flow = document.getElementById("flow");
 flow.innerHTML = PROJECTS.map(rowHTML).join("");
 
 // Edge-aware reveal: the marquee enters from the edge the cursor crossed and
-// leaves toward the edge it exits — the flowing-menu signature.
+// leaves toward the edge it exits. The enter uses a timeline (.set then .to in
+// one tick) so there is no teleport-blink, and overwrite:"auto" cancels any
+// in-flight tween so rapid enter/leave never gets stuck.
 flow.querySelectorAll(".flow-row").forEach((row) => {
+  const link = row.querySelector(".flow-link");
   const marquee = row.querySelector(".flow-marquee");
   gsap.set(marquee, { yPercent: 101 });
   if (reduce) return;
   const edge = (e) => {
-    const r = row.getBoundingClientRect();
+    const r = link.getBoundingClientRect();
     return e.clientY - r.top < r.height / 2 ? -101 : 101;
   };
-  row.addEventListener("mouseenter", (e) => {
-    gsap.set(marquee, { yPercent: edge(e) });
-    gsap.to(marquee, { yPercent: 0, duration: 0.5, ease: "power3.out" });
+  link.addEventListener("mouseenter", (e) => {
+    gsap.timeline()
+      .set(marquee, { yPercent: edge(e) })
+      .to(marquee, { yPercent: 0, duration: 0.5, ease: "expo.out", overwrite: "auto" });
   });
-  row.addEventListener("mouseleave", (e) => {
-    gsap.to(marquee, { yPercent: edge(e), duration: 0.45, ease: "power3.in" });
+  link.addEventListener("mouseleave", (e) => {
+    gsap.to(marquee, { yPercent: edge(e), duration: 0.45, ease: "expo.in", overwrite: "auto" });
   });
 });
 
