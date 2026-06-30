@@ -13,6 +13,7 @@ const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 const state = {
   ready: false,
   gateways: [],
+  meshid: "global",
   statsByGw: {},
   chainByGw: {},
   sources: [],
@@ -21,6 +22,13 @@ const state = {
   pulses: [],
   shownCount: 0,
 };
+
+// Curated quick-pick meshes; merged with whatever a gateway reports it serves.
+const COMMON_MESHES = ["global"];
+function meshURL(gw, path) {
+  const sep = path.includes("?") ? "&" : "?";
+  return `${gw}${path}${sep}meshid=${encodeURIComponent(state.meshid || "global")}`;
+}
 
 /* ---------- helpers ---------- */
 function rgb(name) {
@@ -75,15 +83,43 @@ function connect() {
   const blocked = state.gateways.filter(isBlockedMixedContent);
   if (blocked.length) setVerdict("bad", `blocked: ${blocked.length} http gateway on https (use https / localhost)`);
 
+  state.samples = [];
   state.gateways.forEach(async (gw) => {
-    try { const c = await (await fetch(`${gw}/api/chain?limit=128`)).json(); state.chainByGw[gw] = Array.isArray(c) ? c : []; }
+    try { const c = await (await fetch(meshURL(gw, "/api/chain?limit=128"))).json(); state.chainByGw[gw] = Array.isArray(c) ? c : []; }
     catch { state.chainByGw[gw] = []; }
-    try { onStats(gw, await (await fetch(`${gw}/api/stats`)).json()); } catch {}
-    const es = new EventSource(`${gw}/api/events`);
+    try { onStats(gw, await (await fetch(meshURL(gw, "/api/stats"))).json()); } catch {}
+    const es = new EventSource(meshURL(gw, "/api/events"));
     es.onmessage = (ev) => { try { onStats(gw, JSON.parse(ev.data)); } catch {} };
     state.sources.push(es);
   });
   render();
+}
+
+// The mesh list lives on the CLIENT — the gateway joins meshes on demand and
+// keeps no list of its own. Seed with the common picks and persist additions.
+function loadMeshes() {
+  try { const a = JSON.parse(localStorage.getItem("moss-meshes") || "[]"); return Array.isArray(a) ? a : []; } catch { return []; }
+}
+let meshList = [...new Set([...COMMON_MESHES, ...loadMeshes()])];
+function saveMeshes() { try { localStorage.setItem("moss-meshes", JSON.stringify(meshList)); } catch {} }
+
+function populateMeshSelect() {
+  const sel = document.getElementById("meshid");
+  if (!sel) return;
+  if (!meshList.includes(state.meshid)) meshList.push(state.meshid);
+  sel.innerHTML = meshList.map((m) => `<option value="${escapeHtml(m)}"${m === state.meshid ? " selected" : ""}>${escapeHtml(m)}</option>`).join("");
+  sel.value = state.meshid;
+}
+
+function selectMesh(meshid) {
+  if (!meshid || meshid === state.meshid) return;
+  state.meshid = meshid;
+  if (!meshList.includes(meshid)) meshList.push(meshid);
+  try { localStorage.setItem("moss-meshid", meshid); } catch {}
+  saveMeshes();
+  populateMeshSelect();
+  state.topo = null;
+  connect();
 }
 function onStats(gw, stats) {
   if (!stats || typeof stats.epoch === "undefined") return;
@@ -332,6 +368,15 @@ const gwPanel = document.getElementById("gw-panel");
 gwToggle.addEventListener("click", () => gwPanel.classList.toggle("hidden"));
 document.getElementById("connect").addEventListener("click", () => { connect(); gwPanel.classList.add("hidden"); });
 document.getElementById("gateways").value = initialGateways();
+
+// Mesh selector: ?meshid= wins, else saved choice, else "global".
+const qMesh = new URLSearchParams(location.search).get("meshid");
+try { state.meshid = qMesh || localStorage.getItem("moss-meshid") || "global"; } catch { state.meshid = qMesh || "global"; }
+populateMeshSelect();
+document.getElementById("meshid").addEventListener("change", (e) => selectMesh(e.target.value));
+document.getElementById("meshid-custom").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { const v = e.target.value.trim(); if (v) { e.target.value = ""; selectMesh(v); } }
+});
 
 if (reduce) frame(0); else requestAnimationFrame(frame);
 initWasm()
