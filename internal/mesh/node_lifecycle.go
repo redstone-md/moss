@@ -12,6 +12,7 @@ import (
 	mcrypto "moss/internal/crypto"
 	"moss/internal/gossip"
 	"moss/internal/nat"
+	"moss/internal/stat"
 	"moss/internal/transport"
 )
 
@@ -96,6 +97,19 @@ func NewNodeWithIdentity(meshID string, psk []byte, cfg Config, identity *mcrypt
 		dispatchCh:       make(chan any, 1024),
 	}
 	node.natProfile.Store(nat.Profile{Type: nat.TypeUnknown})
+	if cfg.Telemetry.Enabled {
+		agg, err := stat.NewAggregator(stat.Config{
+			EpochSec:     int64(cfg.Telemetry.epochSec()),
+			DPEpsilon:    cfg.Telemetry.DPEpsilon,
+			BandwidthCap: cfg.Telemetry.BandwidthCap,
+			DegreeCap:    uint32(cfg.Telemetry.DegreeCap),
+			KAnon:        cfg.Telemetry.KAnon,
+		}, identity.PublicKeyBytes())
+		if err != nil {
+			return nil, err
+		}
+		node.statAgg = agg
+	}
 	return node, nil
 }
 
@@ -138,6 +152,10 @@ func (n *Node) Start() int32 {
 	go n.maintenanceLoop(ctx)
 	if n.config.LANDiscoveryEnabled && !transport.RunningGoTest() {
 		go n.lanDiscoveryLoop(ctx)
+	}
+	if n.statAgg != nil {
+		n.wg.Add(1)
+		go n.statLoop(ctx)
 	}
 	go n.probePortMapping(ctx, ln.Addr().String(), port)
 	go func() {

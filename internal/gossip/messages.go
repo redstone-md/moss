@@ -23,6 +23,7 @@ const (
 	TypePublish              EnvelopeType = "publish"
 	TypePing                 EnvelopeType = "ping"
 	TypePong                 EnvelopeType = "pong"
+	TypeStatDelta            EnvelopeType = "stat_delta"
 )
 
 type Envelope struct {

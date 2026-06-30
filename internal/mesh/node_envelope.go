@@ -75,6 +75,8 @@ func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 		if len(env.Payload) > 1024 {
 			n.broadcastIDontWant(env.Channel, []string{env.MessageID}, peer.id)
 		}
+	case gossip.TypeStatDelta:
+		n.handleStatDelta(peer, env)
 	case gossip.TypePing:
 		n.sendEnvelope(peer, gossip.Envelope{Type: gossip.TypePong, RequestID: env.RequestID})
 	case gossip.TypePong:
