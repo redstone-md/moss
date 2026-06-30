@@ -24,8 +24,8 @@ type dhtSource struct {
 // discoverable and keeps finding peers that come online later. onPeers is
 // called with "ip:port" strings as peers arrive. Best-effort; the mesh does
 // not depend on it.
-func startDHTSource(infoHash [20]byte, port int, interval time.Duration, onPeers func([]string)) (*dhtSource, error) {
-	conn, err := net.ListenPacket("udp", ":"+strconv.Itoa(port))
+func startDHTSource(infoHash [20]byte, dhtPort int, interval time.Duration, announcePort func() int, onPeers func([]string)) (*dhtSource, error) {
+	conn, err := net.ListenPacket("udp", ":"+strconv.Itoa(dhtPort))
 	if err != nil {
 		return nil, err
 	}
@@ -37,17 +37,17 @@ func startDHTSource(infoHash [20]byte, port int, interval time.Duration, onPeers
 		return nil, err
 	}
 	s := &dhtSource{server: server, stop: make(chan struct{}), done: make(chan struct{})}
-	go s.run(infoHash, interval, onPeers)
+	go s.run(infoHash, interval, announcePort, onPeers)
 	return s, nil
 }
 
-func (s *dhtSource) run(infoHash [20]byte, interval time.Duration, onPeers func([]string)) {
+func (s *dhtSource) run(infoHash [20]byte, interval time.Duration, announcePort func() int, onPeers func([]string)) {
 	defer close(s.done)
 	if interval <= 0 {
 		interval = 5 * time.Minute
 	}
 	for {
-		a, err := s.server.Announce(infoHash, 0, true)
+		a, err := s.server.Announce(infoHash, announcePort(), false)
 		if err == nil {
 			for pv := range a.Peers {
 				addrs := make([]string, 0, len(pv.Peers))

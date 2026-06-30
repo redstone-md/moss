@@ -149,7 +149,7 @@ func (n *Node) Start() int32 {
 		n.wg.Add(1)
 		go func() {
 			defer n.wg.Done()
-			src, err := startDHTSource(n.infoHash, n.config.DHTPort, n.config.AnnounceInterval(), func(addrs []string) {
+			src, err := startDHTSource(n.infoHash, n.config.DHTPort, n.config.AnnounceInterval(), n.announcePort, func(addrs []string) {
 				n.rememberTrackerSeeds(addrs)
 				n.kickBootstrapPeers(ctx, addrs)
 			})
