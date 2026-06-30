@@ -7,11 +7,12 @@ import (
 
 var defaultTrackers = []string{
 	"udp://tracker.opentrackr.org:1337/announce",
-	"udp://open.stealth.si:80/announce",
+	"udp://open.demonii.com:1337/announce",
+	"udp://tracker.torrent.eu.org:451/announce",
+	"udp://open.tracker.cl:1337/announce",
 	"udp://tracker.openbittorrent.com:6969/announce",
-	"udp://tracker1.bt.moack.co.kr:80/announce",
 	"udp://exodus.desync.com:6969/announce",
-	"http://tracker.opentrackr.org:1337/announce",
+	"http://tracker.openbittorrent.com:80/announce",
 }
 
 var defaultSTUNServers = []string{

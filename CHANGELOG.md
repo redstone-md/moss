@@ -4,6 +4,42 @@ All notable changes to this project are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project
 uses semantic versioning.
 
+## [Unreleased]
+
+### BREAKING
+
+- **Wire-format flag-day:** all UDP datagrams are now obfuscated by a keyed
+  scramble codec (ChaCha20-Poly1305; key derived from mesh ID + PSK). The
+  wire format is **not** backward-compatible. An obfuscated node and a
+  plaintext node cannot complete a handshake. Clients and relays must upgrade
+  together.
+
+### Added
+
+- BitTorrent mainline DHT discovery source: nodes periodically re-announce on
+  a dedicated UDP socket, giving tracker-independent peer discovery.
+- Persistent peer cache (`peers.json` beside the identity file) for warm
+  reconnect across restarts.
+- Tracker `AnnounceAll` now returns as soon as any tracker responds with
+  peers (grace window), instead of blocking on dead trackers.
+- New config fields: `obfs_pad_max`, `dht_enabled`, `dht_port`,
+  `peer_cache_max`, `peer_cache_ttl_sec`, `peer_cache_path`.
+
+### Changed
+
+- Default tracker list refreshed: removed unreachable / deprecated hosts
+  (`open.stealth.si`, `tracker1.bt.moack.co.kr`, HTTP opentrackr mirror);
+  added `open.demonii.com`, `tracker.torrent.eu.org`, `open.tracker.cl`,
+  `tracker.openbittorrent.com` HTTP mirror.
+
+### Dependencies
+
+- Adds `github.com/anacrolix/dht/v2 v2.24.0`. Its transitive
+  `github.com/anacrolix/torrent` pin is a retracted pseudo-version; only the
+  leaf packages `bencode`, `iplist`, `metainfo`, and `types/infohash` are
+  used (not the retracted torrent storage code), so the build is safe.
+  Re-tidy when `dht/v2` publishes a release off a non-retracted torrent base.
+
 ## [0.3.0] - 2026-06-02
 
 ### Added
