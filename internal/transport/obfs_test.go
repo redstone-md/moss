@@ -3,6 +3,8 @@ package transport
 import (
 	"bytes"
 	"testing"
+
+	"golang.org/x/crypto/chacha20poly1305"
 )
 
 func TestScrambleRoundTrip(t *testing.T) {
@@ -89,5 +91,61 @@ func TestScrambleClampsPadMax(t *testing.T) {
 	kind, got, ok := c.Open(wire)
 	if !ok || kind != udpMessageHandshakeInit || !bytes.Equal(got, payload) {
 		t.Fatalf("large padMax corrupted round-trip: ok=%v kind=%d payload=%q", ok, kind, got)
+	}
+}
+
+func TestScrambleNoFixedFingerprint(t *testing.T) {
+	c, err := newScrambleCodec("mesh-1", []byte("secret"), 256, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const N = 256
+	// Fixed payload + kind: proves the codec alone varies size and bytes,
+	// exactly the handshake-init case that fixed-size DPI keys on.
+	payload := bytes.Repeat([]byte{0x00}, 48)
+	packets := make([][]byte, N)
+	for i := range packets {
+		w, err := c.Seal(udpMessageHandshakeInit, payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		packets[i] = w
+	}
+
+	// (a) packet sizes vary
+	sizes := map[int]bool{}
+	minLen := len(packets[0])
+	for _, p := range packets {
+		sizes[len(p)] = true
+		if len(p) < minLen {
+			minLen = len(p)
+		}
+	}
+	if len(sizes) < 8 {
+		t.Fatalf("packet sizes barely vary: %d distinct lengths", len(sizes))
+	}
+
+	// (b) no byte position is constant across all packets (over common prefix)
+	for pos := 0; pos < minLen; pos++ {
+		v := packets[0][pos]
+		constant := true
+		for _, p := range packets {
+			if p[pos] != v {
+				constant = false
+				break
+			}
+		}
+		if constant {
+			t.Fatalf("byte position %d is constant across all packets (fingerprint)", pos)
+		}
+	}
+
+	// (c) nonces unique
+	seen := map[string]bool{}
+	for _, p := range packets {
+		seen[string(p[:chacha20poly1305.NonceSize])] = true
+	}
+	if len(seen) != N {
+		t.Fatalf("nonces not unique: %d/%d", len(seen), N)
 	}
 }
