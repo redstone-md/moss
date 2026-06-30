@@ -67,6 +67,11 @@
     @apply inline-flex items-center gap-1.5 rounded-full border border-line bg-surface/70 px-3 py-1 font-mono text-xs text-muted backdrop-blur;
   }
   .nav-link { @apply text-sm text-muted transition hover:text-ink; }
+  /* Floating HUD panel for the immersive explorer. */
+  .glass {
+    @apply rounded-2xl border border-line/80 bg-surface/40 backdrop-blur-xl;
+    box-shadow: 0 20px 50px -28px rgb(0 0 0 / 0.8);
+  }
   .hairline { @apply h-px w-full bg-line; }
   /* Subtle dotted grid texture for section backgrounds */
   .dotgrid {
@@ -85,10 +90,14 @@
   .flow-title {
     @apply font-display text-4xl font-extrabold tracking-tightest text-ink transition-colors duration-300 md:text-6xl;
   }
-  /* The marquee layer slides in over the row on hover (driven by GSAP). */
+  /* The marquee layer slides in over the row on hover (driven by GSAP). The CSS
+     transform hides it before the script runs (no load flash); GSAP then owns
+     yPercent. Only the marquee is animated — the inner track keeps its own CSS
+     translateX scroll, so GSAP never fights it for the transform. */
   .flow-marquee {
-    @apply pointer-events-none absolute inset-0 z-10 flex items-center bg-accent text-on-accent;
+    @apply pointer-events-none absolute inset-0 z-10 flex items-center overflow-hidden bg-accent text-on-accent;
     transform: translateY(101%);
+    will-change: transform;
   }
   .flow-track {
     @apply flex shrink-0 items-center whitespace-nowrap;
