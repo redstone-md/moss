@@ -42,10 +42,18 @@ async function initWasm() {
 }
 
 /* ---------- gateways ---------- */
+// Public default gateway so the explorer shows the live network out of the box.
+// Overridden by ?gateways= or the user's saved choice; run your own and add it
+// to cross-check (see deploy/README.md).
+const DEFAULT_GATEWAY = "https://moss-tty8dw.fly.dev";
 function initialGateways() {
   const q = new URLSearchParams(location.search).get("gateways");
   if (q) return q;
-  try { return localStorage.getItem("moss-gateways") || ""; } catch { return ""; }
+  try {
+    const saved = localStorage.getItem("moss-gateways");
+    if (saved !== null) return saved; // respect an explicit prior choice (incl. empty)
+  } catch {}
+  return DEFAULT_GATEWAY;
 }
 function isBlockedMixedContent(gw) {
   if (location.protocol !== "https:" || !gw.startsWith("http://")) return false;
