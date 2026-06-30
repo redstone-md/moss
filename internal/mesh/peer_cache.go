@@ -15,18 +15,12 @@ type cachedPeer struct {
 	LastSeenUnix int64  `json:"last_seen_unix"`
 }
 
-// peerCachePath derives the peers.json path from an identity-file base path.
-// Returns "" when base is empty (no on-disk persistence).
-func peerCachePath(base string) string {
-	if base == "" {
-		return ""
-	}
-	return filepath.Join(filepath.Dir(base), "peers.json")
-}
-
-// savePeerCache writes the most-recent `max` peers to path atomically.
+// savePeerCache writes the most-recent `max` peers to path atomically. An
+// empty peer set is NOT persisted — that would overwrite a good cache with
+// "[]" on a quick start/stop, a transient zero-peer blip, or a tick racing
+// shutdown. A missing/empty set leaves any existing cache intact.
 func savePeerCache(path string, peers []cachedPeer, max int) error {
-	if path == "" {
+	if path == "" || len(peers) == 0 {
 		return nil
 	}
 	sort.Slice(peers, func(i, j int) bool { return peers[i].LastSeenUnix > peers[j].LastSeenUnix })
@@ -37,11 +31,25 @@ func savePeerCache(path string, peers []cachedPeer, max int) error {
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "peers-*.json.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	return nil
 }
 
 // loadPeerCache returns the addresses of cached peers seen within ttl.
