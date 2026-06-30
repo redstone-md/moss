@@ -3,9 +3,10 @@
 # on *.fly.dev, so the gateway is reachable at https:// — no mixed-content issues
 # when the explorer is loaded over https.
 #
-# Run from the REPO ROOT (the build context must include the Go module).
-# Use the app name `fly launch` created for you:
-#   fly deploy -a <your-app> --config deploy/fly.gateway.toml
+# Run from the REPO ROOT (the build context must include the Go module). Pass
+# --dockerfile so Fly builds THIS image instead of guessing with Nixpacks (whose
+# "run-app" placeholder crashes). Use the app name `fly launch` created:
+#   fly deploy -a <your-app> --config deploy/fly.gateway.toml --dockerfile deploy/Dockerfile.gateway
 #
 # Then point the explorer at  https://<your-app>.fly.dev  (add it in the gateways
 # box, or share a link with ?gateways=https://<your-app>.fly.dev).

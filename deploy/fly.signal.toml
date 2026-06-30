@@ -3,8 +3,9 @@
 # stays end-to-end encrypted over the DataChannel. Fly's TLS makes it reachable
 # at wss://<your-app>.fly.dev/signal, which browsers require from https pages.
 #
-# Run from the REPO ROOT. Use the app name `fly launch` created:
-#   fly deploy -a <your-app> --config deploy/fly.signal.toml
+# Run from the REPO ROOT. Pass --dockerfile so Fly builds THIS image (not
+# Nixpacks). Use the app name `fly launch` created:
+#   fly deploy -a <your-app> --config deploy/fly.signal.toml --dockerfile deploy/Dockerfile.signal
 #
 # The run command comes from the image ENTRYPOINT — do NOT add [processes].
 
