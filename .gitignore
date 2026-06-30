@@ -16,3 +16,4 @@ examples/python_chat/.state/
 .state/
 __pycache__/
 *.pyc
+explorer/moss.wasm
