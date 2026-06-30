@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>mosh-web — Moss in the browser</title>
+  <style>
+    :root { --bg:#0a0f0c; --panel:#111a14; --line:#1f3027; --moss:#5fdd8e; --teal:#4fd6c2; --text:#d7e6dd; --muted:#6f8a7c; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--text);
+      font:15px/1.5 ui-monospace,Menlo,Consolas,monospace; padding:20px clamp(12px,4vw,48px); }
+    h1 { color:var(--moss); letter-spacing:.06em; margin:0 0 2px; }
+    .sub { color:var(--muted); margin:0 0 18px; font-size:13px; }
+    .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px; }
+    input { background:var(--panel); border:1px solid var(--line); color:var(--text);
+      padding:8px 10px; border-radius:8px; font:inherit; }
+    input.grow { flex:1; min-width:180px; }
+    button { background:#2f8a57; color:#03150b; border:0; font:inherit; font-weight:700;
+      padding:8px 16px; border-radius:8px; cursor:pointer; }
+    button:hover { background:var(--moss); }
+    #status { color:var(--muted); font-size:13px; margin:6px 0 14px; }
+    #log { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+      padding:12px; height:50vh; overflow:auto; white-space:pre-wrap; }
+    .msg .who { color:var(--teal); }
+    .msg .me { color:var(--moss); }
+    .sysmsg { color:var(--muted); font-style:italic; }
+  </style>
+</head>
+<body>
+  <h1>mosh-web</h1>
+  <p class="sub">a full Moss peer running in your browser over WebRTC — encrypted, serverless pub/sub</p>
+
+  <div class="row">
+    <input id="signal" class="grow" value="ws://127.0.0.1:8788/signal" />
+    <input id="mesh" value="mosh-demo" placeholder="mesh id" />
+    <input id="channel" value="lobby" placeholder="channel" />
+    <button id="join">join</button>
+  </div>
+  <div id="status">not connected</div>
+
+  <div id="log"></div>
+
+  <div class="row" style="margin-top:12px;">
+    <input id="text" class="grow" placeholder="message…" autocomplete="off" />
+    <button id="send" disabled>send</button>
+  </div>
+
+  <script src="wasm_exec.js"></script>
+  <script type="module" src="chat.js"></script>
+</body>
+</html>
