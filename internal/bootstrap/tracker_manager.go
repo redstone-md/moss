@@ -123,6 +123,9 @@ func (m *Manager) orderedTrackers(trackers []string) []string {
 }
 
 func (m *Manager) announceTrackers(ctx context.Context, trackers []string, req AnnounceRequest) ([]string, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	type result struct {
 		tracker string
 		peers   []string
@@ -169,6 +172,7 @@ func (m *Manager) announceTrackers(ctx context.Context, trackers []string, req A
 		wg.Wait()
 		close(results)
 	}()
+
 	seen := make(map[string]struct{})
 	var lastErr error
 	for res := range results {
@@ -180,7 +184,18 @@ func (m *Manager) announceTrackers(ctx context.Context, trackers []string, req A
 		for _, peer := range res.peers {
 			seen[peer] = struct{}{}
 		}
+		if len(seen) > 0 {
+			// We have peers — stop the remaining (possibly blocked) trackers
+			// and drain their results so the workers do not block on send.
+			cancel()
+			go func() {
+				for range results {
+				}
+			}()
+			break
+		}
 	}
+
 	out := make([]string, 0, len(seen))
 	for peer := range seen {
 		out = append(out, peer)
