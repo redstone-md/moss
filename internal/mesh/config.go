@@ -46,12 +46,16 @@ type Config struct {
 	// STUN servers. The Mosh frontend gates this behind an explicit toggle
 	// with a privacy warning and is responsible for never enabling it
 	// silently. See docs/bind-interface.md for the threat model.
-	BindInterface string          `json:"bind_interface"`
-	GossipSub     GossipSubConfig `json:"gossipsub"`
-	NAT           NATConfig       `json:"nat"`
-	Security      SecurityConfig  `json:"security"`
-	Transport     TransportConfig `json:"transport"`
-	ObfsPadMax    int             `json:"obfs_pad_max"`
+	BindInterface   string          `json:"bind_interface"`
+	GossipSub       GossipSubConfig `json:"gossipsub"`
+	NAT             NATConfig       `json:"nat"`
+	Security        SecurityConfig  `json:"security"`
+	Transport       TransportConfig `json:"transport"`
+	ObfsPadMax      int             `json:"obfs_pad_max"`
+	DHTEnabled      bool            `json:"dht_enabled"`
+	DHTPort         int             `json:"dht_port"`
+	PeerCacheMax    int             `json:"peer_cache_max"`
+	PeerCacheTTLSec int             `json:"peer_cache_ttl_sec"`
 }
 
 // TransportConfig tunes per-session inbound buffer sizes. Increase these
@@ -128,7 +132,11 @@ func DefaultConfig() Config {
 			RateLimitBurst:      256000,
 			RateLimitSustained:  64000,
 		},
-		ObfsPadMax: 256,
+		ObfsPadMax:      256,
+		DHTEnabled:      true,
+		DHTPort:         0,
+		PeerCacheMax:    256,
+		PeerCacheTTLSec: 7 * 24 * 60 * 60,
 	}
 }
 
@@ -137,6 +145,20 @@ func (c Config) obfsPadMax() int {
 		return 256
 	}
 	return c.ObfsPadMax
+}
+
+func (c Config) peerCacheMax() int {
+	if c.PeerCacheMax <= 0 {
+		return 256
+	}
+	return c.PeerCacheMax
+}
+
+func (c Config) peerCacheTTL() time.Duration {
+	if c.PeerCacheTTLSec <= 0 {
+		return 7 * 24 * time.Hour
+	}
+	return time.Duration(c.PeerCacheTTLSec) * time.Second
 }
 
 func ParseConfig(raw string) (Config, error) {
