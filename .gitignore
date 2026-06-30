@@ -5,6 +5,11 @@
 *.dylib
 *.h
 *.exe
+*.lib
+*.exp
+*.def
+examples/rust_example/target/
+examples/rust_example/Cargo.lock
 bin/
 obj/
 examples/python_chat/.state/
