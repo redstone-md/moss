@@ -102,7 +102,14 @@ export class MossRTC {
 // loadMossNode boots the wasm runtime and resolves once mossNodeStart exists.
 export async function loadMossNode(wasmUrl = "moss-node.wasm") {
   const go = new Go();
-  const res = await WebAssembly.instantiateStreaming(fetch(wasmUrl), go.importObject);
+  let res;
+  try {
+    res = await WebAssembly.instantiateStreaming(fetch(wasmUrl), go.importObject);
+  } catch (e) {
+    // Fallback when the static server doesn't send application/wasm MIME.
+    const bytes = await (await fetch(wasmUrl)).arrayBuffer();
+    res = await WebAssembly.instantiate(bytes, go.importObject);
+  }
   go.run(res.instance); // registers mossNodeStart/Subscribe/Publish/etc.
   // go.run never returns (select{}), so give the callbacks a tick to register.
   await new Promise((r) => setTimeout(r, 0));

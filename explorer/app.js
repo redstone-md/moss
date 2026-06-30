@@ -19,9 +19,20 @@ const state = {
 
 async function initWasm() {
   const go = new Go();
-  const res = await WebAssembly.instantiateStreaming(fetch("moss.wasm"), go.importObject);
+  const res = await instantiateWasm("moss.wasm", go.importObject);
   go.run(res.instance); // registers mossVerifyChain / mossCrossCheck / mossSimulateTree
   state.ready = true;
+}
+
+// instantiateWasm streams when the server sends application/wasm, else falls
+// back to fetching the bytes — so it works behind any static file server.
+async function instantiateWasm(url, importObject) {
+  try {
+    return await WebAssembly.instantiateStreaming(fetch(url), importObject);
+  } catch (e) {
+    const bytes = await (await fetch(url)).arrayBuffer();
+    return await WebAssembly.instantiate(bytes, importObject);
+  }
 }
 
 function parseGateways() {
