@@ -8,7 +8,7 @@ import (
 func TestDHTSourceStartStop(t *testing.T) {
 	var ih [20]byte
 	copy(ih[:], []byte("moss-dht-test-hash--"))
-	src, err := startDHTSource(ih, 0, func(addrs []string) { _ = addrs })
+	src, err := startDHTSource(ih, 0, time.Minute, func(addrs []string) { _ = addrs })
 	if err != nil {
 		t.Fatalf("start dht: %v", err)
 	}
