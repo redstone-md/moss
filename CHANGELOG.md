@@ -52,6 +52,15 @@ uses semantic versioning.
 
 ### Fixed
 
+- Direct connectivity regression from the NAT reachability hardening: a node
+  behind ordinary NAT with a stable port-forward (RFC1918 local + public
+  reflexive address) was guessed to be CGNAT, which made peers skip hole-punch
+  and wait for a relay that may not exist — breaking previously-working direct
+  connections. The classifier no longer guesses CGNAT from address shape (it is
+  indistinguishable from a port-forwarded host); genuine carrier NAT is still
+  caught observationally (varying mapped ports → symmetric; RFC6598 local →
+  CGNAT via Detect). Reachability still requires a real inbound probe, so the
+  CGNAT-supernode fix below is preserved.
 - CGNAT nodes were misclassified as `public` and promoted to supernodes. The
   v0.3.1 fix closed the `applyExternalObservation` shape path but two holes
   remained: `WithBindingObservations` still upgraded an `Unknown` profile to
