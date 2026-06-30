@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math/rand"
+	"sort"
 	"sync"
 )
 
@@ -299,5 +300,48 @@ func degreeBucket(d uint32) string {
 // ReportJSON returns the current Report as JSON.
 func (a *Aggregator) ReportJSON() string {
 	b, _ := json.Marshal(a.Snapshot())
+	return string(b)
+}
+
+// ChainEntry is one finalized link of the epoch hash chain.
+type ChainEntry struct {
+	Epoch  uint64 `json:"epoch"`
+	Digest string `json:"epoch_digest"`
+	Prev   string `json:"prev_digest"`
+}
+
+// RecentChain returns up to limit most-recent finalized epoch digests, oldest
+// first, each linked to its predecessor — the verifiable history an explorer
+// uses to check continuity. limit <= 0 returns the full retained chain.
+func (a *Aggregator) RecentChain(limit int) []ChainEntry {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	epochs := make([]uint64, 0, len(a.chain))
+	for e := range a.chain {
+		epochs = append(epochs, e)
+	}
+	sort.Slice(epochs, func(i, j int) bool { return epochs[i] < epochs[j] })
+	if limit > 0 && len(epochs) > limit {
+		epochs = epochs[len(epochs)-limit:]
+	}
+	out := make([]ChainEntry, 0, len(epochs))
+	for _, e := range epochs {
+		digest := a.chain[e]
+		var prev [32]byte
+		if e > 0 {
+			prev = a.chain[e-1]
+		}
+		out = append(out, ChainEntry{
+			Epoch:  e,
+			Digest: hex.EncodeToString(digest[:]),
+			Prev:   hex.EncodeToString(prev[:]),
+		})
+	}
+	return out
+}
+
+// ChainJSON returns RecentChain as JSON.
+func (a *Aggregator) ChainJSON(limit int) string {
+	b, _ := json.Marshal(a.RecentChain(limit))
 	return string(b)
 }
