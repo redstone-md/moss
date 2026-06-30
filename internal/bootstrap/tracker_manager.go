@@ -52,6 +52,12 @@ type Manager struct {
 
 const defaultTrackerConcurrency = 5
 
+// trackerEarlyReturnGrace is how long AnnounceAll keeps collecting peers from
+// other trackers after the first tracker yields peers, before it cancels the
+// remaining (slow/blocked) trackers. Fast trackers still merge; dead trackers
+// no longer gate the whole announce on the bootstrap timeout.
+const trackerEarlyReturnGrace = 500 * time.Millisecond
+
 func NewManager(timeout time.Duration) *Manager {
 	return NewManagerWithBind(timeout, 0)
 }
@@ -175,26 +181,39 @@ func (m *Manager) announceTrackers(ctx context.Context, trackers []string, req A
 
 	seen := make(map[string]struct{})
 	var lastErr error
-	for res := range results {
-		m.recordTrackerResult(res.tracker, res.err)
-		if res.err != nil {
-			lastErr = res.err
-			continue
-		}
-		for _, peer := range res.peers {
-			seen[peer] = struct{}{}
-		}
-		if len(seen) > 0 {
-			// We have peers — stop the remaining (possibly blocked) trackers
-			// and drain their results so the workers do not block on send.
-			cancel()
-			go func() {
-				for range results {
-				}
-			}()
-			break
+	var grace <-chan time.Time // nil until the first peer arrives
+	draining := false
+	for !draining {
+		select {
+		case res, ok := <-results:
+			if !ok {
+				draining = true // all trackers finished
+				break
+			}
+			m.recordTrackerResult(res.tracker, res.err)
+			if res.err != nil {
+				lastErr = res.err
+				continue
+			}
+			for _, peer := range res.peers {
+				seen[peer] = struct{}{}
+			}
+			if len(seen) > 0 && grace == nil {
+				// First peers in: give other fast trackers a short window to
+				// merge, then stop waiting on slow/dead ones.
+				grace = time.After(trackerEarlyReturnGrace)
+			}
+		case <-grace:
+			draining = true
 		}
 	}
+
+	// Stop remaining trackers and drain so worker sends never block.
+	cancel()
+	go func() {
+		for range results {
+		}
+	}()
 
 	out := make([]string, 0, len(seen))
 	for peer := range seen {
