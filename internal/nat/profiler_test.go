@@ -53,6 +53,25 @@ func TestProfilerWithBindingObservationsDetectsSymmetricNAT(t *testing.T) {
 	}
 }
 
+// TestProfilerNeverInfersPublicFromReflexiveAddress guards the CGNAT bug: a
+// node bound to 0.0.0.0 whose STUN reflexive address is public (its provider's
+// WAN IP) must NOT be classified public or reachable from address shape alone.
+func TestProfilerNeverInfersPublicFromReflexiveAddress(t *testing.T) {
+	profiler := NewProfiler()
+	base := profiler.Detect("0.0.0.0:4040") // -> TypeUnknown
+	profile := profiler.WithBindingObservations(base, []string{
+		"188.122.209.9:50000",
+		"188.122.209.9:50000",
+		"188.122.209.9:50000",
+	})
+	if profile.Type == TypePublic {
+		t.Fatalf("reflexive public address must not yield TypePublic, got %q", profile.Type)
+	}
+	if profile.PublicReachable {
+		t.Fatal("reflexive public address must not mark the node publicly reachable")
+	}
+}
+
 func TestProfilerWithBindingObservationsDetectsStableRestrictedProfile(t *testing.T) {
 	profiler := NewProfiler()
 	base := profiler.Detect("10.0.0.5:4040")

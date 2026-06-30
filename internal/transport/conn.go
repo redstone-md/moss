@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net"
 	"sync"
+	"sync/atomic"
 
 	"github.com/flynn/noise"
 )
@@ -26,6 +27,8 @@ type Session struct {
 	remoteID   [32]byte
 	remoteKey  [32]byte
 	handshake  byte
+	bytesIn    atomic.Uint64
+	bytesOut   atomic.Uint64
 }
 
 func NewSession(carrier carrier, sendCipher, recvCipher *noise.CipherState, remoteID, remoteKey [32]byte, handshake byte) (*Session, error) {
@@ -68,13 +71,21 @@ func (s *Session) writeRawPacket(packet []byte) error {
 		if err != nil {
 			return err
 		}
-		return s.carrier.WritePacket(ciphertext)
+		if err := s.carrier.WritePacket(ciphertext); err != nil {
+			return err
+		}
+		s.bytesOut.Add(uint64(len(ciphertext)))
+		return nil
 	}
 	ciphertext, err := s.sendCipher.Encrypt(nil, nil, packet)
 	if err != nil {
 		return err
 	}
-	return s.carrier.WritePacket(ciphertext)
+	if err := s.carrier.WritePacket(ciphertext); err != nil {
+		return err
+	}
+	s.bytesOut.Add(uint64(len(ciphertext)))
+	return nil
 }
 
 func (s *Session) readRawPacket() ([]byte, error) {
@@ -85,6 +96,7 @@ func (s *Session) readRawPacket() ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
+		s.bytesIn.Add(uint64(len(buf)))
 		if s.datagram != nil {
 			packet, err := s.datagram.Decrypt(buf)
 			if errors.Is(err, errDatagramDrop) {
@@ -111,6 +123,13 @@ func (s *Session) HandshakeMode() byte {
 func (s *Session) RemoteAddr() net.Addr {
 	return s.carrier.RemoteAddr()
 }
+
+// BytesIn returns the total ciphertext bytes received over this session's
+// carrier (closest measurable point to the wire). Used by the telemetry layer.
+func (s *Session) BytesIn() uint64 { return s.bytesIn.Load() }
+
+// BytesOut returns the total ciphertext bytes sent over this session's carrier.
+func (s *Session) BytesOut() uint64 { return s.bytesOut.Load() }
 
 func (s *Session) Close() error {
 	if s.mux != nil {

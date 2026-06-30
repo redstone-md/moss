@@ -301,6 +301,21 @@ func Moss_GetNATType(handle C.MossHandle) *C.char {
 	return C.CString(node.NATType())
 }
 
+//export Moss_GetNetworkStats
+func Moss_GetNetworkStats(handle C.MossHandle) *C.char {
+	node, code := getNode(int64(handle))
+	if code != mesh.MOSS_OK {
+		return nil
+	}
+	stats := node.StatsJSON()
+	if stats == "" {
+		// Telemetry is disabled for this node; return an empty JSON object so
+		// callers get valid, releasable JSON rather than NULL.
+		stats = "{}"
+	}
+	return C.CString(stats)
+}
+
 //export Moss_Free
 func Moss_Free(ptr unsafe.Pointer) {
 	if ptr != nil {
