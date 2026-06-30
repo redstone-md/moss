@@ -14,6 +14,8 @@ const REPO = "https://github.com/redstone-md/moss";
 // Real ecosystem entries. Keep this list honest; add via the GitHub issue flow.
 const PROJECTS = [
   { name: "MOSH", tag: "desktop chat client built on Moss", href: "https://github.com/redstone-md/mosh" },
+  { name: "GSE Moss", tag: "redstone-md/gse_moss", href: "https://github.com/redstone-md/gse_moss" },
+  { name: "MossyMod", tag: "redstone-md/mossymod", href: "https://github.com/redstone-md/mossymod" },
   { name: "Python chat", tag: "ctypes integration · examples/python_chat", href: `${REPO}/tree/main/examples/python_chat` },
   { name: "Rust FFI", tag: "native binding · examples/rust_example", href: `${REPO}/tree/main/examples/rust_example` },
   { name: "C · C++ · C#", tag: "reference integrations · examples", href: `${REPO}/tree/main/examples` },

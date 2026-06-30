@@ -5,6 +5,11 @@ import (
 	"time"
 )
 
+// DefaultMeshID is the standard public mesh, maintained by the Moss developers.
+// Products that want to join the shared public network should use this id so
+// peers can actually find each other; pick a unique id only for a private mesh.
+const DefaultMeshID = "global"
+
 var defaultTrackers = []string{
 	"udp://tracker.opentrackr.org:1337/announce",
 	"udp://open.demonii.com:1337/announce",

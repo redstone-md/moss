@@ -41,10 +41,10 @@ func nodeStart(_ js.Value, args []js.Value) any {
 	if node != nil {
 		return "already started"
 	}
-	if len(args) < 1 {
-		return "missing mesh id"
+	meshID := mesh.DefaultMeshID
+	if len(args) >= 1 && args[0].String() != "" {
+		meshID = args[0].String()
 	}
-	meshID := args[0].String()
 	var psk []byte
 	if len(args) >= 2 && args[1].Truthy() {
 		decoded, err := hex.DecodeString(args[1].String())

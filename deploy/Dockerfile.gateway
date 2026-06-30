@@ -9,5 +9,6 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/moss-gateway ./cmd
 FROM gcr.io/distroless/static-debian12
 COPY --from=build /out/moss-gateway /usr/local/bin/moss-gateway
 # Exec-form entrypoint so Fly/Docker run the binary directly (no shell needed).
+# Default to the standard public mesh "global".
 ENTRYPOINT ["/usr/local/bin/moss-gateway"]
-CMD ["-mesh", "moss", "-http", "0.0.0.0:8787"]
+CMD ["-mesh", "global", "-http", "0.0.0.0:8787"]

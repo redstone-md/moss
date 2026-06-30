@@ -31,7 +31,9 @@ MossHandle Moss_Init(const char* mesh_id, const uint8_t* psk, const char* config
 
 Creates a node instance and returns an opaque handle.
 
-- `mesh_id`: required UTF-8 mesh identifier.
+- `mesh_id`: required UTF-8 mesh identifier. Use `global` — the standard public
+  mesh maintained by the Moss developers — to join the shared network; choose a
+  unique id only for a private, isolated mesh.
 - `psk`: optional 32-byte pre-shared key; pass `NULL` for an open mesh.
 - `config`: optional JSON config; pass `NULL` for defaults.
 
