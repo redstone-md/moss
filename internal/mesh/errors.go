@@ -12,4 +12,5 @@ const (
 	MOSS_ERR_CONFIG_INVALID    int32 = -8
 	MOSS_ERR_OUT_OF_MEMORY     int32 = -9
 	MOSS_ERR_CONNECT_FAILED    int32 = -10
+	MOSS_ERR_RELAY_FAILED      int32 = -11 // relay send failed (no route, session open failed, or send error)
 )
