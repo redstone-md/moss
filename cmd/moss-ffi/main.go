@@ -51,6 +51,17 @@ static inline void callKeyStoreSave(MossKeyStoreSaveCallback cb,
                                     uint32_t len) {
   cb(data, len);
 }
+
+typedef void (*MossRelayCallback)(const uint8_t* sender_id,
+                                  const uint8_t* data,
+                                  uint32_t length);
+
+static inline void callRelayCallback(MossRelayCallback cb,
+                                     const uint8_t* sender_id,
+                                     const uint8_t* data,
+                                     uint32_t length) {
+    cb(sender_id, data, length);
+}
 */
 import "C"
 
@@ -59,11 +70,14 @@ import (
 	"math"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unsafe"
 
 	mcrypto "moss/internal/crypto"
 	"moss/internal/mesh"
 )
+
+const relayFFITimeout = 5 * time.Second
 
 var (
 	handleCounter atomic.Int64
@@ -259,6 +273,42 @@ func Moss_SetScoringCallback(handle C.MossHandle, cb C.MossScoringCallback) C.in
 		peerC := C.CBytes(peerID[:])
 		defer C.free(peerC)
 		return float64(C.callScoringCallback(cb, (*C.uint8_t)(peerC), C.double(baseScore)))
+	})
+	return C.int32_t(mesh.MOSS_OK)
+}
+
+//export Moss_RelaySendTo
+func Moss_RelaySendTo(handle C.MossHandle, targetPeerID *C.char, data *C.uint8_t, length C.int32_t) C.int32_t {
+	node, code := getNode(int64(handle))
+	if code != mesh.MOSS_OK {
+		return C.int32_t(code)
+	}
+	if targetPeerID == nil || length < 0 {
+		return C.int32_t(mesh.MOSS_ERR_CONFIG_INVALID)
+	}
+	payload := bytesFromPointer(data, int(length))
+	if err := node.RelaySendTo(C.GoString(targetPeerID), payload, relayFFITimeout); err != nil {
+		return C.int32_t(mesh.MOSS_ERR_RELAY_FAILED)
+	}
+	return C.int32_t(mesh.MOSS_OK)
+}
+
+//export Moss_SetRelayCallback
+func Moss_SetRelayCallback(handle C.MossHandle, cb C.MossRelayCallback) C.int32_t {
+	node, code := getNode(int64(handle))
+	if code != mesh.MOSS_OK {
+		return C.int32_t(code)
+	}
+	if cb == nil {
+		node.SetRelayCallback(nil)
+		return C.int32_t(mesh.MOSS_OK)
+	}
+	node.SetRelayCallback(func(senderID [32]byte, data []byte) {
+		senderC := C.CBytes(senderID[:])
+		dataC := C.CBytes(data)
+		C.callRelayCallback(cb, (*C.uint8_t)(senderC), (*C.uint8_t)(dataC), C.uint32_t(len(data)))
+		C.free(senderC)
+		C.free(dataC)
 	})
 	return C.int32_t(mesh.MOSS_OK)
 }
