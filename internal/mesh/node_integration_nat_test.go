@@ -94,6 +94,56 @@ func TestSupernodeDemotesWhenRelayCapacityIsSaturated(t *testing.T) {
 	}
 }
 
+// TestSupernodeAnnounceReachesPeerJoiningAfterPromotion covers the relay-mesh
+// bootstrap case: a public SuperNode promotes while it has no peers, then a peer
+// connects afterwards. Relay capability is only trusted from a signed
+// SupernodeAnnounce (never a plain peer-announce), and that announce is otherwise
+// broadcast just once at promotion — so a late-joining peer must be (re-)told on
+// join, or it never learns the node can relay for it.
+func TestSupernodeAnnounceReachesPeerJoiningAfterPromotion(t *testing.T) {
+	cfgA := DefaultConfig()
+	cfgA.Trackers = nil
+	cfgA.GossipSub.HeartbeatMS = 50
+	cfgA.NAT.SuperNodeMinUptimeSec = 0
+	nodeA, err := NewNode("mesh-supernode-latejoin", nil, cfgA)
+	if err != nil {
+		t.Fatalf("NewNode nodeA failed: %v", err)
+	}
+	if code := nodeA.Start(); code != MOSS_OK {
+		t.Fatalf("nodeA.Start failed: %d", code)
+	}
+	defer nodeA.Stop()
+
+	// Promote A to SuperNode BEFORE any peer is connected.
+	nodeA.natProfile.Store(nat.Profile{
+		Type:            nat.TypePublic,
+		PublicReachable: true,
+		ExternalAddress: net.JoinHostPort("203.0.113.10", strconv.Itoa(nodeA.ListenPort())),
+	})
+	nodeA.refreshSupernodeStatus()
+
+	// B connects only now — after promotion. It must still converge to seeing A
+	// as relay-capable.
+	cfgB := DefaultConfig()
+	cfgB.Trackers = nil
+	cfgB.GossipSub.HeartbeatMS = 50
+	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(nodeA.ListenPort()))}
+	nodeB, err := NewNode("mesh-supernode-latejoin", nil, cfgB)
+	if err != nil {
+		t.Fatalf("NewNode nodeB failed: %v", err)
+	}
+	if code := nodeB.Start(); code != MOSS_OK {
+		t.Fatalf("nodeB.Start failed: %d", code)
+	}
+	defer nodeB.Stop()
+
+	waitForPeerCount(t, nodeB, 1)
+	nodeAPub := nodeA.PublicKey()
+	nodeAID := hex.EncodeToString(nodeAPub[:])
+	waitForKnownPeer(t, nodeB, nodeAID)
+	waitForKnownPeerRelayCapable(t, nodeB, nodeAID, true)
+}
+
 func TestRefreshExternalAddressPreservesListenPort(t *testing.T) {
 	cfgRelay := DefaultConfig()
 	cfgRelay.Trackers = nil
