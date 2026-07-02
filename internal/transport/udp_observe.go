@@ -9,7 +9,10 @@ import (
 )
 
 func (l *UDPListener) ObserveContext(ctx context.Context, addr string) (string, error) {
-	remote, err := net.ResolveUDPAddr("udp", addr)
+	// udp4: the listener socket is IPv4-only (net.ListenUDP("udp4", ...)), so a
+	// resolved address must be IPv4. Plain "udp" lets the resolver return an
+	// IPv6 address, which then cannot be sent on the v4 socket.
+	remote, err := net.ResolveUDPAddr("udp4", addr)
 	if err != nil {
 		return "", err
 	}
@@ -52,7 +55,12 @@ func (l *UDPListener) ObserveContext(ctx context.Context, addr string) (string, 
 }
 
 func (l *UDPListener) ObserveSTUNContext(ctx context.Context, addr string) (string, error) {
-	remote, err := net.ResolveUDPAddr("udp", addr)
+	// udp4: STUN observation must go out over the IPv4-only listener socket.
+	// A STUN hostname (e.g. stun.l.google.com) resolves to both A and AAAA; with
+	// plain "udp" the resolver can hand back the IPv6 address, and on an
+	// IPv4-only-egress host the STUN request then silently fails, leaving NAT
+	// type stuck at "unknown" (node never promotes to SuperNode).
+	remote, err := net.ResolveUDPAddr("udp4", addr)
 	if err != nil {
 		return "", err
 	}

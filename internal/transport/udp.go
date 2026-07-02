@@ -134,7 +134,9 @@ func (l *UDPListener) DialContext(ctx context.Context, addr string) (*Session, e
 }
 
 func (l *UDPListener) DialPeerContext(ctx context.Context, addr string, remoteStatic []byte) (*Session, error) {
-	remote, err := net.ResolveUDPAddr("udp", addr)
+	// udp4: peers are dialed on the IPv4-only listener socket, so the address
+	// must resolve to IPv4 to match (mesh peer addrs are always v4 host:port).
+	remote, err := net.ResolveUDPAddr("udp4", addr)
 	if err != nil {
 		return nil, err
 	}
