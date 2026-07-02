@@ -9,6 +9,13 @@ import (
 	"moss/internal/transport"
 )
 
+// supernodeReannounceEveryTicks throttles how often an active SuperNode
+// re-broadcasts its signed SupernodeAnnounce (every N maintenance heartbeats), so
+// peers that joined after promotion converge on its relay role without flooding
+// the mesh. At the default 1s heartbeat this is ~10s; tests using a faster
+// heartbeat converge proportionally sooner.
+const supernodeReannounceEveryTicks uint64 = 10
+
 func (n *Node) removePeer(peerID string, session *transport.Session) {
 	n.mu.Lock()
 	peer := n.peers[peerID]
@@ -237,6 +244,9 @@ func (n *Node) maintenanceLoop(ctx context.Context) {
 				n.maintainTopicMesh(channel)
 			}
 			n.refreshSupernodeStatus()
+			if atomic.LoadUint64(&n.heartbeat)%supernodeReannounceEveryTicks == 0 {
+				n.reannounceSupernodeStatus()
+			}
 		}
 	}
 }
