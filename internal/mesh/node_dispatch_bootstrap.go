@@ -134,6 +134,29 @@ func (n *Node) refreshSupernodeStatus() {
 	n.enqueueEvent(eventType, map[string]string{"nat_type": string(profile.Type)})
 }
 
+// reannounceSupernodeStatus re-broadcasts a signed SupernodeAnnounce to all peers
+// while this node is an active SuperNode. refreshSupernodeStatus emits only on a
+// status *change*, and the one-shot promotion broadcast reaches only the peers
+// connected at that instant — a peer that joins later, or that was registered
+// before this node's own probe-driven promotion, never gets a trusted, signed
+// announcement (relay capability is never taken from a plain peer-announce). The
+// periodic re-broadcast converges every current peer's view of our relay role.
+func (n *Node) reannounceSupernodeStatus() {
+	info := n.localKnownPeer()
+	if !info.relayCapable {
+		return
+	}
+	signed := n.signSupernodeEnvelope(gossip.Envelope{
+		Type:                   gossip.TypeSupernodeAnnounce,
+		AdvertisedPeerID:       info.id,
+		AdvertisedAddr:         info.addr,
+		AdvertisedNATType:      string(info.natType),
+		AdvertisedReachable:    info.publicReachable,
+		AdvertisedRelayCapable: true,
+	})
+	n.broadcastToAll(signed, "")
+}
+
 func (n *Node) enqueueEvent(eventType int32, detail any) {
 	raw, _ := json.Marshal(detail)
 	n.dispatchCh <- dispatchEvent{eventType: eventType, detail: string(raw)}
