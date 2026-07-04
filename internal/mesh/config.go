@@ -11,12 +11,26 @@ import (
 const DefaultMeshID = "global"
 
 var defaultTrackers = []string{
+	// International trackers (broadly reachable). A node announces to all of them,
+	// so any two peers only need ONE tracker both can reach to find each other.
 	"udp://tracker.opentrackr.org:1337/announce",
 	"udp://open.demonii.com:1337/announce",
 	"udp://tracker.torrent.eu.org:451/announce",
-	"udp://open.tracker.cl:1337/announce",
-	"udp://tracker.openbittorrent.com:6969/announce",
+	"udp://open.stealth.si:80/announce",
+	"udp://tracker.qu.ax:6969/announce",
+	"udp://open.demonoid.ch:6969/announce",
+	"udp://tracker-udp.gbitt.info:80/announce",
+	"udp://tracker.dler.org:6969/announce",
 	"udp://exodus.desync.com:6969/announce",
+	"udp://tracker.openbittorrent.com:6969/announce",
+	// Russia / CIS hosted trackers — reachable from RU networks where the common
+	// international trackers are frequently blocked or time out. These are hosted
+	// inside RU/CIS (ISP retrackers / RU portals), not RKN-blocked pirate sites.
+	"udp://retracker.hotplug.ru:2710/announce",
+	"udp://tracker.playground.ru:6969/announce",
+	"udp://retracker01-msk-virt.corbina.net:80/announce",
+	// HTTP fallbacks (some networks pass HTTP but drop UDP)
+	"http://retracker.hotplug.ru:2710/announce",
 	"http://tracker.openbittorrent.com:80/announce",
 }
 
