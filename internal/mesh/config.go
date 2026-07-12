@@ -78,7 +78,36 @@ type Config struct {
 	PeerCacheTTLSec int             `json:"peer_cache_ttl_sec"`
 	PeerCachePath   string          `json:"peer_cache_path"`
 	Telemetry       TelemetryConfig `json:"telemetry"`
+	Veil            VeilConfig      `json:"veil"`
 }
+
+// VeilConfig controls the Veil "Reality" DPI-resistant transport bearer.
+// It is disabled by default. When enabled, the client↔relay leg is
+// tunnelled inside a uTLS Chrome-fingerprint TLS stream aimed at a cover
+// domain, so active DPI (e.g. Russia's TSPU) cannot distinguish it from
+// ordinary HTTPS and cannot reset Moss's high-entropy Noise handshake.
+//
+// A relay runs Role="listener" and binds ListenAddr; clients run
+// Role="dialer" (the default) and reach the relay through their normal
+// connect path. The auth secret is derived from the relay's static Noise
+// key (already gossiped in peer announcements) via DeriveAuthSecret, so
+// no secret needs to be shared out of band — a client that holds a
+// relay's descriptor can authenticate to its Veil listener.
+//
+// CoverSNI must be identical on both sides and SHOULD be a real domain
+// the relay can reach, so unauthenticated probes spliced to it see a
+// genuine certificate and page.
+type VeilConfig struct {
+	Enabled    bool   `json:"enabled"`
+	Role       string `json:"role"`
+	ListenAddr string `json:"listen_addr"`
+	CoverSNI   string `json:"cover_sni"`
+	TargetAddr string `json:"target_addr"`
+}
+
+// IsListener reports whether this node should run the Veil Reality
+// listener (relay/gateway/supernode role).
+func (v VeilConfig) IsListener() bool { return v.Enabled && v.Role == "listener" }
 
 // TelemetryConfig controls the privacy-preserving network observability layer.
 // It is disabled by default. When enabled, the node contributes DP-noised,

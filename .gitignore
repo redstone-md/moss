@@ -23,3 +23,7 @@ site/dist/
 site/public/moss.wasm
 site/public/moss-node.wasm
 site/public/wasm_exec.js
+
+# Local multi-repo dev workspace (hardcodes ../veil path; not for CI)
+go.work
+go.work.sum
