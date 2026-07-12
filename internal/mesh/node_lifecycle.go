@@ -157,6 +157,7 @@ func (n *Node) Start() int32 {
 		n.wg.Add(1)
 		go n.statLoop(ctx)
 	}
+	n.startVeilBearer(ctx)
 	go n.probePortMapping(ctx, ln.Addr().String(), port)
 	go func() {
 		if addrs := loadPeerCache(n.config.PeerCachePath, n.config.peerCacheTTL()); len(addrs) > 0 {
@@ -202,6 +203,8 @@ func (n *Node) Stop() int32 {
 	cancel := n.cancel
 	listener := n.listener
 	udpListener := n.udpListener
+	veilListener := n.veilListener
+	n.veilListener = nil
 	portMapper := n.portMapper
 	n.portMapper = nil
 	peers := make([]*peerConn, 0, len(n.peers))
@@ -213,6 +216,9 @@ func (n *Node) Stop() int32 {
 	cancel()
 	if listener != nil {
 		_ = listener.Close()
+	}
+	if veilListener != nil {
+		_ = veilListener.Close()
 	}
 	if udpListener != nil {
 		_ = udpListener.Close()

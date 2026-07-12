@@ -29,6 +29,11 @@ type Node struct {
 	portMapper    nat.PortMapper
 	listener      *transport.Listener
 	udpListener   *transport.UDPListener
+	// veilListener holds the Veil "Reality" DPI-mask listener when this
+	// node runs the relay role. Typed as a bare Closer so the field
+	// stays free of the uTLS-heavy vtransport import on js/wasm builds,
+	// where the Veil bearer is excluded (see node_veil.go, //go:build !js).
+	veilListener  interface{ Close() error }
 	relaySessions *nat.SessionManager
 	listenPort    int
 	bindIfIndex   int
