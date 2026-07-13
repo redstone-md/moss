@@ -249,7 +249,7 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 		if existing.relayed {
 			replacedPeer = existing
 		} else {
-			if !shouldReplaceDuplicatePeer(n.localPeerID(), peerID, existing.outbound, outbound) {
+			if !yieldsToNewConnection(n.localPeerID(), existing, outbound) {
 				n.mu.Unlock()
 				_ = session.Close()
 				return
@@ -397,6 +397,20 @@ func shouldReplaceDuplicatePeer(localPeerID, remotePeerID string, existingOutbou
 	}
 	wantOutbound := localPeerID < remotePeerID
 	return newOutbound == wantOutbound
+}
+
+// yieldsToNewConnection reports whether an existing direct connection for the
+// same peer should give way to a freshly handshaked one. A stale existing
+// connection (at least one missed ping) always yields: after a NAT rebind the
+// peer reconnects from a new source port in the SAME direction, and the
+// direction-only dedup would discard the live connection and keep the dead one
+// until the ping-miss prune fires. A healthy existing connection falls back to
+// the deterministic direction rule.
+func yieldsToNewConnection(localPeerID string, existing *peerConn, newOutbound bool) bool {
+	if existing.pingMisses > 0 {
+		return true
+	}
+	return shouldReplaceDuplicatePeer(localPeerID, existing.id, existing.outbound, newOutbound)
 }
 
 func (n *Node) readPeer(peer *peerConn) {
