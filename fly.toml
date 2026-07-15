@@ -1,12 +1,24 @@
 # Root Fly.io config so Fly's GitHub deploy (and a bare `fly deploy`) find it
-# here. This deploys a Moss **telemetry gateway**: a node with telemetry on,
-# serving the read-only HTTP/SSE API the explorer reads and verifies. Fly
-# terminates TLS on *.fly.dev, so it is reachable over https with no mixed
-# content when the explorer is loaded over https.
+# here. This deploys a Moss **gateway**: one node on the shared substrate that
+# both RELAYS for the whole network (SuperNode) and serves the read-only
+# telemetry HTTP/SSE API the explorer reads and verifies. Fly terminates TLS on
+# *.fly.dev, so the API is reachable over https with no mixed content.
 #
 # [build].dockerfile forces Fly to build THIS image rather than guessing with
 # Nixpacks (whose "run-app" placeholder crash-loops). The build context is the
 # repo root, so the Dockerfile's `COPY . .` sees the Go module.
+#
+# RELAY REACHABILITY — the important part. The gateway can only be promoted to a
+# relaying SuperNode if its peer port (4001, pinned in deploy/Dockerfile.gateway)
+# is reachable from the internet, inbound. Fly's shared/anycast address only
+# proxies the [http_service] block, so the raw peer port needs its own
+# dedicated IPv4, allocated ONCE per app:
+#
+#   fly ips allocate-v4 --app moss-tty8dw
+#   fly deploy
+#
+# The [[services]] block below binds that dedicated IP to peer port 4001 on both
+# TCP and UDP (moss uses one port number for both transports).
 #
 # Forking? Change `app` to your own app name. For the signaling relay instead,
 # deploy deploy/fly.signal.toml with the CLI (see deploy/README.md).
@@ -17,13 +29,28 @@ primary_region = "iad"
 [build]
   dockerfile = "deploy/Dockerfile.gateway"
 
+# Read-only telemetry API. Not auto-stopped: a relay must stay up to be useful,
+# and suspending on HTTP idle would drop its live relay sessions.
 [http_service]
   internal_port = 8787
   force_https = true
-  auto_stop_machines = "suspend"
+  auto_stop_machines = "off"
   auto_start_machines = true
   min_machines_running = 1
 
+# Raw peer port for relaying — TCP and UDP on the dedicated IPv4 (see header).
+[[services]]
+  protocol = "tcp"
+  internal_port = 4001
+  [[services.ports]]
+    port = 4001
+
+[[services]]
+  protocol = "udp"
+  internal_port = 4001
+  [[services.ports]]
+    port = 4001
+
 [[vm]]
   size = "shared-cpu-1x"
-  memory = "256mb"
+  memory = "512mb"
