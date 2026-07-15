@@ -1,6 +1,7 @@
 package mesh
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -303,6 +304,55 @@ func TestDiscoveredPeerTargetsRetriesDisconnectedVerifiedPeers(t *testing.T) {
 	}
 	if targets[0].peerID != "peer-1" {
 		t.Fatalf("expected peer-1 to be retried, got %q", targets[0].peerID)
+	}
+}
+
+func TestDiscoveredPeerTargetsAvoidsGlareWithLowerIdPublicPeers(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Trackers = nil
+	node, err := NewNode("mesh-glare", nil, cfg)
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+	node.natProfile.Store(nat.Profile{Type: nat.TypePublic, PublicReachable: true})
+
+	// Ids that sort strictly below / above our (random) local id.
+	lowerPublic := strings.Repeat("0", 64)
+	higherPublic := strings.Repeat("f", 64)
+	lowerPrivate := "0" + strings.Repeat("1", 63)
+
+	node.mu.Lock()
+	node.knownPeers[lowerPublic] = knownPeer{id: lowerPublic, addr: "203.0.113.1:4001", verified: true, publicReachable: true}
+	node.knownPeers[higherPublic] = knownPeer{id: higherPublic, addr: "203.0.113.2:4001", verified: true, publicReachable: true}
+	node.knownPeers[lowerPrivate] = knownPeer{id: lowerPrivate, addr: "203.0.113.3:4001", verified: true, publicReachable: false}
+	node.mu.Unlock()
+
+	got := make(map[string]bool)
+	for _, tgt := range node.discoveredPeerTargets() {
+		got[tgt.peerID] = true
+	}
+	// Lower-id public peer: it dials us, so we must NOT dial it (glare avoidance).
+	if got[lowerPublic] {
+		t.Errorf("expected to skip dialing lower-id public peer (it initiates), but it was a target")
+	}
+	// Higher-id public peer: we are the initiator, so we must dial it.
+	if !got[higherPublic] {
+		t.Errorf("expected to dial higher-id public peer, but it was skipped")
+	}
+	// Lower-id peer that is not publicly reachable cannot dial in — dial it.
+	if !got[lowerPrivate] {
+		t.Errorf("expected to dial lower-id non-public peer, but it was skipped")
+	}
+
+	// When we are not publicly reachable the lower-id peer's inbound dial may
+	// not land, so we must keep dialing it.
+	node.natProfile.Store(nat.Profile{Type: nat.TypeSymmetric, PublicReachable: false})
+	got = make(map[string]bool)
+	for _, tgt := range node.discoveredPeerTargets() {
+		got[tgt.peerID] = true
+	}
+	if !got[lowerPublic] {
+		t.Errorf("expected a non-public local node to dial the lower-id public peer, but it was skipped")
 	}
 }
 

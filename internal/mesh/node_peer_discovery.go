@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/redstone-md/moss/internal/gossip"
+	"github.com/redstone-md/moss/internal/nat"
 )
 
 type discoveredPeerTarget struct {
@@ -29,15 +30,30 @@ func (n *Node) discoveredPeerTargets() []discoveredPeerTarget {
 		return nil
 	}
 
+	localID := n.localPeerID()
+	localPublic := n.natProfile.Load().(nat.Profile).PublicReachable
+
 	targets := make([]discoveredPeerTarget, 0, min(len(n.knownPeers), n.config.MaxPeers))
 	for peerID, info := range n.knownPeers {
-		if peerID == n.localPeerID() || info.addr == "" {
+		if peerID == localID || info.addr == "" {
 			continue
 		}
 		if !info.verified && !info.thirdPartyDialable {
 			continue
 		}
 		if _, connected := n.peers[peerID]; connected {
+			continue
+		}
+		// Glare avoidance: when both ends are publicly dialable, only the
+		// lower-id node initiates. Otherwise both dial each other's listen port,
+		// producing two duplicate sessions; the direction-based dedup then closes
+		// the redundant one on each side, which empties that peer slot and
+		// triggers an immediate redial — a self-sustaining connect/disconnect
+		// oscillation that got worse with round-trip latency between the pair.
+		// The higher-id node relies on the lower-id node's inbound dial instead.
+		// If either end is not publicly reachable the inbound dial may not land,
+		// so we keep dialing regardless to preserve connectivity.
+		if localPublic && info.publicReachable && localID > peerID {
 			continue
 		}
 		lastDial := n.peerDials[peerID]
