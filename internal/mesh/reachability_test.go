@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"moss/internal/nat"
+	"github.com/redstone-md/moss/internal/nat"
 )
 
 // A single public reflexive address is only the NAT's WAN IP, not proof of

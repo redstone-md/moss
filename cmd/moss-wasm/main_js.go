@@ -17,7 +17,7 @@ import (
 	"encoding/json"
 	"syscall/js"
 
-	"moss/internal/observe"
+	"github.com/redstone-md/moss/internal/observe"
 )
 
 func main() {

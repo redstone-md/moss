@@ -11,8 +11,8 @@ import (
 
 	"golang.org/x/net/ipv4"
 
-	"moss/internal/nat"
-	"moss/internal/transport"
+	"github.com/redstone-md/moss/internal/nat"
+	"github.com/redstone-md/moss/internal/transport"
 )
 
 const lanDiscoveryGroup = "239.255.77.77"

@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"moss/internal/nat"
+	"github.com/redstone-md/moss/internal/nat"
 )
 
 func (n *Node) localPeerID() string {

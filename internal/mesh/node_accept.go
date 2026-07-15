@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"moss/internal/bootstrap"
-	"moss/internal/gossip"
-	"moss/internal/transport"
+	"github.com/redstone-md/moss/internal/bootstrap"
+	"github.com/redstone-md/moss/internal/gossip"
+	"github.com/redstone-md/moss/internal/transport"
 )
 
 func (n *Node) acceptLoop(ctx context.Context) {

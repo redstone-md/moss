@@ -11,8 +11,8 @@ import (
 	"github.com/flynn/noise"
 	"golang.org/x/crypto/chacha20poly1305"
 
-	mcrypto "moss/internal/crypto"
-	"moss/internal/gossip"
+	mcrypto "github.com/redstone-md/moss/internal/crypto"
+	"github.com/redstone-md/moss/internal/gossip"
 )
 
 func (n *Node) sendRelayedEnvelope(peer *peerConn, env gossip.Envelope) bool {

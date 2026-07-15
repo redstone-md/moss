@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"net"
 
-	"moss/internal/transport"
+	"github.com/redstone-md/moss/internal/transport"
 
 	vtransport "github.com/redstone-md/veil/core/pkg/vtransport"
 )

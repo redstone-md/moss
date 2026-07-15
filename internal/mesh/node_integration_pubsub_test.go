@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"moss/internal/gossip"
-	"moss/internal/nat"
+	"github.com/redstone-md/moss/internal/gossip"
+	"github.com/redstone-md/moss/internal/nat"
 )
 
 func TestTwoNodesExchangePubSubMessages(t *testing.T) {

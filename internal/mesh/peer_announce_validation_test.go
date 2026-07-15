@@ -3,9 +3,9 @@ package mesh
 import (
 	"testing"
 
-	mcrypto "moss/internal/crypto"
-	"moss/internal/gossip"
-	"moss/internal/nat"
+	mcrypto "github.com/redstone-md/moss/internal/crypto"
+	"github.com/redstone-md/moss/internal/gossip"
+	"github.com/redstone-md/moss/internal/nat"
 )
 
 func TestHandlePeerAnnounceRejectsThirdPartyAdvertisement(t *testing.T) {

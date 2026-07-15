@@ -73,8 +73,8 @@ import (
 	"time"
 	"unsafe"
 
-	mcrypto "moss/internal/crypto"
-	"moss/internal/mesh"
+	mcrypto "github.com/redstone-md/moss/internal/crypto"
+	"github.com/redstone-md/moss/internal/mesh"
 )
 
 const relayFFITimeout = 5 * time.Second

@@ -7,8 +7,8 @@ import (
 	"syscall/js"
 	"time"
 
-	"moss/internal/nat"
-	"moss/internal/transport"
+	"github.com/redstone-md/moss/internal/nat"
+	"github.com/redstone-md/moss/internal/transport"
 )
 
 // StartWebRTC starts the node in browser mode: it runs the portable gossip,

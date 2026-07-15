@@ -7,7 +7,7 @@ import (
 
 	"golang.org/x/crypto/chacha20poly1305"
 
-	mcrypto "moss/internal/crypto"
+	mcrypto "github.com/redstone-md/moss/internal/crypto"
 )
 
 // datagramCodec obfuscates every UDP datagram so it is indistinguishable from

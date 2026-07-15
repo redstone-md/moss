@@ -3,8 +3,8 @@ package mesh
 import (
 	"encoding/hex"
 
-	mcrypto "moss/internal/crypto"
-	"moss/internal/gossip"
+	mcrypto "github.com/redstone-md/moss/internal/crypto"
+	"github.com/redstone-md/moss/internal/gossip"
 )
 
 func relayRequestSignaturePayload(env gossip.Envelope) []byte {

@@ -11,8 +11,8 @@ import (
 
 	"golang.org/x/crypto/blake2s"
 
-	"moss/internal/gossip"
-	"moss/internal/nat"
+	"github.com/redstone-md/moss/internal/gossip"
+	"github.com/redstone-md/moss/internal/nat"
 )
 
 func (n *Node) dispatchLoop(ctx context.Context) {

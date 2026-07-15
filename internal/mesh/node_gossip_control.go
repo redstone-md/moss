@@ -4,7 +4,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"moss/internal/gossip"
+	"github.com/redstone-md/moss/internal/gossip"
 )
 
 func (n *Node) sendRecentIHave(peer *peerConn, channel string) {

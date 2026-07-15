@@ -6,7 +6,7 @@ import (
 	"net/netip"
 	"time"
 
-	"moss/internal/nat"
+	"github.com/redstone-md/moss/internal/nat"
 )
 
 func (n *Node) directPeerConnected(peerID string) bool {

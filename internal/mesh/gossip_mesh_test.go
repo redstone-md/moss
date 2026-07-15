@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"moss/internal/gossip"
-	"moss/internal/transport"
+	"github.com/redstone-md/moss/internal/gossip"
+	"github.com/redstone-md/moss/internal/transport"
 
 	"github.com/flynn/noise"
 )

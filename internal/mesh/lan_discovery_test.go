@@ -6,7 +6,7 @@ import (
 	"net"
 	"testing"
 
-	"moss/internal/nat"
+	"github.com/redstone-md/moss/internal/nat"
 )
 
 func lanTestPeerID(seed int) string {

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	mcrypto "moss/internal/crypto"
+	mcrypto "github.com/redstone-md/moss/internal/crypto"
 )
 
 func TestUDPListenersConnectThroughCodec(t *testing.T) {

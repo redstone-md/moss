@@ -4,9 +4,9 @@ import (
 	"testing"
 	"time"
 
-	"moss/internal/gossip"
-	"moss/internal/nat"
-	"moss/internal/transport"
+	"github.com/redstone-md/moss/internal/gossip"
+	"github.com/redstone-md/moss/internal/nat"
+	"github.com/redstone-md/moss/internal/transport"
 )
 
 func TestRemovePeerClearsRelaySessionsUsingDisconnectedViaPeer(t *testing.T) {

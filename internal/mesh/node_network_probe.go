@@ -12,8 +12,8 @@ import (
 
 	"golang.org/x/crypto/blake2s"
 
-	"moss/internal/gossip"
-	"moss/internal/nat"
+	"github.com/redstone-md/moss/internal/gossip"
+	"github.com/redstone-md/moss/internal/nat"
 )
 
 func (n *Node) probePortMapping(ctx context.Context, listenAddr string, port int) {

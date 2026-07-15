@@ -8,12 +8,12 @@ import (
 	"sort"
 	"time"
 
-	"moss/internal/bootstrap"
-	mcrypto "moss/internal/crypto"
-	"moss/internal/gossip"
-	"moss/internal/nat"
-	"moss/internal/stat"
-	"moss/internal/transport"
+	"github.com/redstone-md/moss/internal/bootstrap"
+	mcrypto "github.com/redstone-md/moss/internal/crypto"
+	"github.com/redstone-md/moss/internal/gossip"
+	"github.com/redstone-md/moss/internal/nat"
+	"github.com/redstone-md/moss/internal/stat"
+	"github.com/redstone-md/moss/internal/transport"
 )
 
 const highThroughputBufferSize = 65536
