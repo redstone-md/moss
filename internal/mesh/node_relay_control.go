@@ -132,6 +132,37 @@ func (n *Node) handleRelayData(peer *peerConn, env gossip.Envelope) {
 		return
 	}
 	n.sendEnvelope(targetPeer, env)
+	// Keep the session alive while traffic flows so the route GC only reaps
+	// genuinely idle forwarding entries.
+	n.relaySessions.Touch(env.RelaySession)
+}
+
+// pruneStaleRelayRoutes reaps middle-node forwarding entries whose relay
+// session has gone idle past the TTL. Routes were previously removed only when
+// an endpoint peer disconnected or sent an explicit teardown, so a relayed pair
+// that vanished without a teardown (client crash, silent network drop) left its
+// route behind indefinitely — on a busy supernode these piled up into hundreds
+// of dead entries while the underlying sessions had long since expired. Tying
+// route liveness to the session (refreshed by Touch on every forwarded packet)
+// lets genuinely idle routes expire on their own.
+func (n *Node) pruneStaleRelayRoutes() {
+	n.mu.RLock()
+	var stale []string
+	for sessionID := range n.relayRoutes {
+		if !n.relaySessions.Active(sessionID) {
+			stale = append(stale, sessionID)
+		}
+	}
+	n.mu.RUnlock()
+	if len(stale) == 0 {
+		return
+	}
+	n.mu.Lock()
+	for _, sessionID := range stale {
+		delete(n.relayRoutes, sessionID)
+	}
+	n.mu.Unlock()
+	n.refreshSupernodeStatus()
 }
 
 func (n *Node) markRelayOverloaded(now time.Time) {

@@ -82,6 +82,29 @@ func (m *SessionManager) Count() int {
 	return len(m.sessions)
 }
 
+// Touch refreshes an existing session's activity timestamp so continued relay
+// traffic keeps it alive. It is O(1) and does not purge, so it is cheap enough
+// for the per-packet forward path. A session that was already purged is not
+// re-added — resuming after a full idle-TTL gap re-establishes via Acquire.
+func (m *SessionManager) Touch(id string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.sessions[id]; ok {
+		m.sessions[id] = time.Now()
+	}
+}
+
+// Active reports whether the session is still live, purging idle ones first.
+// The relay-route GC uses this to reap forwarding entries whose session has
+// gone idle past the TTL, which otherwise accumulate unbounded.
+func (m *SessionManager) Active(id string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.purgeLocked(time.Now())
+	_, ok := m.sessions[id]
+	return ok
+}
+
 func (m *SessionManager) purgeLocked(now time.Time) {
 	for id, ts := range m.sessions {
 		if now.Sub(ts) > m.ttl {

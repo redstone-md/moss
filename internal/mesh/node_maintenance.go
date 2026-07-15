@@ -266,6 +266,7 @@ func (n *Node) maintenanceLoop(ctx context.Context) {
 			n.connectBootstrapSeeds(ctx)
 			n.promoteRelayPeers()
 			n.refreshLocalSubscriptions()
+			n.pruneStaleRelayRoutes()
 		}
 	}
 }
