@@ -12,6 +12,20 @@ import (
 	"time"
 )
 
+// isolatedTestConfig returns a config fully isolated from the real network: a
+// unique NetworkID plus no tracker/DHT/LAN discovery. Since the shared-substrate
+// model keys discovery off NetworkID (not the room), a test using the default
+// config would otherwise join the production "moss/1" substrate via the public
+// DHT/trackers and pick up real nodes — breaking topology and peer-count checks.
+func isolatedTestConfig(name string) Config {
+	c := DefaultConfig()
+	c.NetworkID = "moss-test-" + name
+	c.Trackers = nil
+	c.DHTEnabled = false
+	c.LANDiscoveryEnabled = false
+	return c
+}
+
 func waitForPeerCount(t *testing.T, node *Node, want int) {
 	t.Helper()
 	deadline := time.Now().Add(8 * time.Second)
