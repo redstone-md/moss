@@ -120,26 +120,39 @@ func (n *Node) relayCapableConnectedLocked() int {
 	return count
 }
 
-// selectDialTargets takes up to limit targets from the ordered candidate list:
-// bootstrap seeds always, relay-capable peers only while the quota deficit
-// lasts, plain peers freely. Remaining slots fall back to the skipped
-// relay-capable candidates so a relay-heavy neighborhood still fills up.
+// selectDialTargets takes up to limit targets from the ordered candidate list.
+// While the relay quota has a deficit, that many slots are RESERVED for the
+// best relay-capable candidates regardless of where they sort — otherwise a
+// handful of fresher plain peers could starve the relay fallback. The rest of
+// the slots go to bootstrap/plain candidates in ranking order, and leftover
+// relay-capable candidates fill only what remains.
 func selectDialTargets(targets []discoveredPeerTarget, limit, relayDeficit int) []discoveredPeerTarget {
 	if limit <= 0 {
 		return nil
 	}
 	selected := make([]discoveredPeerTarget, 0, limit)
+	taken := make(map[string]bool, limit)
+	for _, target := range targets {
+		if relayDeficit <= 0 || len(selected) == limit {
+			break
+		}
+		if target.info.relayCapable {
+			selected = append(selected, target)
+			taken[target.peerID] = true
+			relayDeficit--
+		}
+	}
 	skipped := make([]discoveredPeerTarget, 0)
 	for _, target := range targets {
 		if len(selected) == limit {
 			break
 		}
+		if taken[target.peerID] {
+			continue
+		}
 		if target.info.relayCapable && !target.info.bootstrap {
-			if relayDeficit <= 0 {
-				skipped = append(skipped, target)
-				continue
-			}
-			relayDeficit--
+			skipped = append(skipped, target)
+			continue
 		}
 		selected = append(selected, target)
 	}
