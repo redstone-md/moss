@@ -6,11 +6,23 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/flynn/noise"
 )
+
+// forceRawUDP reports whether the raw blocking-socket UDP path should be used in
+// preference to Go's netpoller. It is an escape hatch for Windows hosts where the
+// IOCP UDP path faults under load; set MOSS_FORCE_RAW_UDP=1 to enable.
+func forceRawUDP() bool {
+	switch os.Getenv("MOSS_FORCE_RAW_UDP") {
+	case "1", "true", "yes":
+		return true
+	}
+	return false
+}
 
 const (
 	udpMessageHandshakeInit byte = 1
@@ -93,25 +105,38 @@ func ListenUDP(port int, cfg HandshakeConfig) (*UDPListener, int, error) {
 		return nil, 0, err
 	}
 	var conn udpPacketConn
-	udpConn, netErr := net.ListenUDP("udp4", addr)
-	if netErr == nil {
-		if bindErr := ApplyBindToUDP(udpConn, cfg.BindIfIndex); bindErr != nil {
-			_ = udpConn.Close()
-			return nil, 0, bindErr
+	// On Windows the Go netpoller's IOCP-based UDP path can crash the process
+	// under sustained load — a runtime-level memory fault (0xc0000005), verified
+	// NOT to be a moss data race (the race detector is clean). MOSS_FORCE_RAW_UDP=1
+	// forces the raw blocking-socket path (plain blocking Winsock, no IOCP), which
+	// sidesteps the fault. No-op on non-Windows, where the raw path is unavailable.
+	if forceRawUDP() {
+		if raw, rawErr := newRawBlockingUDP(port, cfg.BindIfIndex); rawErr == nil {
+			conn = raw
 		}
-		conn = udpConn
-	} else {
-		// Go's netpoller could not bind the socket. This is the signature failure
-		// under an older Wine/Proton, where the socket cannot be associated with
-		// an I/O completion port. Fall back to a raw blocking Winsock socket,
-		// which those hosts do support (it is how native Winsock apps run there).
-		// newRawBlockingUDP is a no-op error on non-Windows, so nothing changes on
-		// Linux/macOS where net.ListenUDP does not fail in the first place.
-		raw, rawErr := newRawBlockingUDP(port, cfg.BindIfIndex)
-		if rawErr != nil {
-			return nil, 0, fmt.Errorf("udp listen failed (%w); raw-socket fallback also failed: %v", netErr, rawErr)
+	}
+	if conn == nil {
+		udpConn, netErr := net.ListenUDP("udp4", addr)
+		if netErr == nil {
+			if bindErr := ApplyBindToUDP(udpConn, cfg.BindIfIndex); bindErr != nil {
+				_ = udpConn.Close()
+				return nil, 0, bindErr
+			}
+			conn = udpConn
+		} else {
+			// Go's netpoller could not bind the socket. This is the signature
+			// failure under an older Wine/Proton, where the socket cannot be
+			// associated with an I/O completion port. Fall back to a raw blocking
+			// Winsock socket, which those hosts do support (it is how native
+			// Winsock apps run there). newRawBlockingUDP is a no-op error on
+			// non-Windows, so nothing changes on Linux/macOS where net.ListenUDP
+			// does not fail in the first place.
+			raw, rawErr := newRawBlockingUDP(port, cfg.BindIfIndex)
+			if rawErr != nil {
+				return nil, 0, fmt.Errorf("udp listen failed (%w); raw-socket fallback also failed: %v", netErr, rawErr)
+			}
+			conn = raw
 		}
-		conn = raw
 	}
 	listener := &UDPListener{
 		conn:     conn,

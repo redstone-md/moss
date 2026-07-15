@@ -67,6 +67,10 @@ type Config struct {
 	AxiomEndpoint string `json:"axiom_endpoint,omitempty"`
 	AxiomService  string `json:"axiom_service,omitempty"`
 
+	// DHTEnabled toggles the BitTorrent-DHT peer-discovery source. Nil keeps the
+	// default (on). Set false to rely solely on trackers/static peers.
+	DHTEnabled *bool `json:"dht_enabled,omitempty"`
+
 	IdentityPath string `json:"identity_path,omitempty"`
 }
 
@@ -74,6 +78,9 @@ func (c Config) toMeshConfig() mesh.Config {
 	base := mesh.DefaultConfig()
 	if c.NetworkID != "" {
 		base.NetworkID = c.NetworkID
+	}
+	if c.DHTEnabled != nil {
+		base.DHTEnabled = *c.DHTEnabled
 	}
 	if len(c.Trackers) > 0 {
 		base.Trackers = c.Trackers
