@@ -162,8 +162,30 @@ func directSenderMatches(peer *peerConn, env gossip.Envelope) bool {
 	return peer != nil && env.AdvertisedPeerID == peer.id
 }
 
+// isLoopbackAddr reports whether a host:port advertises a loopback host.
+func isLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	return isLoopbackHost(host)
+}
+
+// peerOnLoopback reports whether the peer we received an announcement from is
+// itself on loopback — the only context where a loopback advertisement is real.
+func peerOnLoopback(peer *peerConn) bool {
+	return peer != nil && isLoopbackAddr(peer.addr)
+}
+
 func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forwardType gossip.EnvelopeType, verifiedEnvelope bool) {
 	if env.AdvertisedPeerID == "" || env.AdvertisedAddr == "" || env.AdvertisedPeerID == n.localPeerID() {
+		return
+	}
+	// On the shared substrate a peer that advertises a loopback address is
+	// unreachable to everyone else — storing it just pollutes the directory and
+	// re-gossips junk network-wide. Drop it unless the announcement arrives over
+	// a loopback path (a genuine local/offline test, where loopback is real).
+	if isLoopbackAddr(env.AdvertisedAddr) && !peerOnLoopback(peer) {
 		return
 	}
 	trustedSelfAnnouncement := peer != nil && env.AdvertisedPeerID == peer.id
