@@ -177,6 +177,21 @@ func peerOnLoopback(peer *peerConn) bool {
 	return peer != nil && isLoopbackAddr(peer.addr)
 }
 
+// sameHostIP reports whether two host:port addresses share the same host,
+// ignoring the port — so an ephemeral port flip on the same peer is not treated
+// as an address change worth re-flooding to the whole network.
+func sameHostIP(a, b string) bool {
+	ha, _, err := net.SplitHostPort(a)
+	if err != nil {
+		ha = a
+	}
+	hb, _, err := net.SplitHostPort(b)
+	if err != nil {
+		hb = b
+	}
+	return ha == hb
+}
+
 func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forwardType gossip.EnvelopeType, verifiedEnvelope bool) {
 	if env.AdvertisedPeerID == "" || env.AdvertisedAddr == "" || env.AdvertisedPeerID == n.localPeerID() {
 		return
@@ -262,7 +277,21 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 		changed = true
 	}
 	n.mu.Unlock()
-	if changed {
+	// Re-flood a peer announcement only on a MEANINGFUL change — a new peer, or
+	// a change in capability / reachability / NAT type / identity / IP. A bare
+	// port flip (symmetric-NAT and ephemeral-egress peers churn their source
+	// port constantly) is useless to everyone else — you cannot dial an
+	// ephemeral port — yet re-broadcasting each flip to every peer turned the
+	// shared substrate into a gossip storm (large sustained egress). The local
+	// directory still records the latest addr above; we just do not re-flood it.
+	meaningfulChange := !ok ||
+		current.natType != natType ||
+		current.natTrusted != natTrusted ||
+		current.publicReachable != publicReachable ||
+		current.relayCapable != relayCapable ||
+		!equalBytes(current.noiseStatic, noiseStatic) ||
+		!sameHostIP(current.addr, addr)
+	if changed && meaningfulChange {
 		advertisedSignature := append([]byte(nil), env.AdvertisedSignature...)
 		if forwardType != gossip.TypePeerAnnounce && (nat.Type(env.AdvertisedNATType) != natType || env.AdvertisedReachable != publicReachable || env.AdvertisedRelayCapable != relayCapable) {
 			advertisedSignature = nil
