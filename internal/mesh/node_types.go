@@ -22,6 +22,12 @@ type Node struct {
 	networkID     string
 	meshID        string
 	psk           []byte
+	// roomKey is the per-room symmetric key (empty for a substrate-only node);
+	// it seals pub/sub payloads and derives the opaque wire topics that keep the
+	// substrate room-blind. subChannels maps those opaque topics back to the
+	// bare channel this node subscribed under, for delivery.
+	roomKey     []byte
+	subChannels map[string]string
 	config        Config
 	infoHash      [20]byte
 	peerID        [20]byte

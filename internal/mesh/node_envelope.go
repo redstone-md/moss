@@ -88,13 +88,19 @@ func (n *Node) deliverLocal(env gossip.Envelope) {
 	if !n.pubsub.IsLocalSubscriber(env.Channel) {
 		return
 	}
+	// Open the room seal; a payload we cannot authenticate (wrong room / PSK) is
+	// dropped rather than handed up.
+	plaintext, ok := n.openRoom(env.Payload)
+	if !ok {
+		return
+	}
 	var sender [32]byte
 	copy(sender[:], env.SenderID)
 	n.dispatchCh <- dispatchMessage{
-		// Hand the application its bare channel, not the room-namespaced topic.
+		// Hand the application its bare channel, not the opaque room topic.
 		channel: n.localChannel(env.Channel),
 		sender:  sender,
-		data:    append([]byte(nil), env.Payload...),
+		data:    plaintext,
 	}
 }
 

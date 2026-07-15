@@ -13,4 +13,5 @@ const (
 	MOSS_ERR_OUT_OF_MEMORY     int32 = -9
 	MOSS_ERR_CONNECT_FAILED    int32 = -10
 	MOSS_ERR_RELAY_FAILED      int32 = -11 // relay send failed (no route, session open failed, or send error)
+	MOSS_ERR_INTERNAL          int32 = -12 // unexpected internal failure (e.g. room-seal crypto error)
 )

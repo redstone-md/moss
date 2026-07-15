@@ -72,6 +72,8 @@ func NewNodeWithIdentity(meshID string, psk []byte, cfg Config, identity *mcrypt
 		networkID:        networkID,
 		meshID:           meshID,
 		psk:              append([]byte(nil), psk...),
+		roomKey:          deriveRoomKey(meshID, psk),
+		subChannels:      make(map[string]string),
 		config:           cfg,
 		infoHash:         infoHash,
 		peerID:           peerID,
@@ -246,9 +248,10 @@ func (n *Node) Subscribe(channel string) int32 {
 	if !validChannel(channel) {
 		return MOSS_ERR_INVALID_CHANNEL
 	}
-	// Everything below the API operates on the room-namespaced wire topic; the
+	// Everything below the API operates on the opaque room topic; the
 	// application only ever sees the bare channel (see localChannel on delivery).
 	topic := n.roomTopic(channel)
+	n.rememberSubscription(topic, channel)
 	n.pubsub.Subscribe(topic)
 	n.announceLocalSubscription(topic)
 	n.maintainTopicMesh(topic)
@@ -270,6 +273,7 @@ func (n *Node) Unsubscribe(channel string) int32 {
 		n.pubsub.SetMeshPeer(topic, peerID, false)
 	}
 	n.pubsub.Unsubscribe(topic)
+	n.forgetSubscription(topic)
 	return MOSS_OK
 }
 
@@ -286,8 +290,14 @@ func (n *Node) Publish(channel string, data []byte) int32 {
 	if !started {
 		return MOSS_ERR_NOT_STARTED
 	}
+	// Seal the payload under the room key so only room members can read it;
+	// substrate peers relay opaque ciphertext under an opaque topic.
+	sealed, err := n.sealRoom(data)
+	if err != nil {
+		return MOSS_ERR_INTERNAL
+	}
 	topic := n.roomTopic(channel)
-	env := n.makePublishEnvelope(topic, data)
+	env := n.makePublishEnvelope(topic, sealed)
 	n.cache.Store(env)
 	n.deliverLocal(env)
 	sent := n.broadcastFloodPublish(env, "")
