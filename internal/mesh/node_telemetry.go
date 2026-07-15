@@ -1,13 +1,19 @@
 package mesh
 
 import (
+	"context"
 	"encoding/hex"
+	"encoding/json"
 	"runtime"
 	"strings"
 	"time"
 
 	"github.com/redstone-md/moss/internal/telemetry"
 )
+
+// axiomStatsInterval is how often an Axiom-enabled node ships a node_stats event
+// (peer/supernode/relay counts) so the dashboard can chart network health.
+const axiomStatsInterval = 60 * time.Second
 
 // EnableAxiom turns on the opt-in Axiom error/log sink for this node. token is
 // an ingest-only Axiom token, dataset the target dataset, endpoint the Axiom
@@ -36,6 +42,60 @@ func (n *Node) EnableAxiom(token, dataset, endpoint, service string) {
 	if old := n.axiom.Swap(sink); old != nil {
 		old.Close()
 	}
+	// (Re)start the periodic node-stats emitter alongside the sink.
+	ctx, cancel := context.WithCancel(context.Background())
+	n.mu.Lock()
+	if n.axiomStatsCancel != nil {
+		n.axiomStatsCancel()
+	}
+	n.axiomStatsCancel = cancel
+	n.mu.Unlock()
+	go n.axiomStatsLoop(ctx)
+}
+
+// axiomStatsLoop periodically ships a node_stats event with live peer/supernode/
+// relay counts, so network health is queryable in Axiom alongside errors.
+func (n *Node) axiomStatsLoop(ctx context.Context) {
+	ticker := time.NewTicker(axiomStatsInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			n.emitNodeStats()
+		}
+	}
+}
+
+// emitNodeStats ships one node_stats event derived from the live MeshInfoJSON.
+// It only fires once the node is started (MeshInfoJSON needs the NAT profile).
+func (n *Node) emitNodeStats() {
+	sink := n.axiom.Load()
+	if sink == nil {
+		return
+	}
+	n.mu.RLock()
+	started := n.started
+	n.mu.RUnlock()
+	if !started {
+		return
+	}
+	var info map[string]any
+	if err := json.Unmarshal([]byte(n.MeshInfoJSON()), &info); err != nil {
+		return
+	}
+	fields := map[string]any{}
+	for _, k := range []string{
+		"peer_count", "direct_peer_count", "relayed_peer_count",
+		"relay_capable_peer_count", "relay_session_count", "relay_route_count",
+		"known_peer_count", "supernode_ready", "nat_type", "mesh_id",
+	} {
+		if v, ok := info[k]; ok {
+			fields[k] = v
+		}
+	}
+	sink.Log(telemetry.Event{Time: time.Now(), Level: "info", Kind: "node_stats", Fields: fields})
 }
 
 // LogEvent ships a structured event through the Axiom sink when enabled; a no-op
@@ -82,8 +142,15 @@ func (n *Node) forwardEventToAxiom(detail any) {
 	sink.Log(telemetry.Event{Time: time.Now(), Level: "error", Kind: "node_error", Message: message, Fields: fields})
 }
 
-// closeAxiom drains and stops the sink on shutdown.
+// closeAxiom stops the stats emitter and drains the sink on shutdown.
 func (n *Node) closeAxiom() {
+	n.mu.Lock()
+	cancel := n.axiomStatsCancel
+	n.axiomStatsCancel = nil
+	n.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	if old := n.axiom.Swap(nil); old != nil {
 		old.Close()
 	}

@@ -62,9 +62,12 @@ type Node struct {
 	lastErr atomic.Value
 	// axiom is the opt-in error/log sink. Nil until a host calls EnableAxiom;
 	// stored atomically so the hot event path reads it without locking.
-	axiom     atomic.Pointer[telemetry.AxiomSink]
-	seq       uint64
-	heartbeat uint64
+	axiom atomic.Pointer[telemetry.AxiomSink]
+	// axiomStatsCancel stops the periodic node-stats emitter that runs alongside
+	// the sink; set under mu by EnableAxiom, cancelled by closeAxiom.
+	axiomStatsCancel context.CancelFunc
+	seq              uint64
+	heartbeat        uint64
 
 	mu               sync.RWMutex
 	started          bool
