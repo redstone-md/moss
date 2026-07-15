@@ -54,8 +54,13 @@ type Node struct {
 	statAgg       *stat.Aggregator
 
 	natProfile atomic.Value
-	seq        uint64
-	heartbeat  uint64
+	// lastErr holds the human-readable text of the most recent operation that
+	// failed with a coarse error code (currently just Start's listener bind), so
+	// callers can surface the real OS reason — e.g. why a bind fails under
+	// Wine/Proton — instead of guessing from the numeric code. Stored as string.
+	lastErr   atomic.Value
+	seq       uint64
+	heartbeat uint64
 
 	mu               sync.RWMutex
 	started          bool
