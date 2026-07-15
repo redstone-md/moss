@@ -201,5 +201,12 @@ const (
 	peerLatencyPruneThreshold = 2 * time.Second
 	peerPingTimeout           = 5 * time.Second
 	peerDisconnectMissLimit   = 6
-	peerProbeIntervalFloor    = 30 * time.Second
+	// peerProbeIntervalFloor doubles as the NAT keepalive interval: the ping/pong
+	// is the only traffic on an otherwise-idle peer session, so it must refresh
+	// the NAT/CGNAT/cloud UDP mapping before it expires. Many NATs drop idle UDP
+	// mappings after ~30s (mobile/CGNAT sometimes less), so a 30s probe raced the
+	// timeout and NAT'd peers flapped: mapping expired, ping timed out, the
+	// session was torn down and re-established. 15s refreshes the mapping twice
+	// per typical timeout, keeping NAT'd sessions stable.
+	peerProbeIntervalFloor = 15 * time.Second
 )
