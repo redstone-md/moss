@@ -9,6 +9,39 @@ import (
 	"github.com/redstone-md/moss/internal/transport"
 )
 
+func TestPruneStaleRelayRoutesReapsExpiredSessionsKeepsLive(t *testing.T) {
+	node := &Node{
+		relayRoutes:   map[string]relayRoute{},
+		relaySessions: nat.NewSessionManager(100, 150*time.Millisecond),
+	}
+	// A non-ready NAT profile makes refreshSupernodeStatus a no-op (it reads the
+	// profile and returns early when the ready state is unchanged).
+	node.natProfile.Store(nat.Profile{Type: nat.TypeSymmetric})
+
+	node.relayRoutes["live"] = relayRoute{initiator: "a", target: "b"}
+	node.relayRoutes["dead"] = relayRoute{initiator: "c", target: "d"}
+	node.relaySessions.Acquire("live")
+	node.relaySessions.Acquire("dead")
+
+	// Keep "live" fresh with a touch; let "dead" idle out past the TTL.
+	time.Sleep(100 * time.Millisecond)
+	node.relaySessions.Touch("live")
+	time.Sleep(100 * time.Millisecond)
+
+	node.pruneStaleRelayRoutes()
+
+	node.mu.RLock()
+	_, liveOK := node.relayRoutes["live"]
+	_, deadOK := node.relayRoutes["dead"]
+	node.mu.RUnlock()
+	if !liveOK {
+		t.Error("route with a live session must be kept")
+	}
+	if deadOK {
+		t.Error("route with an expired session must be reaped")
+	}
+}
+
 func TestRemovePeerClearsRelaySessionsUsingDisconnectedViaPeer(t *testing.T) {
 	relaySession := &transport.Session{}
 	otherSession := &transport.Session{}
