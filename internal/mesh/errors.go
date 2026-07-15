@@ -14,4 +14,5 @@ const (
 	MOSS_ERR_CONNECT_FAILED    int32 = -10
 	MOSS_ERR_RELAY_FAILED      int32 = -11 // relay send failed (no route, session open failed, or send error)
 	MOSS_ERR_INTERNAL          int32 = -12 // unexpected internal failure (e.g. room-seal crypto error)
+	MOSS_ERR_LISTEN_FAILED     int32 = -13 // could not bind the tcp/udp listener (e.g. port in use, or Go's netpoller can't bind under Wine/Proton). Moss_LastError has the underlying OS error.
 )

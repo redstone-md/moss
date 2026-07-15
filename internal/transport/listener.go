@@ -24,46 +24,53 @@ func Listen(port int) (*Listener, int, error) {
 	return &Listener{Listener: ln}, actual, nil
 }
 
+// ListenPair brings up the substrate transport. UDP is the primary path (Noise
+// sessions, hole punching, relay) and is REQUIRED — ListenUDP itself falls back
+// to a raw blocking socket on hosts where Go's netpoller cannot bind (older
+// Wine/Proton). TCP is a best-effort secondary path on the same port; when it
+// cannot bind, the node comes up UDP-only (a nil *Listener) instead of failing
+// to start, so Proton users still get a working P2P transport. The returned
+// *Listener is nil in that UDP-only case; callers must skip their TCP accept
+// loop accordingly.
 func ListenPair(port int, cfg HandshakeConfig) (*Listener, *UDPListener, int, error) {
 	attempts := 1
 	if port == 0 {
-		attempts = 64
+		attempts = 8
 	}
 	var lastErr error
 	for attempt := 0; attempt < attempts; attempt++ {
-		ln, actualPort, err := Listen(port)
+		udpListener, actualPort, err := ListenUDP(port, cfg)
 		if err != nil {
 			lastErr = err
-			if port == 0 {
-				time.Sleep(time.Duration(attempt+1) * 5 * time.Millisecond)
-				continue
-			}
-			return nil, nil, 0, err
-		}
-		udpListener, _, err := ListenUDP(actualPort, cfg)
-		if err == nil {
-			return ln, udpListener, actualPort, nil
-		}
-		lastErr = err
-		_ = ln.Close()
-		if port == 0 {
-			udpListener, actualPort, err = ListenUDP(0, cfg)
-			if err == nil {
-				ln, _, err = Listen(actualPort)
-				if err == nil {
-					return ln, udpListener, actualPort, nil
-				}
-				lastErr = err
-				_ = udpListener.Close()
+			if port != 0 {
+				return nil, nil, 0, err
 			}
 			time.Sleep(time.Duration(attempt+1) * 5 * time.Millisecond)
+			continue
 		}
+		ln, _, tcpErr := Listen(actualPort)
+		if tcpErr == nil {
+			return ln, udpListener, actualPort, nil
+		}
+		lastErr = tcpErr
 		if port != 0 {
-			break
+			// Honour the requested fixed port: come up UDP-only rather than moving
+			// the node to a different port merely to also acquire TCP.
+			return nil, udpListener, actualPort, nil
 		}
+		// Auto-port: this pair lost the race for the TCP side; drop it and retry a
+		// fresh pairing so we prefer a port where both bind.
+		_ = udpListener.Close()
+		time.Sleep(time.Duration(attempt+1) * 5 * time.Millisecond)
+	}
+	// Auto-port never found a matching TCP+UDP pair; prefer UDP-only over failing.
+	if udpListener, actualPort, err := ListenUDP(0, cfg); err == nil {
+		return nil, udpListener, actualPort, nil
+	} else if lastErr == nil {
+		lastErr = err
 	}
 	if lastErr == nil {
-		lastErr = errors.New("failed to bind tcp/udp listener pair")
+		lastErr = errors.New("failed to bind udp listener")
 	}
 	return nil, nil, 0, lastErr
 }

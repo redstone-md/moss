@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -27,8 +28,20 @@ const maxPendingUDPServerHandshakes = 1024
 
 var pendingUDPServerHandshakeTTL = 5 * time.Second
 
+// udpPacketConn is the tiny slice of *net.UDPConn the listener actually uses.
+// Abstracting it lets a raw blocking-socket implementation stand in when Go's
+// netpoller cannot bind the socket (older Wine/Proton, where the socket cannot
+// be associated with an IOCP) — the whole UDP transport rides this single
+// connection, so swapping it is enough to bring the node up on those hosts.
+type udpPacketConn interface {
+	ReadFromUDP(b []byte) (int, *net.UDPAddr, error)
+	WriteToUDP(b []byte, addr *net.UDPAddr) (int, error)
+	LocalAddr() net.Addr
+	Close() error
+}
+
 type UDPListener struct {
-	conn    *net.UDPConn
+	conn    udpPacketConn
 	cfg     HandshakeConfig
 	codec   datagramCodec
 	buffers BufferConfig
@@ -79,13 +92,26 @@ func ListenUDP(port int, cfg HandshakeConfig) (*UDPListener, int, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	conn, err := net.ListenUDP("udp4", addr)
-	if err != nil {
-		return nil, 0, err
-	}
-	if err := ApplyBindToUDP(conn, cfg.BindIfIndex); err != nil {
-		_ = conn.Close()
-		return nil, 0, err
+	var conn udpPacketConn
+	udpConn, netErr := net.ListenUDP("udp4", addr)
+	if netErr == nil {
+		if bindErr := ApplyBindToUDP(udpConn, cfg.BindIfIndex); bindErr != nil {
+			_ = udpConn.Close()
+			return nil, 0, bindErr
+		}
+		conn = udpConn
+	} else {
+		// Go's netpoller could not bind the socket. This is the signature failure
+		// under an older Wine/Proton, where the socket cannot be associated with
+		// an I/O completion port. Fall back to a raw blocking Winsock socket,
+		// which those hosts do support (it is how native Winsock apps run there).
+		// newRawBlockingUDP is a no-op error on non-Windows, so nothing changes on
+		// Linux/macOS where net.ListenUDP does not fail in the first place.
+		raw, rawErr := newRawBlockingUDP(port, cfg.BindIfIndex)
+		if rawErr != nil {
+			return nil, 0, fmt.Errorf("udp listen failed (%w); raw-socket fallback also failed: %v", netErr, rawErr)
+		}
+		conn = raw
 	}
 	listener := &UDPListener{
 		conn:     conn,

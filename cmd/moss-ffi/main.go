@@ -351,6 +351,22 @@ func Moss_GetNATType(handle C.MossHandle) *C.char {
 	return C.CString(node.NATType())
 }
 
+// Moss_LastError returns the human-readable reason for the most recent operation
+// on this handle that failed with a coarse error code — chiefly the underlying
+// OS bind error behind MOSS_ERR_LISTEN_FAILED (-13), which is what surfaces when
+// Go's netpoller cannot bind sockets under an older Wine/Proton. Returns an
+// allocated C string (free with Moss_Free), or NULL if the handle is unknown.
+// Call it before Moss_Stop, which removes the handle from the registry.
+//
+//export Moss_LastError
+func Moss_LastError(handle C.MossHandle) *C.char {
+	node, code := getNode(int64(handle))
+	if code != mesh.MOSS_OK {
+		return nil
+	}
+	return C.CString(node.LastError())
+}
+
 //export Moss_GetNetworkStats
 func Moss_GetNetworkStats(handle C.MossHandle) *C.char {
 	node, code := getNode(int64(handle))

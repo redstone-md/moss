@@ -138,7 +138,8 @@ func (n *Node) Start() int32 {
 		ObfsPadData: !n.config.Transport.HighThroughput,
 	})
 	if err != nil {
-		return MOSS_ERR_CONFIG_INVALID
+		n.setLastError(err.Error())
+		return MOSS_ERR_LISTEN_FAILED
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	n.listener = ln
@@ -147,14 +148,27 @@ func (n *Node) Start() int32 {
 	n.started = true
 	n.startedAt = time.Now()
 	n.cancel = cancel
-	n.natProfile.Store(n.profiler.Detect(ln.Addr().String()))
+	// ln is nil in UDP-only mode (TCP couldn't bind — e.g. under Wine/Proton).
+	// Fall back to the UDP listener's address for NAT profiling and port mapping.
+	listenAddrStr := udpListener.Addr().String()
+	if ln != nil {
+		listenAddrStr = ln.Addr().String()
+	}
+	n.natProfile.Store(n.profiler.Detect(listenAddrStr))
 	n.portMapper = nil
-	wgCount := 5
+	// Loops that call n.wg.Done(): acceptUDPLoop, dispatchLoop, bootstrapLoop,
+	// maintenanceLoop, and — only when TCP is up — acceptLoop.
+	wgCount := 4
+	if ln != nil {
+		wgCount++
+	}
 	if n.config.LANDiscoveryEnabled && !transport.RunningGoTest() {
 		wgCount++
 	}
 	n.wg.Add(wgCount)
-	go n.acceptLoop(ctx)
+	if ln != nil {
+		go n.acceptLoop(ctx)
+	}
 	go n.acceptUDPLoop(ctx)
 	go n.dispatchLoop(ctx)
 	go n.bootstrapLoop(ctx)
@@ -167,7 +181,7 @@ func (n *Node) Start() int32 {
 		go n.statLoop(ctx)
 	}
 	n.startVeilBearer(ctx)
-	go n.probePortMapping(ctx, ln.Addr().String(), port)
+	go n.probePortMapping(ctx, listenAddrStr, port)
 	go func() {
 		if addrs := loadPeerCache(n.config.PeerCachePath, n.config.peerCacheTTL()); len(addrs) > 0 {
 			n.rememberTrackerSeeds(addrs)
@@ -203,6 +217,22 @@ func (n *Node) Start() int32 {
 		}()
 	}
 	return MOSS_OK
+}
+
+// setLastError records the text of the most recent coarse-coded failure.
+func (n *Node) setLastError(msg string) {
+	n.lastErr.Store(msg)
+}
+
+// LastError returns the human-readable reason for the most recent operation
+// that failed with a coarse error code (empty if none). It lets a caller print
+// the real OS error behind, say, MOSS_ERR_LISTEN_FAILED — for example the bind
+// failure Go's netpoller hits under an older Wine/Proton.
+func (n *Node) LastError() string {
+	if v, ok := n.lastErr.Load().(string); ok {
+		return v
+	}
+	return ""
 }
 
 func (n *Node) Stop() int32 {
