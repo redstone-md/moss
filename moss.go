@@ -7,8 +7,8 @@ import (
 	"os"
 	"path/filepath"
 
-	mcrypto "moss/internal/crypto"
-	"moss/internal/mesh"
+	mcrypto "github.com/redstone-md/moss/internal/crypto"
+	"github.com/redstone-md/moss/internal/mesh"
 )
 
 // Node wraps the internal mesh node, providing the public API for MossSpore

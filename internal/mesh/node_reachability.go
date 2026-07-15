@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"moss/internal/gossip"
-	"moss/internal/nat"
+	"github.com/redstone-md/moss/internal/gossip"
+	"github.com/redstone-md/moss/internal/nat"
 )
 
 func (n *Node) refreshExternalAddress(deadline time.Time) bool {

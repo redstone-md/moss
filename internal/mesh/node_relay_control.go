@@ -6,7 +6,7 @@ import (
 	"io"
 	"time"
 
-	"moss/internal/gossip"
+	"github.com/redstone-md/moss/internal/gossip"
 )
 
 const relayMigrationGracePeriod = time.Second

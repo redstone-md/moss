@@ -5,8 +5,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"moss/internal/gossip"
-	"moss/internal/transport"
+	"github.com/redstone-md/moss/internal/gossip"
+	"github.com/redstone-md/moss/internal/transport"
 )
 
 // supernodeReannounceEveryTicks throttles how often an active SuperNode

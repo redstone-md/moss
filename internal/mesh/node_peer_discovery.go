@@ -4,7 +4,7 @@ import (
 	"sort"
 	"time"
 
-	"moss/internal/gossip"
+	"github.com/redstone-md/moss/internal/gossip"
 )
 
 type discoveredPeerTarget struct {

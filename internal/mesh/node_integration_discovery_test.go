@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	mcrypto "moss/internal/crypto"
-	"moss/internal/nat"
+	mcrypto "github.com/redstone-md/moss/internal/crypto"
+	"github.com/redstone-md/moss/internal/nat"
 )
 
 func TestDiscoveredPeersAutoConnectIntoOverlay(t *testing.T) {

@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"moss/internal/mesh"
+	"github.com/redstone-md/moss/internal/mesh"
 )
 
 func newTestManager(t *testing.T) *manager {

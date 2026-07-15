@@ -4,7 +4,7 @@ import (
 	"errors"
 	"time"
 
-	"moss/internal/gossip"
+	"github.com/redstone-md/moss/internal/gossip"
 )
 
 func (n *Node) OpenRelaySession(viaPeerID, targetPeerID string, timeout time.Duration) (string, error) {

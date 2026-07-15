@@ -4,8 +4,8 @@ import (
 	"encoding/hex"
 	"strconv"
 
-	mcrypto "moss/internal/crypto"
-	"moss/internal/gossip"
+	mcrypto "github.com/redstone-md/moss/internal/crypto"
+	"github.com/redstone-md/moss/internal/gossip"
 )
 
 func advertisedSignaturePayload(domain string, env gossip.Envelope) []byte {

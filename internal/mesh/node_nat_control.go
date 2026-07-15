@@ -4,7 +4,7 @@ import (
 	"net"
 	"time"
 
-	"moss/internal/gossip"
+	"github.com/redstone-md/moss/internal/gossip"
 )
 
 func (n *Node) handleBindingRequest(peer *peerConn, env gossip.Envelope) {

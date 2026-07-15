@@ -11,7 +11,7 @@ import (
 
 	"github.com/flynn/noise"
 
-	mcrypto "moss/internal/crypto"
+	mcrypto "github.com/redstone-md/moss/internal/crypto"
 )
 
 type HandshakeConfig struct {

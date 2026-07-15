@@ -1,7 +1,7 @@
 package mesh
 
 import (
-	"moss/internal/gossip"
+	"github.com/redstone-md/moss/internal/gossip"
 )
 
 func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {

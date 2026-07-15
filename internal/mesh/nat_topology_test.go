@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"moss/internal/nat"
+	"github.com/redstone-md/moss/internal/nat"
 )
 
 func TestShouldPreferRelayBetweenSymmetricAndCGNATPeers(t *testing.T) {

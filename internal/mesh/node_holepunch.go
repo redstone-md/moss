@@ -5,8 +5,8 @@ import (
 	"errors"
 	"time"
 
-	"moss/internal/gossip"
-	"moss/internal/nat"
+	"github.com/redstone-md/moss/internal/gossip"
+	"github.com/redstone-md/moss/internal/nat"
 )
 
 func (n *Node) attemptHolePunch(targetPeerID string, timeout time.Duration) bool {

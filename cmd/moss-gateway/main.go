@@ -25,7 +25,7 @@ import (
 	"syscall"
 	"time"
 
-	"moss/internal/mesh"
+	"github.com/redstone-md/moss/internal/mesh"
 )
 
 func main() {

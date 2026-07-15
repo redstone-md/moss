@@ -9,7 +9,7 @@ import (
 	"net/url"
 	"time"
 
-	"moss/internal/transport"
+	"github.com/redstone-md/moss/internal/transport"
 )
 
 const (

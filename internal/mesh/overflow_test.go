@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"moss/internal/gossip"
+	"github.com/redstone-md/moss/internal/gossip"
 )
 
 func TestSelectOverflowPrunePeerLockedPrefersNegativeScore(t *testing.T) {

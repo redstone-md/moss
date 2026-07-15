@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"time"
 
-	"moss/internal/transport"
+	"github.com/redstone-md/moss/internal/transport"
 )
 
 type HTTPClient struct {

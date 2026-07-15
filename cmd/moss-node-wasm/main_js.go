@@ -20,7 +20,7 @@ import (
 	"encoding/hex"
 	"syscall/js"
 
-	"moss/internal/mesh"
+	"github.com/redstone-md/moss/internal/mesh"
 )
 
 var node *mesh.Node

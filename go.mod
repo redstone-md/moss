@@ -1,4 +1,4 @@
-module moss
+module github.com/redstone-md/moss
 
 go 1.25.0
 

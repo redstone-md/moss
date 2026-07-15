@@ -4,8 +4,8 @@ import (
 	"encoding/hex"
 	"testing"
 
-	"moss/internal/gossip"
-	"moss/internal/nat"
+	"github.com/redstone-md/moss/internal/gossip"
+	"github.com/redstone-md/moss/internal/nat"
 )
 
 func TestSupernodeEnvelopeSignatureRoundTrip(t *testing.T) {
