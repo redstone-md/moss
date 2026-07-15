@@ -241,7 +241,7 @@ func (n *Node) Stop() int32 {
 	}
 	for _, peer := range peers {
 		if peer.session != nil {
-			_ = peer.session.Close()
+			peer.closeSession()
 		}
 	}
 	n.wg.Wait()

@@ -215,9 +215,16 @@ func (n *Node) pruneHighLatencyPeers() {
 		n.mu.RLock()
 		peer := n.peers[id]
 		n.mu.RUnlock()
-		if peer != nil {
-			_ = peer.session.Close()
-		}
+		peer.closeSession()
+	}
+}
+
+// closeSession closes the peer's transport session if it has one. A relayed
+// peer reaches us through a supernode and has NO direct session (session is
+// nil), so calling Close on it would panic on a nil receiver — this guards it.
+func (p *peerConn) closeSession() {
+	if p != nil && p.session != nil {
+		_ = p.session.Close()
 	}
 }
 
