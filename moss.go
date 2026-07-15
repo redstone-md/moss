@@ -20,6 +20,10 @@ type Node struct {
 
 // Config mirrors the subset of mesh.Config relevant for external consumers.
 type Config struct {
+	// NetworkID selects the shared substrate (discovery + handshake + relay).
+	// Leave empty to join the one public network; set only for an isolated
+	// testnet. This is NOT the room — the room is the meshID passed to NewNode.
+	NetworkID           string   `json:"network_id,omitempty"`
 	Trackers            []string `json:"trackers,omitempty"`
 	AnnounceIntervalSec int      `json:"announce_interval_sec,omitempty"`
 	ListenPort          int      `json:"listen_port,omitempty"`
@@ -48,6 +52,9 @@ type Config struct {
 
 func (c Config) toMeshConfig() mesh.Config {
 	base := mesh.DefaultConfig()
+	if c.NetworkID != "" {
+		base.NetworkID = c.NetworkID
+	}
 	if len(c.Trackers) > 0 {
 		base.Trackers = c.Trackers
 	}

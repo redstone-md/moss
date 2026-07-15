@@ -91,7 +91,8 @@ func (n *Node) deliverLocal(env gossip.Envelope) {
 	var sender [32]byte
 	copy(sender[:], env.SenderID)
 	n.dispatchCh <- dispatchMessage{
-		channel: env.Channel,
+		// Hand the application its bare channel, not the room-namespaced topic.
+		channel: n.localChannel(env.Channel),
 		sender:  sender,
 		data:    append([]byte(nil), env.Payload...),
 	}

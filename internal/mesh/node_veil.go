@@ -82,8 +82,8 @@ func (n *Node) handleVeilInbound(ctx context.Context, conn vtransport.Conn) {
 	hsCtx, cancel := withTimeout(ctx, n.config.HandshakeTimeout())
 	defer cancel()
 	session, err := transport.ServerHandshake(hsCtx, netConn, transport.HandshakeConfig{
-		MeshID:   n.meshID,
-		PSK:      n.psk,
+		MeshID:   n.networkID,
+		PSK:      nil,
 		Identity: n.identity,
 		Buffers:  transportBufferConfig(n.config.Transport),
 	})
@@ -120,8 +120,8 @@ func (n *Node) veilDial(ctx context.Context, addr, coverSNI string, remoteStatic
 	hsCtx, cancel := withTimeout(ctx, n.config.HandshakeTimeout())
 	defer cancel()
 	session, err := transport.ClientHandshake(hsCtx, netConn, transport.HandshakeConfig{
-		MeshID:       n.meshID,
-		PSK:          n.psk,
+		MeshID:       n.networkID,
+		PSK:          nil,
 		Identity:     n.identity,
 		RemoteStatic: remoteStatic,
 		Buffers:      transportBufferConfig(n.config.Transport),

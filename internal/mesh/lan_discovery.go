@@ -195,7 +195,9 @@ func (n *Node) lanDiscoveryReadLoop(ctx context.Context, conn net.PacketConn) {
 func (n *Node) lanDiscoveryPayload() ([]byte, error) {
 	profile := n.natProfile.Load().(nat.Profile)
 	return json.Marshal(lanBeacon{
-		MeshID:          n.meshID,
+		// LAN discovery is substrate connectivity: match on networkID so nodes
+		// on the same local network find each other regardless of room.
+		MeshID:          n.networkID,
 		PeerID:          n.localPeerID(),
 		ListenPort:      n.listenPort,
 		AdvertisedAddr:  n.advertisedListenAddr(),
@@ -302,7 +304,9 @@ func (n *Node) handleLANBeacon(src *net.UDPAddr, beacon lanBeacon) bool {
 }
 
 func (n *Node) shouldReplyToLANBeacon(beacon lanBeacon) bool {
-	return beacon.MeshID == n.meshID && validLANPeerID(beacon.PeerID) && beacon.PeerID != n.localPeerID() && beacon.ListenPort > 0
+	// Substrate match: same networkID (carried in the beacon's MeshID field),
+	// any room.
+	return beacon.MeshID == n.networkID && validLANPeerID(beacon.PeerID) && beacon.PeerID != n.localPeerID() && beacon.ListenPort > 0
 }
 
 func (n *Node) validLANBeacon(beacon lanBeacon) bool {

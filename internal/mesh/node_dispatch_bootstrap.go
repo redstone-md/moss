@@ -95,7 +95,7 @@ func (n *Node) ChannelSubscribers(channel string) []string {
 	if !validChannel(channel) {
 		return nil
 	}
-	subscribers := n.pubsub.Subscribers(channel)
+	subscribers := n.pubsub.Subscribers(n.roomTopic(channel))
 	sort.Strings(subscribers)
 	return subscribers
 }

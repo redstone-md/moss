@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"sort"
 	"time"
 
@@ -40,8 +39,12 @@ func NewNode(meshID string, psk []byte, cfg Config) (*Node, error) {
 }
 
 func NewNodeWithIdentity(meshID string, psk []byte, cfg Config, identity *mcrypto.Identity) (*Node, error) {
-	if meshID == "" {
-		return nil, errors.New("mesh id is required")
+	// meshID (the room) MAY be empty: a substrate-only node — a spore or gateway
+	// — joins the shared network to discover peers and relay for everyone
+	// without subscribing to any room.
+	networkID := cfg.NetworkID
+	if networkID == "" {
+		networkID = DefaultNetworkID
 	}
 	var err error
 	if identity == nil {
@@ -50,7 +53,10 @@ func NewNodeWithIdentity(meshID string, psk []byte, cfg Config, identity *mcrypt
 			return nil, err
 		}
 	}
-	infoHash, err := bootstrap.InfoHash(meshID, psk)
+	// Discovery is on the shared substrate, keyed by networkID — never by the
+	// room or a room PSK — so every node lands in one swarm and finds every
+	// other node regardless of room.
+	infoHash, err := bootstrap.InfoHash(networkID, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -63,6 +69,7 @@ func NewNodeWithIdentity(meshID string, psk []byte, cfg Config, identity *mcrypt
 		return nil, err
 	}
 	node := &Node{
+		networkID:        networkID,
 		meshID:           meshID,
 		psk:              append([]byte(nil), psk...),
 		config:           cfg,
@@ -120,8 +127,8 @@ func (n *Node) Start() int32 {
 		return MOSS_ERR_ALREADY_STARTED
 	}
 	ln, udpListener, port, err := transport.ListenPair(n.config.ListenPort, transport.HandshakeConfig{
-		MeshID:      n.meshID,
-		PSK:         n.psk,
+		MeshID:      n.networkID,
+		PSK:         nil,
 		Identity:    n.identity,
 		Buffers:     transportBufferConfig(n.config.Transport),
 		BindIfIndex: n.bindIfIndex,
@@ -239,9 +246,12 @@ func (n *Node) Subscribe(channel string) int32 {
 	if !validChannel(channel) {
 		return MOSS_ERR_INVALID_CHANNEL
 	}
-	n.pubsub.Subscribe(channel)
-	n.announceLocalSubscription(channel)
-	n.maintainTopicMesh(channel)
+	// Everything below the API operates on the room-namespaced wire topic; the
+	// application only ever sees the bare channel (see localChannel on delivery).
+	topic := n.roomTopic(channel)
+	n.pubsub.Subscribe(topic)
+	n.announceLocalSubscription(topic)
+	n.maintainTopicMesh(topic)
 	return MOSS_OK
 }
 
@@ -249,16 +259,17 @@ func (n *Node) Unsubscribe(channel string) int32 {
 	if !validChannel(channel) {
 		return MOSS_ERR_INVALID_CHANNEL
 	}
-	for _, peerID := range n.pubsub.MeshPeers(channel) {
+	topic := n.roomTopic(channel)
+	for _, peerID := range n.pubsub.MeshPeers(topic) {
 		n.mu.RLock()
 		peer := n.peers[peerID]
 		n.mu.RUnlock()
 		if peer != nil {
-			n.sendEnvelope(peer, gossip.Envelope{Type: gossip.TypePrune, Channel: channel})
+			n.sendEnvelope(peer, gossip.Envelope{Type: gossip.TypePrune, Channel: topic})
 		}
-		n.pubsub.SetMeshPeer(channel, peerID, false)
+		n.pubsub.SetMeshPeer(topic, peerID, false)
 	}
-	n.pubsub.Unsubscribe(channel)
+	n.pubsub.Unsubscribe(topic)
 	return MOSS_OK
 }
 
@@ -275,14 +286,15 @@ func (n *Node) Publish(channel string, data []byte) int32 {
 	if !started {
 		return MOSS_ERR_NOT_STARTED
 	}
-	env := n.makePublishEnvelope(channel, data)
+	topic := n.roomTopic(channel)
+	env := n.makePublishEnvelope(topic, data)
 	n.cache.Store(env)
 	n.deliverLocal(env)
 	sent := n.broadcastFloodPublish(env, "")
 	if !n.config.Transport.HighThroughput {
-		n.broadcastIHave(channel, []string{env.MessageID}, "")
+		n.broadcastIHave(topic, []string{env.MessageID}, "")
 		if len(data) > 1024 {
-			n.broadcastIDontWant(channel, []string{env.MessageID}, "")
+			n.broadcastIDontWant(topic, []string{env.MessageID}, "")
 		}
 	}
 	if sent {
@@ -322,7 +334,7 @@ func (n *Node) MeshInfoJSON() string {
 		MeshID:           n.meshID,
 		ListenPort:       n.listenPort,
 		AdvertisedAddr:   n.advertisedListenAddr(),
-		Channels:         n.pubsub.SnapshotLocal(),
+		Channels:         n.localChannels(n.pubsub.SnapshotLocal()),
 		NATType:          string(profile.Type),
 		PublicKey:        hex.EncodeToString(pubKey[:]),
 		SupernodeReady:   n.supernodeReady(profile),

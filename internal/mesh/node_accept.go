@@ -56,8 +56,10 @@ func (n *Node) handleInbound(ctx context.Context, conn net.Conn) {
 	hsCtx, cancel := withTimeout(ctx, n.config.HandshakeTimeout())
 	defer cancel()
 	session, err := transport.ServerHandshake(hsCtx, conn, transport.HandshakeConfig{
-		MeshID:   n.meshID,
-		PSK:      n.psk,
+		// Substrate handshake binds to networkID (shared), not the room. PSK is
+		// a room-content concern, never a substrate gate.
+		MeshID:   n.networkID,
+		PSK:      nil,
 		Identity: n.identity,
 		Buffers:  transportBufferConfig(n.config.Transport),
 	})
@@ -211,8 +213,8 @@ func (n *Node) connectPeerOnce(ctx context.Context, addr string, remoteStatic []
 	hsCtx, cancel := withTimeout(ctx, n.config.HandshakeTimeout())
 	defer cancel()
 	session, err := transport.ClientHandshake(hsCtx, conn, transport.HandshakeConfig{
-		MeshID:       n.meshID,
-		PSK:          n.psk,
+		MeshID:       n.networkID,
+		PSK:          nil,
 		Identity:     n.identity,
 		RemoteStatic: remoteStatic,
 		Buffers:      transportBufferConfig(n.config.Transport),

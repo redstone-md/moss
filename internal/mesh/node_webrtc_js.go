@@ -78,8 +78,8 @@ func (n *Node) AttachDataChannel(dc js.Value, initiator bool, label string) {
 		hsCtx, cancel := withTimeout(context.Background(), n.config.HandshakeTimeout())
 		defer cancel()
 		cfg := transport.HandshakeConfig{
-			MeshID:   n.meshID,
-			PSK:      n.psk,
+			MeshID:   n.networkID,
+			PSK:      nil,
 			Identity: n.identity,
 			Buffers:  transportBufferConfig(n.config.Transport),
 		}

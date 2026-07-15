@@ -5,10 +5,19 @@ import (
 	"time"
 )
 
-// DefaultMeshID is the standard public mesh, maintained by the Moss developers.
-// Products that want to join the shared public network should use this id so
-// peers can actually find each other; pick a unique id only for a private mesh.
+// DefaultMeshID is the standard public room. In the two-layer model a mesh id
+// is a *room*: an application-level pub/sub namespace, NOT a connectivity
+// boundary. Connectivity, discovery, NAT-traversal and relaying all happen on
+// the shared substrate identified by NetworkID (below), regardless of room.
 const DefaultMeshID = "global"
+
+// DefaultNetworkID identifies the shared substrate every Moss node joins: the
+// swarm used for peer discovery, the Noise handshake binding, the wire
+// obfuscation key, and relay-session context. Every node — client, spore,
+// gateway — lives on the same NetworkID so any peer can discover, connect to,
+// and relay for any other peer independent of which room (mesh id) it is in.
+// Override only for an isolated testnet or a hard fork of the whole network.
+const DefaultNetworkID = "moss/1"
 
 var defaultTrackers = []string{
 	// International trackers (broadly reachable). A node announces to all of them,
@@ -46,6 +55,12 @@ var defaultSTUNServers = []string{
 }
 
 type Config struct {
+	// NetworkID selects the shared substrate (discovery swarm + handshake
+	// binding + relay context). Empty means DefaultNetworkID. Only set this to
+	// run an isolated testnet; a normal deployment leaves it empty so it joins
+	// the one public substrate. This is NOT the room — that is the meshID
+	// passed to NewNode.
+	NetworkID           string   `json:"network_id"`
 	Trackers            []string `json:"trackers"`
 	AnnounceIntervalSec int      `json:"announce_interval_sec"`
 	ListenPort          int      `json:"listen_port"`
@@ -174,6 +189,7 @@ type SecurityConfig struct {
 
 func DefaultConfig() Config {
 	return Config{
+		NetworkID:           DefaultNetworkID,
 		Trackers:            append([]string(nil), defaultTrackers...),
 		AnnounceIntervalSec: 120,
 		ListenPort:          0,
@@ -251,6 +267,9 @@ func ParseConfig(raw string) (Config, error) {
 
 func (c *Config) applyDefaults(fields map[string]json.RawMessage) {
 	d := DefaultConfig()
+	if c.NetworkID == "" {
+		c.NetworkID = d.NetworkID
+	}
 	if _, ok := fields["trackers"]; !ok && len(c.Trackers) == 0 {
 		c.Trackers = d.Trackers
 	}

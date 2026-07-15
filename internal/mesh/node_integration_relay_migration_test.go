@@ -197,10 +197,13 @@ func TestOpportunisticGraftingPrefersHighScoringNonMeshPeer(t *testing.T) {
 	}
 	waitForMeshCountAtLeast(t, nodeA, "alpha", 2)
 
-	meshPeers := nodeA.pubsub.MeshPeers("alpha")
+	// Internal pub/sub state is keyed by the room-namespaced topic, not the bare
+	// channel the public Subscribe API takes.
+	topic := nodeA.roomTopic("alpha")
+	meshPeers := nodeA.pubsub.MeshPeers(topic)
 	if len(meshPeers) > 2 {
-		nodeA.pubsub.SetMeshPeer("alpha", meshPeers[len(meshPeers)-1], false)
-		meshPeers = nodeA.pubsub.MeshPeers("alpha")
+		nodeA.pubsub.SetMeshPeer(topic, meshPeers[len(meshPeers)-1], false)
+		meshPeers = nodeA.pubsub.MeshPeers(topic)
 	}
 	meshSet := make(map[string]struct{}, len(meshPeers))
 	for _, peerID := range meshPeers {
@@ -229,11 +232,11 @@ func TestOpportunisticGraftingPrefersHighScoringNonMeshPeer(t *testing.T) {
 	}
 	nodeA.scoring.SetApplicationScore(nonMeshPeer, 3)
 
-	nodeA.maintainTopicMesh("alpha")
+	nodeA.maintainTopicMesh(topic)
 
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		updatedMesh := nodeA.pubsub.MeshPeers("alpha")
+		updatedMesh := nodeA.pubsub.MeshPeers(topic)
 		for _, peerID := range updatedMesh {
 			if peerID == nonMeshPeer {
 				return
