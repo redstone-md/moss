@@ -356,13 +356,18 @@ func (n *Node) MeshInfoJSON() string {
 	}
 	n.mu.RLock()
 	info.PeerCount = len(n.peers)
-	for _, peer := range n.peers {
+	for peerID, peer := range n.peers {
 		if peer.relayed {
 			info.RelayedPeerCount++
 		} else {
 			info.DirectPeerCount++
 		}
 		info.Peers = append(info.Peers, peer.addr)
+		info.PeerDetails = append(info.PeerDetails, peerDetail{
+			ID:      peerID,
+			Addr:    peer.addr,
+			Relayed: peer.relayed,
+		})
 	}
 	info.KnownPeerCount = len(n.knownPeers)
 	for _, known := range n.knownPeers {
@@ -387,6 +392,9 @@ func (n *Node) MeshInfoJSON() string {
 	n.mu.RUnlock()
 	sort.Strings(info.Peers)
 	sort.Strings(info.KnownPeers)
+	sort.Slice(info.PeerDetails, func(i, j int) bool {
+		return info.PeerDetails[i].ID < info.PeerDetails[j].ID
+	})
 	payload, _ := json.Marshal(info)
 	return string(payload)
 }

@@ -19,27 +19,27 @@ type Node struct {
 	// meshID is the room: an application pub/sub namespace layered on top. Two
 	// nodes with the same networkID but different meshID still discover,
 	// connect and relay for each other; only their pub/sub traffic is isolated.
-	networkID     string
-	meshID        string
-	psk           []byte
+	networkID string
+	meshID    string
+	psk       []byte
 	// roomKey is the per-room symmetric key (empty for a substrate-only node);
 	// it seals pub/sub payloads and derives the opaque wire topics that keep the
 	// substrate room-blind. subChannels maps those opaque topics back to the
 	// bare channel this node subscribed under, for delivery.
 	roomKey     []byte
 	subChannels map[string]string
-	config        Config
-	infoHash      [20]byte
-	peerID        [20]byte
-	identity      *mcrypto.Identity
-	tracker       *bootstrap.Manager
-	pubsub        *gossip.Manager
-	cache         *gossip.Cache
-	scoring       *gossip.Engine
-	profiler      *nat.Profiler
-	portMapper    nat.PortMapper
-	listener      *transport.Listener
-	udpListener   *transport.UDPListener
+	config      Config
+	infoHash    [20]byte
+	peerID      [20]byte
+	identity    *mcrypto.Identity
+	tracker     *bootstrap.Manager
+	pubsub      *gossip.Manager
+	cache       *gossip.Cache
+	scoring     *gossip.Engine
+	profiler    *nat.Profiler
+	portMapper  nat.PortMapper
+	listener    *transport.Listener
+	udpListener *transport.UDPListener
 	// veilListener holds the Veil "Reality" DPI-mask listener when this
 	// node runs the relay role. Typed as a bare Closer so the field
 	// stays free of the uTLS-heavy vtransport import on js/wasm builds,
@@ -178,23 +178,36 @@ type knownPeer struct {
 }
 
 type meshInfo struct {
-	MeshID                string   `json:"mesh_id"`
-	ListenPort            int      `json:"listen_port"`
-	AdvertisedAddr        string   `json:"advertised_addr"`
-	PeerCount             int      `json:"peer_count"`
-	Peers                 []string `json:"peers"`
-	KnownPeerCount        int      `json:"known_peer_count"`
-	KnownPeers            []string `json:"known_peers,omitempty"`
-	DirectPeerCount       int      `json:"direct_peer_count"`
-	RelayedPeerCount      int      `json:"relayed_peer_count"`
-	RelayCapablePeerCount int      `json:"relay_capable_peer_count"`
-	RelaySessionCount     int      `json:"relay_session_count"`
-	RelayRouteCount       int      `json:"relay_route_count"`
-	Channels              []string `json:"channels"`
-	NATType               string   `json:"nat_type"`
-	PublicKey             string   `json:"public_key"`
-	SupernodeReady        bool     `json:"supernode_ready"`
-	TelemetryEnabled      bool     `json:"telemetry_enabled"`
+	MeshID                string       `json:"mesh_id"`
+	ListenPort            int          `json:"listen_port"`
+	AdvertisedAddr        string       `json:"advertised_addr"`
+	PeerCount             int          `json:"peer_count"`
+	Peers                 []string     `json:"peers"`
+	PeerDetails           []peerDetail `json:"peer_details,omitempty"`
+	KnownPeerCount        int          `json:"known_peer_count"`
+	KnownPeers            []string     `json:"known_peers,omitempty"`
+	DirectPeerCount       int          `json:"direct_peer_count"`
+	RelayedPeerCount      int          `json:"relayed_peer_count"`
+	RelayCapablePeerCount int          `json:"relay_capable_peer_count"`
+	RelaySessionCount     int          `json:"relay_session_count"`
+	RelayRouteCount       int          `json:"relay_route_count"`
+	Channels              []string     `json:"channels"`
+	NATType               string       `json:"nat_type"`
+	PublicKey             string       `json:"public_key"`
+	SupernodeReady        bool         `json:"supernode_ready"`
+	TelemetryEnabled      bool         `json:"telemetry_enabled"`
+}
+
+// peerDetail carries a connected peer's stable identity (noise-static public key
+// hex, the same value that keys n.peers and rides EventPeerJoined) alongside its
+// address and whether it is reached over a relay. On the shared substrate a node
+// connects to peers network-wide, so a bare direct/relayed COUNT no longer tells
+// a caller whether one SPECIFIC counterpart is present — matching against this id
+// does. Consumers (e.g. a per-DM presence check) filter this list by id.
+type peerDetail struct {
+	ID      string `json:"id"`
+	Addr    string `json:"addr"`
+	Relayed bool   `json:"relayed"`
 }
 
 const (
