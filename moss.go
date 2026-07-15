@@ -47,6 +47,14 @@ type Config struct {
 	HandshakeTimeoutSec int   `json:"handshake_timeout_sec,omitempty"`
 	MaxMessageSizeBytes int   `json:"max_message_size_bytes,omitempty"`
 
+	// TelemetryEnabled turns on the privacy-preserving observability layer: the
+	// node contributes DP-noised, per-epoch aggregate metrics under an
+	// unlinkable ephemeral id and gossips a self-verifying network snapshot.
+	// Nothing here exposes the node's address or stable identity.
+	TelemetryEnabled  *bool `json:"telemetry_enabled,omitempty"`
+	TelemetryEpochSec int   `json:"telemetry_epoch_sec,omitempty"`
+	TelemetryKAnon    int   `json:"telemetry_k_anon,omitempty"`
+
 	IdentityPath string `json:"identity_path,omitempty"`
 }
 
@@ -114,6 +122,15 @@ func (c Config) toMeshConfig() mesh.Config {
 	}
 	if c.MaxMessageSizeBytes > 0 {
 		base.Security.MaxMessageSizeBytes = c.MaxMessageSizeBytes
+	}
+	if c.TelemetryEnabled != nil {
+		base.Telemetry.Enabled = *c.TelemetryEnabled
+	}
+	if c.TelemetryEpochSec > 0 {
+		base.Telemetry.EpochSec = c.TelemetryEpochSec
+	}
+	if c.TelemetryKAnon > 0 {
+		base.Telemetry.KAnon = c.TelemetryKAnon
 	}
 	if c.IdentityPath != "" {
 		base.PeerCachePath = filepath.Join(filepath.Dir(c.IdentityPath), "peers.json")
