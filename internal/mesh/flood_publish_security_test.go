@@ -37,11 +37,12 @@ func TestLocalPublishDoesNotLeakToUnsubscribedDirectPeer(t *testing.T) {
 	waitForPeerCount(t, spy, 1)
 
 	channel := "secret-room-validation"
+	topic := publisher.roomTopic(channel)
 	payload := []byte("TOP_SECRET_VALIDATION_PAYLOAD")
-	if subscribers := publisher.pubsub.Subscribers(channel); len(subscribers) != 0 {
+	if subscribers := publisher.pubsub.Subscribers(topic); len(subscribers) != 0 {
 		t.Fatalf("expected no subscribers for %q, got %#v", channel, subscribers)
 	}
-	if meshPeers := publisher.pubsub.MeshPeers(channel); len(meshPeers) != 0 {
+	if meshPeers := publisher.pubsub.MeshPeers(topic); len(meshPeers) != 0 {
 		t.Fatalf("expected no mesh peers for %q, got %#v", channel, meshPeers)
 	}
 
@@ -51,9 +52,13 @@ func TestLocalPublishDoesNotLeakToUnsubscribedDirectPeer(t *testing.T) {
 
 	deadline := time.Now().Add(300 * time.Millisecond)
 	for time.Now().Before(deadline) {
-		for _, id := range spy.cache.RecentIDs(channel, 10) {
-			if env, ok := spy.cache.Get(id); ok && string(env.Payload) == string(payload) {
-				t.Fatalf("unsubscribed direct peer cached publish envelope: channel=%q payload=%q", env.Channel, string(env.Payload))
+		for _, id := range spy.cache.RecentIDs(topic, 10) {
+			env, ok := spy.cache.Get(id)
+			if !ok {
+				continue
+			}
+			if plaintext, opened := spy.openRoom(env.Payload); opened && string(plaintext) == string(payload) {
+				t.Fatalf("unsubscribed direct peer cached publish envelope: channel=%q payload=%q", env.Channel, string(plaintext))
 			}
 		}
 		time.Sleep(10 * time.Millisecond)

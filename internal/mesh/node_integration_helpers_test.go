@@ -413,7 +413,11 @@ func nodeHasCachedPayload(node *Node, channel, payload string) bool {
 	ids := node.cache.RecentIDs(topic, 16)
 	for _, id := range ids {
 		env, ok := node.cache.Get(id)
-		if ok && env.Channel == topic && string(env.Payload) == payload {
+		if !ok || env.Channel != topic {
+			continue
+		}
+		// Cached payloads are room-sealed; open before comparing to plaintext.
+		if plaintext, opened := node.openRoom(env.Payload); opened && string(plaintext) == payload {
 			return true
 		}
 	}
