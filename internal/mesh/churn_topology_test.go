@@ -9,8 +9,7 @@ import (
 )
 
 func TestStarTopologyRecoversAfterPeerReplacement(t *testing.T) {
-	cfgRoot := DefaultConfig()
-	cfgRoot.Trackers = nil
+	cfgRoot := isolatedTestConfig("churn-star")
 	cfgRoot.GossipSub.HeartbeatMS = 50
 	cfgRoot.MaxPeers = 16
 	root, err := NewNode("mesh-churn-star", nil, cfgRoot)
@@ -23,8 +22,7 @@ func TestStarTopologyRecoversAfterPeerReplacement(t *testing.T) {
 	defer root.Stop()
 
 	newLeaf := func() *Node {
-		cfg := DefaultConfig()
-		cfg.Trackers = nil
+		cfg := isolatedTestConfig("churn-star")
 		cfg.GossipSub.HeartbeatMS = 50
 		cfg.MaxPeers = 1
 		cfg.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(root.ListenPort()))}

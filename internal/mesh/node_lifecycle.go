@@ -173,7 +173,11 @@ func (n *Node) Start() int32 {
 			n.rememberTrackerSeeds(addrs)
 		}
 	}()
-	if n.config.DHTEnabled {
+	// Never run the real BitTorrent DHT under `go test`: it would announce the
+	// (now NetworkID-derived) infohash to the public DHT and pull real
+	// production nodes into the test, breaking topology/peer-count assertions.
+	// Mirrors the LAN-discovery guard above.
+	if n.config.DHTEnabled && !transport.RunningGoTest() {
 		n.wg.Add(1)
 		go func() {
 			defer n.wg.Done()
