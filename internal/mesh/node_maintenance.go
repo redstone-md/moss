@@ -263,6 +263,7 @@ func (n *Node) maintenanceLoop(ctx context.Context) {
 			n.pruneLowScoringPeers()
 			n.pruneHighLatencyPeers()
 			n.connectKnownPeers()
+			n.dialExplicitTargets()
 			n.connectBootstrapSeeds(ctx)
 			n.promoteRelayPeers()
 			n.refreshLocalSubscriptions()
