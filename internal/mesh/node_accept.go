@@ -263,7 +263,7 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 		overflowPeer = n.selectOverflowPrunePeerLocked()
 		n.mu.Unlock()
 		if overflowPeer != nil {
-			_ = overflowPeer.session.Close()
+			overflowPeer.closeSession()
 		}
 		_ = session.Close()
 		return
@@ -295,7 +295,7 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 	n.scoring.Ensure(peerID)
 	n.mu.Unlock()
 	if replacedPeer != nil && replacedPeer.session != nil {
-		_ = replacedPeer.session.Close()
+		replacedPeer.closeSession()
 	}
 	n.recalculateIPColocationPenalties()
 	n.wg.Add(1)
