@@ -62,7 +62,7 @@ func (n *Node) sealRelayGossipEnvelope(sessionID, targetPeerID string, env gossi
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return nil, err
 	}
-	ad := relayGossipAAD(n.meshID, sessionID, n.localPeerID(), targetPeerID)
+	ad := relayGossipAAD(n.networkID, sessionID, n.localPeerID(), targetPeerID)
 	sealed := aead.Seal(nonce, nonce, plaintext, ad)
 	return sealed, nil
 }
@@ -77,7 +77,7 @@ func (n *Node) openRelayGossipEnvelope(session relayLocalSession, sourcePeerID s
 	}
 	nonce := payload[:chacha20poly1305.NonceSize]
 	ciphertext := payload[chacha20poly1305.NonceSize:]
-	ad := relayGossipAAD(n.meshID, session.sessionID, sourcePeerID, n.localPeerID())
+	ad := relayGossipAAD(n.networkID, session.sessionID, sourcePeerID, n.localPeerID())
 	plaintext, err := aead.Open(nil, nonce, ciphertext, ad)
 	if err != nil {
 		return gossip.Envelope{}, err
@@ -103,7 +103,7 @@ func (n *Node) relayGossipAEAD(sessionID, sourcePeerID, targetPeerID string) (ci
 	if err != nil {
 		return nil, err
 	}
-	key, err := mcrypto.Expand(secret, []byte(n.meshID), "moss-relay-gossip-v1", sourcePeerID, targetPeerID, sessionID)
+	key, err := mcrypto.Expand(secret, []byte(n.networkID), "moss-relay-gossip-v1", sourcePeerID, targetPeerID, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -119,6 +119,6 @@ func (n *Node) knownPeerNoiseStatic(peerID string) []byte {
 	return append([]byte(nil), n.knownPeers[peerID].noiseStatic...)
 }
 
-func relayGossipAAD(meshID, sessionID, sourcePeerID, targetPeerID string) []byte {
-	return []byte("moss-relay-gossip-v1|" + meshID + "|" + sessionID + "|" + sourcePeerID + "|" + targetPeerID)
+func relayGossipAAD(networkID, sessionID, sourcePeerID, targetPeerID string) []byte {
+	return []byte("moss-relay-gossip-v1|" + networkID + "|" + sessionID + "|" + sourcePeerID + "|" + targetPeerID)
 }

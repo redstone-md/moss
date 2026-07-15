@@ -23,7 +23,7 @@ func TestHandleLANBeaconUpdatesKnownPeerWithSourceIP(t *testing.T) {
 
 	peerID := lanTestPeerID(1)
 	node.handleLANBeacon(&net.UDPAddr{IP: net.ParseIP("192.168.50.20"), Port: 44445}, lanBeacon{
-		MeshID:          "mesh-lan-beacon",
+		MeshID:          DefaultNetworkID,
 		PeerID:          peerID,
 		ListenPort:      41030,
 		NATType:         string(nat.TypePortRestricted),
@@ -61,7 +61,7 @@ func TestHandleLANBeaconIgnoresUnauthenticatedAdvertisedAddress(t *testing.T) {
 
 	peerID := lanTestPeerID(2)
 	node.handleLANBeacon(&net.UDPAddr{IP: net.ParseIP("172.30.1.2"), Port: 44445}, lanBeacon{
-		MeshID:         "mesh-lan-beacon",
+		MeshID:         DefaultNetworkID,
 		PeerID:         peerID,
 		ListenPort:     41030,
 		AdvertisedAddr: "100.64.74.9:41030",
@@ -104,7 +104,7 @@ func TestHandleLANBeaconDoesNotOverrideKnownPublicEndpoint(t *testing.T) {
 	node.mu.Unlock()
 
 	node.handleLANBeacon(&net.UDPAddr{IP: net.ParseIP("172.30.1.2"), Port: 44445}, lanBeacon{
-		MeshID:          "mesh-lan-beacon",
+		MeshID:          DefaultNetworkID,
 		PeerID:          peerID,
 		ListenPort:      41030,
 		PublicReachable: false,
@@ -139,7 +139,7 @@ func TestHandleLANBeaconIgnoresDifferentMeshAndSelf(t *testing.T) {
 		ListenPort: 41030,
 	})
 	node.handleLANBeacon(&net.UDPAddr{IP: net.ParseIP("10.1.2.4"), Port: 44445}, lanBeacon{
-		MeshID:     "mesh-lan-beacon",
+		MeshID:     DefaultNetworkID,
 		PeerID:     selfID,
 		ListenPort: 41031,
 	})
@@ -160,7 +160,7 @@ func TestHandleLANBeaconRejectsMalformedPeerID(t *testing.T) {
 	}
 
 	node.handleLANBeacon(&net.UDPAddr{IP: net.ParseIP("10.1.2.3"), Port: 44445}, lanBeacon{
-		MeshID:     "mesh-lan-beacon",
+		MeshID:     DefaultNetworkID,
 		PeerID:     "peer-1",
 		ListenPort: 41030,
 	})
@@ -184,7 +184,7 @@ func TestHandleLANBeaconCapsUnverifiedLANPeers(t *testing.T) {
 	limit := lanPeerCap(cfg.MaxPeers)
 	for i := 1; i <= limit+20; i++ {
 		node.handleLANBeacon(&net.UDPAddr{IP: net.ParseIP(fmt.Sprintf("10.1.2.%d", i)), Port: 44445}, lanBeacon{
-			MeshID:     "mesh-lan-beacon",
+			MeshID:     DefaultNetworkID,
 			PeerID:     lanTestPeerID(i),
 			ListenPort: 41030,
 		})
@@ -209,7 +209,7 @@ func TestHandleLANBeaconCapsPublicSourceUnverifiedLANPeers(t *testing.T) {
 	limit := lanPeerCap(cfg.MaxPeers)
 	for i := 1; i <= limit+20; i++ {
 		node.handleLANBeacon(&net.UDPAddr{IP: net.ParseIP(fmt.Sprintf("8.8.4.%d", i)), Port: 44445}, lanBeacon{
-			MeshID:     "mesh-lan-beacon",
+			MeshID:     DefaultNetworkID,
 			PeerID:     lanTestPeerID(i),
 			ListenPort: 41030,
 		})

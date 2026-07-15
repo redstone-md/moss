@@ -15,6 +15,11 @@ import (
 )
 
 type Node struct {
+	// networkID identifies the shared substrate (discovery, handshake, relay).
+	// meshID is the room: an application pub/sub namespace layered on top. Two
+	// nodes with the same networkID but different meshID still discover,
+	// connect and relay for each other; only their pub/sub traffic is isolated.
+	networkID     string
 	meshID        string
 	psk           []byte
 	config        Config

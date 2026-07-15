@@ -105,9 +105,10 @@ func waitForPeerCountAtLeast(t *testing.T, node *Node, min int, dur time.Duratio
 
 func waitForSubscriberCount(t *testing.T, node *Node, channel string, want int) {
 	t.Helper()
+	topic := node.roomTopic(channel)
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
-		if got := len(node.pubsub.Subscribers(channel)); got >= want {
+		if got := len(node.pubsub.Subscribers(topic)); got >= want {
 			return
 		}
 		time.Sleep(25 * time.Millisecond)
@@ -117,9 +118,10 @@ func waitForSubscriberCount(t *testing.T, node *Node, channel string, want int) 
 
 func waitForMeshCount(t *testing.T, node *Node, channel string, want int) {
 	t.Helper()
+	topic := node.roomTopic(channel)
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
-		if len(node.pubsub.MeshPeers(channel)) == want {
+		if len(node.pubsub.MeshPeers(topic)) == want {
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -129,9 +131,10 @@ func waitForMeshCount(t *testing.T, node *Node, channel string, want int) {
 
 func waitForMeshCountAtLeast(t *testing.T, node *Node, channel string, want int) {
 	t.Helper()
+	topic := node.roomTopic(channel)
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
-		if len(node.pubsub.MeshPeers(channel)) >= want {
+		if len(node.pubsub.MeshPeers(topic)) >= want {
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -234,9 +237,10 @@ func waitForPeerRTT(t *testing.T, node *Node, peerID string, max time.Duration) 
 
 func waitForPeerMeshState(t *testing.T, node *Node, channel, peerID string, want bool) {
 	t.Helper()
+	topic := node.roomTopic(channel)
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if node.pubsub.InMesh(channel, peerID) == want {
+		if node.pubsub.InMesh(topic, peerID) == want {
 			return
 		}
 		time.Sleep(25 * time.Millisecond)
@@ -258,7 +262,7 @@ func waitForPeerMeshState(t *testing.T, node *Node, channel, peerID string, want
 		}
 	}
 	node.mu.RUnlock()
-	t.Fatalf("peer %s mesh state for %s did not become %t (actual=%t exists=%t rtt=%s blocked_for=%s pending=%q sent_ago=%s mesh=%v)", peerID, channel, want, node.pubsub.InMesh(channel, peerID), peer != nil, rtt, blockedFor, pending, sentAgo, node.pubsub.MeshPeers(channel))
+	t.Fatalf("peer %s mesh state for %s did not become %t (actual=%t exists=%t rtt=%s blocked_for=%s pending=%q sent_ago=%s mesh=%v)", peerID, channel, want, node.pubsub.InMesh(topic, peerID), peer != nil, rtt, blockedFor, pending, sentAgo, node.pubsub.MeshPeers(topic))
 }
 
 func waitForKnownPeerPort(t *testing.T, node *Node, wantPeerID, wantPort string) {
@@ -405,10 +409,11 @@ func waitForRelayRouteClosed(t *testing.T, node *Node, sessionID string) {
 }
 
 func nodeHasCachedPayload(node *Node, channel, payload string) bool {
-	ids := node.cache.RecentIDs(channel, 16)
+	topic := node.roomTopic(channel)
+	ids := node.cache.RecentIDs(topic, 16)
 	for _, id := range ids {
 		env, ok := node.cache.Get(id)
-		if ok && env.Channel == channel && string(env.Payload) == payload {
+		if ok && env.Channel == topic && string(env.Payload) == payload {
 			return true
 		}
 	}
