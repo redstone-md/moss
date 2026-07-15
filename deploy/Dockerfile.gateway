@@ -9,6 +9,8 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/moss-gateway ./cmd
 FROM gcr.io/distroless/static-debian12
 COPY --from=build /out/moss-gateway /usr/local/bin/moss-gateway
 # Exec-form entrypoint so Fly/Docker run the binary directly (no shell needed).
-# Default to the standard public mesh "global".
+# Roomless substrate relay + network-wide telemetry, with a PINNED peer port
+# (4001) so the platform can expose it and the gateway is inbound-reachable —
+# a prerequisite for it to be promoted to a relaying SuperNode.
 ENTRYPOINT ["/usr/local/bin/moss-gateway"]
-CMD ["-mesh", "global", "-http", "0.0.0.0:8787"]
+CMD ["-http", "0.0.0.0:8787", "-listen-port", "4001"]

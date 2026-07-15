@@ -29,19 +29,25 @@ import (
 )
 
 func main() {
-	defMesh := flag.String("mesh", mesh.DefaultMeshID, "default mesh id served when ?meshid is absent (\"global\" is the standard public mesh)")
-	extra := flag.String("meshes", "", "comma-separated additional mesh ids to join and serve")
-	onDemand := flag.Bool("on-demand", true, "join a requested mesh on first ?meshid (mesh ids live on the client; bounded by -max-meshes)")
-	maxMeshes := flag.Int("max-meshes", 32, "cap on total meshes joined (on-demand safety limit)")
+	// A gateway is one node on the shared substrate: it relays for the whole
+	// network and observes the network-wide (substrate-scoped) telemetry. Rooms
+	// (mesh ids) no longer partition the network, so it joins no room by default
+	// and serves the same telemetry regardless of any ?meshid the explorer asks
+	// for — the flags below remain only for compatibility.
+	defMesh := flag.String("mesh", "", "room to also join (empty = pure substrate relay/observer, the default)")
+	extra := flag.String("meshes", "", "deprecated: additional rooms to join (no effect on which telemetry is served)")
+	onDemand := flag.Bool("on-demand", false, "deprecated: telemetry is network-wide, so no per-room node is needed")
+	maxMeshes := flag.Int("max-meshes", 32, "deprecated: cap on rooms joined")
 	httpAddr := flag.String("http", "127.0.0.1:8787", "HTTP listen address for the read-only API")
+	listenPort := flag.Int("listen-port", 0, "peer listen port — PIN it (e.g. 4001) and expose it so the gateway is inbound-reachable and can relay; 0 = ephemeral")
 	epochSec := flag.Int("epoch-sec", 300, "telemetry epoch length in seconds")
 	kAnon := flag.Int("k-anon", 5, "suppress detailed metrics below this many contributors")
-	static := flag.String("static", "", "comma-separated static peers for offline/local testing (applies to the default mesh)")
+	static := flag.String("static", "", "comma-separated static peers for offline/local testing")
 	trackers := flag.Bool("trackers", true, "use public BitTorrent trackers for discovery (false for offline local tests)")
 	flag.Parse()
 
 	tmpl := mesh.DefaultConfig()
-	tmpl.ListenPort = 0 // every mesh node binds its own ephemeral port
+	tmpl.ListenPort = *listenPort // pin the peer port so Fly/firewall can expose it
 	tmpl.Telemetry = mesh.TelemetryConfig{Enabled: true, EpochSec: *epochSec, KAnon: *kAnon}
 	if !*trackers {
 		tmpl.Trackers = nil
@@ -61,12 +67,17 @@ func main() {
 		if m == *defMesh {
 			continue
 		}
-		if err := mgr.joinWith(m, tmpl); err != nil {
+		// Only the default node pins the reachable relay port; extra rooms bind
+		// ephemeral ports so they never collide with it.
+		extraCfg := tmpl
+		extraCfg.ListenPort = 0
+		if err := mgr.joinWith(m, extraCfg); err != nil {
 			log.Fatalf("join mesh %q: %v", m, err)
 		}
 	}
 	defer mgr.stopAll()
-	log.Printf("moss-gateway: serving meshes %v (default %q) on http://%s", mgr.list(), *defMesh, *httpAddr)
+	relayNode, _ := mgr.node("")
+	log.Printf("moss-gateway: substrate relay + telemetry on http://%s (peer port %d)", *httpAddr, relayNode.ListenPort())
 
 	srv := &http.Server{Addr: *httpAddr, Handler: newHandler(mgr)}
 	go func() {
@@ -110,30 +121,19 @@ func (m *manager) joinWith(meshID string, cfg mesh.Config) error {
 	return nil
 }
 
-// node returns the node for meshID (default when empty), joining on demand when
-// enabled and under the cap.
+// node returns the gateway's substrate node. Telemetry is network-wide, so the
+// same node is served for any (or no) ?meshid the explorer asks for; the
+// parameter is accepted only for backward compatibility.
 func (m *manager) node(meshID string) (*mesh.Node, error) {
-	if meshID == "" {
-		meshID = m.def
-	}
 	m.mu.Lock()
-	if n, ok := m.nodes[meshID]; ok {
-		m.mu.Unlock()
+	defer m.mu.Unlock()
+	if n, ok := m.nodes[m.def]; ok {
 		return n, nil
 	}
-	if !m.onDemand || len(m.nodes) >= m.max || !validMeshID(meshID) {
-		m.mu.Unlock()
-		return nil, errUnknownMesh
+	for _, n := range m.nodes {
+		return n, nil
 	}
-	m.mu.Unlock()
-	if err := m.joinWith(meshID, m.tmpl); err != nil {
-		return nil, err
-	}
-	log.Printf("moss-gateway: joined mesh %q on demand", meshID)
-	m.mu.Lock()
-	n := m.nodes[meshID]
-	m.mu.Unlock()
-	return n, nil
+	return nil, errUnknownMesh
 }
 
 func (m *manager) list() []string {

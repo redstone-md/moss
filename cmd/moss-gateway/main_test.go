@@ -53,12 +53,14 @@ func TestGatewayChainEndpointReturnsArray(t *testing.T) {
 	}
 }
 
-func TestGatewayUnknownMeshIs404(t *testing.T) {
-	h := newHandler(newTestManager(t)) // on-demand off
+func TestGatewayServesSubstrateTelemetryForAnyMeshID(t *testing.T) {
+	// Telemetry is network-wide now: any ?meshid resolves to the one substrate
+	// node rather than 404, so old explorers passing a room id still work.
+	h := newHandler(newTestManager(t))
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/stats?meshid=nope", nil))
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("expected 404 for unknown mesh, got %d", rec.Code)
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/stats?meshid=any-room", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 (network-wide telemetry) for any meshid, got %d", rec.Code)
 	}
 }
 
