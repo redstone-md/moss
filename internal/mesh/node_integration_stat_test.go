@@ -162,14 +162,27 @@ func TestStatDeltaLeaksNoIdentity(t *testing.T) {
 }
 
 // TestTelemetryDisabledByDefault confirms StatsJSON is empty without opt-in.
-func TestTelemetryDisabledByDefault(t *testing.T) {
+func TestTelemetryEnabledByDefaultAndOptOut(t *testing.T) {
+	// Telemetry is on by default: a default-config node produces a stats report.
 	cfg := DefaultConfig()
 	cfg.Trackers = nil
-	node, err := NewNode("mesh-stat-off", nil, cfg)
+	on, err := NewNode("mesh-stat-on", nil, cfg)
+	if err != nil {
+		t.Fatalf("NewNode: %v", err)
+	}
+	if on.StatsJSON() == "" {
+		t.Fatal("expected a stats report with telemetry on by default, got empty")
+	}
+
+	// Opt-out is honoured: explicitly disabling telemetry yields no report.
+	off := DefaultConfig()
+	off.Trackers = nil
+	off.Telemetry.Enabled = false
+	node, err := NewNode("mesh-stat-off", nil, off)
 	if err != nil {
 		t.Fatalf("NewNode: %v", err)
 	}
 	if node.StatsJSON() != "" {
-		t.Fatalf("expected empty stats with telemetry off, got %s", node.StatsJSON())
+		t.Fatalf("expected empty stats when telemetry opted out, got %s", node.StatsJSON())
 	}
 }

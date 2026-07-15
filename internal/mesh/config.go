@@ -220,6 +220,10 @@ func DefaultConfig() Config {
 			RateLimitBurst:      256000,
 			RateLimitSustained:  64000,
 		},
+		// Telemetry (the DP-noised, k-anonymous network observability layer) is on
+		// by default; it exposes no address or stable identity. Opt out explicitly
+		// with telemetry_enabled=false.
+		Telemetry:       TelemetryConfig{Enabled: true},
 		ObfsPadMax:      256,
 		DHTEnabled:      true,
 		DHTPort:         0,
