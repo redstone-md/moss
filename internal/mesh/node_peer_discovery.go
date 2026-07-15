@@ -67,14 +67,14 @@ func (n *Node) discoveredPeerTargets() []discoveredPeerTarget {
 		})
 	}
 
+	// Neutral ordering: bootstrap seeds first (they are how the node joins at
+	// all), then score / recency. Relay-capable peers get NO blanket priority —
+	// when every node dials supernodes first the mesh degrades into a star that
+	// funnels the whole network's gossip through them. Relay availability is
+	// covered by the small quota in selectDialTargets instead.
 	sort.Slice(targets, func(i, j int) bool {
 		if targets[i].info.bootstrap != targets[j].info.bootstrap {
 			return targets[i].info.bootstrap
-		}
-		rankI := relayCandidateRank(targets[i].info)
-		rankJ := relayCandidateRank(targets[j].info)
-		if rankI != rankJ {
-			return rankI > rankJ
 		}
 		scoreI := n.peerScore(targets[i].peerID)
 		scoreJ := n.peerScore(targets[j].peerID)
@@ -95,12 +95,59 @@ func (n *Node) discoveredPeerTargets() []discoveredPeerTarget {
 	if available < limit {
 		limit = available
 	}
-	if len(targets) < limit {
-		limit = len(targets)
-	}
-	selected := append([]discoveredPeerTarget(nil), targets[:limit]...)
+	selected := selectDialTargets(targets, limit, relayDialQuota-n.relayCapableConnectedLocked())
 	for _, target := range selected {
 		n.peerDials[target.peerID] = now
+	}
+	return selected
+}
+
+// relayDialQuota is how many relay-capable connections a node keeps alive for
+// the relay fallback path (and relay_ready); beyond it, relay-capable peers
+// are dialed only when no plain candidate is available.
+const relayDialQuota = 2
+
+func (n *Node) relayCapableConnectedLocked() int {
+	count := 0
+	for peerID, peer := range n.peers {
+		if peer == nil || peer.relayed {
+			continue
+		}
+		if n.knownPeers[peerID].relayCapable {
+			count++
+		}
+	}
+	return count
+}
+
+// selectDialTargets takes up to limit targets from the ordered candidate list:
+// bootstrap seeds always, relay-capable peers only while the quota deficit
+// lasts, plain peers freely. Remaining slots fall back to the skipped
+// relay-capable candidates so a relay-heavy neighborhood still fills up.
+func selectDialTargets(targets []discoveredPeerTarget, limit, relayDeficit int) []discoveredPeerTarget {
+	if limit <= 0 {
+		return nil
+	}
+	selected := make([]discoveredPeerTarget, 0, limit)
+	skipped := make([]discoveredPeerTarget, 0)
+	for _, target := range targets {
+		if len(selected) == limit {
+			break
+		}
+		if target.info.relayCapable && !target.info.bootstrap {
+			if relayDeficit <= 0 {
+				skipped = append(skipped, target)
+				continue
+			}
+			relayDeficit--
+		}
+		selected = append(selected, target)
+	}
+	for _, target := range skipped {
+		if len(selected) == limit {
+			break
+		}
+		selected = append(selected, target)
 	}
 	return selected
 }
