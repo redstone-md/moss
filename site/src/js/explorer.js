@@ -242,18 +242,18 @@ function drawSpark() {
 }
 
 function buildTopology(stats) {
-  const count = Math.max(stats.node_count_estimate || stats.contributors || 0, 0);
+  const nodeCount = Math.max(stats.node_count_estimate || stats.contributors || 0, 0);
   // Only rebuild when the shape actually changes. Refresh fires every couple of
   // seconds; regenerating the (illustrative) tree each time — and off the
   // per-epoch digest — reshuffled every node's position and reset the pulse
   // animation, so it looked random and "jumped". Key on count + histograms and
   // seed off a STABLE string so the layout is deterministic and steady.
-  const key = count + "|" + JSON.stringify(stats.nat_histogram || {}) + "|" + JSON.stringify(stats.degree_histogram || {});
+  const key = nodeCount + "|" + JSON.stringify(stats.nat_histogram || {}) + "|" + JSON.stringify(stats.degree_histogram || {});
   if (state._topoKey === key && state.topo) return;
   state._topoKey = key;
   const nodes = JSON.parse(mossSimulateTree(JSON.stringify({
     seed: "moss-topology",
-    node_count: count,
+    node_count: nodeCount,
     max_render: 260,
     nat_histogram: stats.nat_histogram || {},
     degree_histogram: stats.degree_histogram || {},
