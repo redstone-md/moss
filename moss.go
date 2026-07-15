@@ -239,6 +239,17 @@ func (n *Node) SetEventCallback(cb func(eventType int32, detailJSON string)) {
 	n.inner.SetEventCallback(cb)
 }
 
+// SetMessageCallback registers a callback for pub/sub messages delivered on the
+// channels this node is subscribed to. cb receives the channel, the sender's
+// public key, and the payload. Pass nil to clear.
+func (n *Node) SetMessageCallback(cb func(channel string, senderID [32]byte, data []byte)) {
+	if cb == nil {
+		n.inner.SetMessageCallback(nil)
+		return
+	}
+	n.inner.SetMessageCallback(mesh.MessageCallback(cb))
+}
+
 // SetRelayCallback registers a callback for relayed data packets.
 // Pass nil to clear.
 func (n *Node) SetRelayCallback(cb func(senderID [32]byte, data []byte)) {
