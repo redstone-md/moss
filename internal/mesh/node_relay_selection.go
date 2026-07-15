@@ -7,6 +7,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/redstone-md/moss/internal/geo"
 	"github.com/redstone-md/moss/internal/gossip"
 	"github.com/redstone-md/moss/internal/nat"
 )
@@ -44,6 +45,15 @@ func (n *Node) relayRateLimits() (int, int) {
 	return burst, sustained
 }
 
+// hostIP parses the IP out of a "host:port" (or bare host) address, or nil.
+func hostIP(addr string) net.IP {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	return net.ParseIP(host)
+}
+
 func (n *Node) selectRelayPeer(targetPeerID string) (string, error) {
 	candidates, err := n.selectRelayPeers(targetPeerID)
 	if err != nil {
@@ -71,11 +81,22 @@ func (n *Node) selectRelayPeers(targetPeerID string) ([]string, error) {
 	if len(candidates) == 0 {
 		return nil, errors.New("no relay-capable peer is connected")
 	}
+	// Prefer a relay geographically close to the target, shortening the
+	// relay↔target leg. Unknown IPs carry no preference, so this only ever
+	// breaks ties in favour of proximity — it never excludes a candidate.
+	targetIP := hostIP(n.knownPeers[targetPeerID].addr)
 	sort.Slice(candidates, func(i, j int) bool {
 		infoI := n.knownPeers[candidates[i]]
 		infoJ := n.knownPeers[candidates[j]]
 		if rankI, rankJ := relayCandidateRank(infoI), relayCandidateRank(infoJ); rankI != rankJ {
 			return rankI > rankJ
+		}
+		if targetIP != nil {
+			proxI := geo.Proximity(hostIP(infoI.addr), targetIP)
+			proxJ := geo.Proximity(hostIP(infoJ.addr), targetIP)
+			if proxI != proxJ {
+				return proxI > proxJ
+			}
 		}
 		scoreI := n.peerScore(candidates[i])
 		scoreJ := n.peerScore(candidates[j])
