@@ -55,6 +55,18 @@ type Config struct {
 	TelemetryEpochSec int   `json:"telemetry_epoch_sec,omitempty"`
 	TelemetryKAnon    int   `json:"telemetry_k_anon,omitempty"`
 
+	// Axiom error/log telemetry (opt-in). When AxiomToken and AxiomDataset are
+	// both set, the node ships structured errors (listen/relay/handshake
+	// failures, plus anything reported via LogEvent) and periodic node-stats
+	// (peer/supernode/relay counts) to Axiom. AxiomEndpoint is the ingest base
+	// URL — leave empty for the cloud default, or set the region edge (e.g.
+	// https://eu-central-1.aws.edge.axiom.co). AxiomService identifies the host
+	// (e.g. "mossspore-0.6.9", "gse-4576510"). The token is ingest-only.
+	AxiomToken    string `json:"axiom_token,omitempty"`
+	AxiomDataset  string `json:"axiom_dataset,omitempty"`
+	AxiomEndpoint string `json:"axiom_endpoint,omitempty"`
+	AxiomService  string `json:"axiom_service,omitempty"`
+
 	IdentityPath string `json:"identity_path,omitempty"`
 }
 
@@ -162,7 +174,20 @@ func NewNode(meshID string, psk []byte, cfg Config) (*Node, error) {
 	if err != nil {
 		return nil, fmt.Errorf("moss: node creation error: %w", err)
 	}
+	// Enable the Axiom sink before Start so the very first bind failure (e.g. the
+	// Wine/Proton listen error) is reported.
+	if cfg.AxiomToken != "" && cfg.AxiomDataset != "" {
+		node.EnableAxiom(cfg.AxiomToken, cfg.AxiomDataset, cfg.AxiomEndpoint, cfg.AxiomService)
+	}
 	return &Node{inner: node, cfg: cfg}, nil
+}
+
+// LogEvent ships a structured event to Axiom when the sink is enabled (a no-op
+// otherwise). level is "error" | "warn" | "info", kind a short slug, message
+// free text, and fields optional context (no PII). Lets a Go host report its own
+// errors alongside moss's.
+func (n *Node) LogEvent(level, kind, message string, fields map[string]any) {
+	n.inner.LogEvent(level, kind, message, fields)
 }
 
 // Start starts the node, binding to the configured listen port and beginning
