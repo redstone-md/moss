@@ -69,6 +69,7 @@ type Node struct {
 	relayBuckets     map[string]*nat.TokenBucket
 	directProbes     map[string]time.Time
 	peerDials        map[string]time.Time
+	explicitTargets  map[string]time.Time
 	bootstrapDials   map[string]time.Time
 	lanBeaconBuckets map[string]*lanBeaconRateBucket
 	lanBeaconGlobal  *nat.TokenBucket

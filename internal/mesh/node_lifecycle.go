@@ -92,6 +92,7 @@ func NewNodeWithIdentity(meshID string, psk []byte, cfg Config, identity *mcrypt
 		relayBuckets:     make(map[string]*nat.TokenBucket),
 		directProbes:     make(map[string]time.Time),
 		peerDials:        make(map[string]time.Time),
+		explicitTargets:  make(map[string]time.Time),
 		bootstrapDials:   make(map[string]time.Time),
 		lanBeaconBuckets: make(map[string]*lanBeaconRateBucket),
 		lanBeaconGlobal:  nat.NewTokenBucket(lanBeaconGlobalBurst, lanBeaconGlobalRate),
@@ -225,6 +226,7 @@ func (n *Node) Stop() int32 {
 		peers = append(peers, peer)
 	}
 	n.peers = make(map[string]*peerConn)
+	n.explicitTargets = make(map[string]time.Time)
 	n.mu.Unlock()
 	cancel()
 	if listener != nil {
