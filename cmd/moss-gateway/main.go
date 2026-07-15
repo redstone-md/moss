@@ -42,12 +42,20 @@ func main() {
 	listenPort := flag.Int("listen-port", 0, "peer listen port — PIN it (e.g. 4001) and expose it so the gateway is inbound-reachable and can relay; 0 = ephemeral")
 	epochSec := flag.Int("epoch-sec", 300, "telemetry epoch length in seconds")
 	kAnon := flag.Int("k-anon", 5, "suppress detailed metrics below this many contributors")
+	// A telemetry observer receives network-wide gossip from every peer it
+	// holds, so peer count is the dominant bandwidth driver. Network-wide
+	// telemetry converges over a handful of peers, so default low to keep egress
+	// (and metered cloud bills) small; raise it only when the gateway is also a
+	// reachable relay that should carry traffic.
+	maxPeers := flag.Int("max-peers", 24, "cap on peer connections — the main bandwidth lever for a gateway")
 	static := flag.String("static", "", "comma-separated static peers for offline/local testing")
 	trackers := flag.Bool("trackers", true, "use public BitTorrent trackers for discovery (false for offline local tests)")
 	flag.Parse()
 
 	tmpl := mesh.DefaultConfig()
 	tmpl.ListenPort = *listenPort // pin the peer port so Fly/firewall can expose it
+	tmpl.MaxPeers = *maxPeers
+	tmpl.LANDiscoveryEnabled = false // a cloud gateway has no LAN to discover
 	tmpl.Telemetry = mesh.TelemetryConfig{Enabled: true, EpochSec: *epochSec, KAnon: *kAnon}
 	if !*trackers {
 		tmpl.Trackers = nil
