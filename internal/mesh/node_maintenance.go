@@ -232,14 +232,33 @@ func (n *Node) maintenanceLoop(ctx context.Context) {
 	defer n.wg.Done()
 	ticker := time.NewTicker(n.config.Heartbeat())
 	defer ticker.Stop()
+	connEvery := n.connMaintenanceEvery()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			atomic.AddUint64(&n.heartbeat, 1)
-			n.scoring.Tick()
+			ticks := atomic.AddUint64(&n.heartbeat, 1)
+			// Pub/sub mesh upkeep and supernode-status broadcasts run at the
+			// gossip heartbeat, which a chat client may set very low (e.g. 250ms)
+			// for responsiveness. These are cheap and event-driven — they only
+			// emit on an actual change — so their cadence is fine to keep fast.
 			n.evaluateMeshDeliveryDeficits(time.Now())
+			for _, channel := range n.pubsub.SnapshotLocal() {
+				n.maintainTopicMesh(channel)
+			}
+			n.refreshSupernodeStatus()
+			if ticks%supernodeReannounceEveryTicks == 0 {
+				n.reannounceSupernodeStatus()
+			}
+			// Peer/connection upkeep runs at ~1s regardless of the gossip
+			// heartbeat. Running score decay and prune/reconnect every tick at a
+			// 250ms heartbeat aged peers ~4x too fast and flapped otherwise-
+			// healthy connections continuously.
+			if ticks%connEvery != 0 {
+				continue
+			}
+			n.scoring.Tick()
 			n.probePeerLatency(time.Now())
 			n.pruneLowScoringPeers()
 			n.pruneHighLatencyPeers()
@@ -247,15 +266,22 @@ func (n *Node) maintenanceLoop(ctx context.Context) {
 			n.connectBootstrapSeeds(ctx)
 			n.promoteRelayPeers()
 			n.refreshLocalSubscriptions()
-			for _, channel := range n.pubsub.SnapshotLocal() {
-				n.maintainTopicMesh(channel)
-			}
-			n.refreshSupernodeStatus()
-			if atomic.LoadUint64(&n.heartbeat)%supernodeReannounceEveryTicks == 0 {
-				n.reannounceSupernodeStatus()
-			}
 		}
 	}
+}
+
+// connMaintenanceEvery returns how many heartbeat ticks make up ~1s, so
+// peer/connection maintenance runs about once a second no matter how fast the
+// gossip heartbeat is configured.
+func (n *Node) connMaintenanceEvery() uint64 {
+	hb := n.config.Heartbeat()
+	if hb <= 0 {
+		return 1
+	}
+	if every := uint64(time.Second / hb); every > 1 {
+		return every
+	}
+	return 1
 }
 
 func (n *Node) pruneLowScoringPeers() {
