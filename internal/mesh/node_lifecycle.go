@@ -140,6 +140,7 @@ func (n *Node) Start() int32 {
 	})
 	if err != nil {
 		n.setLastError(err.Error())
+		n.reportErrorToAxiom("listen_failed", err.Error(), nil)
 		return MOSS_ERR_LISTEN_FAILED
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -277,6 +278,7 @@ func (n *Node) Stop() int32 {
 		}
 	}
 	n.wg.Wait()
+	n.closeAxiom()
 	return MOSS_OK
 }
 

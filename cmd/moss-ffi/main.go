@@ -66,6 +66,7 @@ static inline void callRelayCallback(MossRelayCallback cb,
 import "C"
 
 import (
+	"encoding/json"
 	"errors"
 	"math"
 	"sync"
@@ -377,6 +378,37 @@ func Moss_LastError(handle C.MossHandle) *C.char {
 		return nil
 	}
 	return C.CString(node.LastError())
+}
+
+//export Moss_EnableAxiom
+// Moss_EnableAxiom turns on the opt-in Axiom error/log sink. token is an
+// ingest-only Axiom token, dataset the target dataset, endpoint the Axiom base
+// URL ("" → cloud default https://api.axiom.co), and service a host identifier
+// (e.g. "gse-4576510", "mosh-0.6.5"). A node ships nothing until this is called.
+func Moss_EnableAxiom(handle C.MossHandle, token *C.char, dataset *C.char, endpoint *C.char, service *C.char) C.int32_t {
+	node, code := getNode(int64(handle))
+	if code != mesh.MOSS_OK {
+		return C.int32_t(code)
+	}
+	node.EnableAxiom(C.GoString(token), C.GoString(dataset), C.GoString(endpoint), C.GoString(service))
+	return C.int32_t(mesh.MOSS_OK)
+}
+
+//export Moss_LogEvent
+// Moss_LogEvent ships a structured event through the Axiom sink (no-op when
+// disabled). level is "error"|"warn"|"info", kind a short slug, message free
+// text, and fieldsJSON an optional JSON object of extra context ("" for none).
+func Moss_LogEvent(handle C.MossHandle, level *C.char, kind *C.char, message *C.char, fieldsJSON *C.char) C.int32_t {
+	node, code := getNode(int64(handle))
+	if code != mesh.MOSS_OK {
+		return C.int32_t(code)
+	}
+	var fields map[string]any
+	if fj := C.GoString(fieldsJSON); fj != "" {
+		_ = json.Unmarshal([]byte(fj), &fields)
+	}
+	node.LogEvent(C.GoString(level), C.GoString(kind), C.GoString(message), fields)
+	return C.int32_t(mesh.MOSS_OK)
 }
 
 //export Moss_GetNetworkStats

@@ -11,6 +11,7 @@ import (
 	"github.com/redstone-md/moss/internal/gossip"
 	"github.com/redstone-md/moss/internal/nat"
 	"github.com/redstone-md/moss/internal/stat"
+	"github.com/redstone-md/moss/internal/telemetry"
 	"github.com/redstone-md/moss/internal/transport"
 )
 
@@ -58,7 +59,10 @@ type Node struct {
 	// failed with a coarse error code (currently just Start's listener bind), so
 	// callers can surface the real OS reason — e.g. why a bind fails under
 	// Wine/Proton — instead of guessing from the numeric code. Stored as string.
-	lastErr   atomic.Value
+	lastErr atomic.Value
+	// axiom is the opt-in error/log sink. Nil until a host calls EnableAxiom;
+	// stored atomically so the hot event path reads it without locking.
+	axiom     atomic.Pointer[telemetry.AxiomSink]
 	seq       uint64
 	heartbeat uint64
 

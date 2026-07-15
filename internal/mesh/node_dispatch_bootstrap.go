@@ -159,6 +159,9 @@ func (n *Node) reannounceSupernodeStatus() {
 
 func (n *Node) enqueueEvent(eventType int32, detail any) {
 	raw, _ := json.Marshal(detail)
+	if eventType == EventTrackerFailure {
+		n.forwardEventToAxiom(detail)
+	}
 	n.dispatchCh <- dispatchEvent{eventType: eventType, detail: string(raw)}
 }
 
