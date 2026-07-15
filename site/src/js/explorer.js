@@ -25,9 +25,10 @@ const state = {
 
 // Curated quick-pick meshes; merged with whatever a gateway reports it serves.
 const COMMON_MESHES = ["global"];
-function meshURL(gw, path) {
-  const sep = path.includes("?") ? "&" : "?";
-  return `${gw}${path}${sep}meshid=${encodeURIComponent(state.meshid || "global")}`;
+// One shared network now: the gateway serves network-wide telemetry, so no
+// per-room mesh id is sent.
+function gwURL(gw, path) {
+  return `${gw}${path}`;
 }
 
 /* ---------- helpers ---------- */
@@ -85,10 +86,10 @@ function connect() {
 
   state.samples = [];
   state.gateways.forEach(async (gw) => {
-    try { const c = await (await fetch(meshURL(gw, "/api/chain?limit=128"))).json(); state.chainByGw[gw] = Array.isArray(c) ? c : []; }
+    try { const c = await (await fetch(gwURL(gw, "/api/chain?limit=128"))).json(); state.chainByGw[gw] = Array.isArray(c) ? c : []; }
     catch { state.chainByGw[gw] = []; }
-    try { onStats(gw, await (await fetch(meshURL(gw, "/api/stats"))).json()); } catch {}
-    const es = new EventSource(meshURL(gw, "/api/events"));
+    try { onStats(gw, await (await fetch(gwURL(gw, "/api/stats"))).json()); } catch {}
+    const es = new EventSource(gwURL(gw, "/api/events"));
     es.onmessage = (ev) => { try { onStats(gw, JSON.parse(ev.data)); } catch {} };
     state.sources.push(es);
   });
@@ -182,12 +183,22 @@ function render() {
 function countTo(id, value) {
   const el = document.getElementById(id);
   const target = Number(value) || 0;
+  // Refresh fires every couple of seconds; only (re)animate when the value
+  // actually changed, so a repeated identical stat doesn't restart — and cut
+  // off — the count tween mid-flight.
+  if (el._countTarget === target) return;
+  el._countTarget = target;
   if (reduce) { el.textContent = fmt(target); return; }
-  gsap.to(state, { shownCount: target, duration: 0.9, ease: "power2.out", onUpdate: () => (el.textContent = fmt(Math.round(state.shownCount))) });
+  gsap.to(state, { shownCount: target, duration: 0.9, ease: "power2.out", overwrite: "auto", onUpdate: () => (el.textContent = fmt(Math.round(state.shownCount))) });
 }
 
 function histogram(id, hist, gated) {
   const el = document.getElementById(id);
+  // Skip the wipe-and-rebuild when the data is unchanged — that full DOM
+  // replacement on every refresh is what makes the bars flicker.
+  const key = gated ? JSON.stringify(hist || {}) : "__gated__";
+  if (el._histKey === key) return;
+  el._histKey = key;
   el.innerHTML = "";
   if (!gated || !hist || !Object.keys(hist).length) {
     el.innerHTML = `<div class="text-[11px] text-muted">${gated ? "—" : "hidden (k-anon)"}</div>`;
@@ -369,14 +380,7 @@ gwToggle.addEventListener("click", () => gwPanel.classList.toggle("hidden"));
 document.getElementById("connect").addEventListener("click", () => { connect(); gwPanel.classList.add("hidden"); });
 document.getElementById("gateways").value = initialGateways();
 
-// Mesh selector: ?meshid= wins, else saved choice, else "global".
-const qMesh = new URLSearchParams(location.search).get("meshid");
-try { state.meshid = qMesh || localStorage.getItem("moss-meshid") || "global"; } catch { state.meshid = qMesh || "global"; }
-populateMeshSelect();
-document.getElementById("meshid").addEventListener("change", (e) => selectMesh(e.target.value));
-document.getElementById("meshid-custom").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") { const v = e.target.value.trim(); if (v) { e.target.value = ""; selectMesh(v); } }
-});
+// One shared network — no room selector to wire up.
 
 if (reduce) frame(0); else requestAnimationFrame(frame);
 initWasm()
