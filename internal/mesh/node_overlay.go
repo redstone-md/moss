@@ -24,6 +24,10 @@ import (
 // core node S", the data path is A → S → B: two hops, always, because every
 // core node is dialable by anyone. Chained forwarding buys nothing here.
 
+// errNoOverlaySession marks a contact we hold no session with. The overlay
+// skips it rather than dialing: see overlayQuery.
+var errNoOverlaySession = errors.New("overlay: no session with contact")
+
 const (
 	// overlayAlpha is the Kademlia lookup concurrency.
 	overlayAlpha = 3
@@ -188,20 +192,22 @@ func overlayKeyOf(env gossip.Envelope) (overlay.NodeID, bool) {
 // overlayQuery sends one query to a contact and awaits its reply. A contact is
 // publicly reachable by construction, so if we have no session we can simply
 // dial it — this is what lets a NAT'd leaf drive its own lookups.
+// overlayQuery asks a contact we ALREADY hold a session with. It never dials.
+//
+// Dialing here looked free — a contact is publicly reachable by construction —
+// and was not. Clients under load opened ~1.7 sessions per second with 95% of
+// them dying instantly as duplicates the dedup closed on arrival, and players
+// felt that storm of handshakes as multi-second stalls mid-game. A lookup runs
+// on paths that repeat per peer and per tick; anything it does is multiplied by
+// the whole known-peer set.
+//
+// Skipping unconnected contacts costs little: a node's core peers are exactly
+// the ones it is already attached to, so the contacts worth asking are on hand.
 func (n *Node) overlayQuery(ctx context.Context, c overlay.Contact, env gossip.Envelope) (gossip.Envelope, error) {
 	peerID := c.ID.String()
 	peer := n.peerByID(peerID)
 	if peer == nil {
-		dialCtx, cancel := withTimeout(ctx, overlayQueryTimeout)
-		err := n.connectPeerWithHint(dialCtx, c.Addr, peerID)
-		cancel()
-		if err != nil {
-			return gossip.Envelope{}, err
-		}
-		peer = n.peerByID(peerID)
-		if peer == nil {
-			return gossip.Envelope{}, errors.New("overlay: no session after dial")
-		}
+		return gossip.Envelope{}, errNoOverlaySession
 	}
 	requestID, err := newRelaySessionID()
 	if err != nil {
@@ -331,20 +337,12 @@ func contactID(c gossip.OverlayContact) (overlay.NodeID, bool) {
 // overlaySend delivers a one-way envelope to a contact, dialing it if needed.
 // Unlike overlayQuery it awaits nothing — used for STORE, which the core does
 // not acknowledge.
+// overlaySend delivers a one-way envelope to a contact we already hold a
+// session with. Like overlayQuery it never dials: see there.
 func (n *Node) overlaySend(ctx context.Context, c overlay.Contact, env gossip.Envelope) error {
-	peerID := c.ID.String()
-	peer := n.peerByID(peerID)
+	peer := n.peerByID(c.ID.String())
 	if peer == nil {
-		dialCtx, cancel := withTimeout(ctx, overlayQueryTimeout)
-		err := n.connectPeerWithHint(dialCtx, c.Addr, peerID)
-		cancel()
-		if err != nil {
-			return err
-		}
-		peer = n.peerByID(peerID)
-		if peer == nil {
-			return errors.New("overlay: no session after dial")
-		}
+		return errNoOverlaySession
 	}
 	if !n.sendEnvelope(peer, env) {
 		return errors.New("overlay: send failed")
@@ -586,49 +584,6 @@ func (n *Node) reachPeerViaHint(ctx context.Context, peerID string, hint reachab
 	}
 	return false
 }
-
-// reachPeerViaOverlay resolves where a peer is attached and relays through that
-// node.
-//
-// Blind relay selection tries our own neighbours and hopes one of them happens
-// to also be connected to the target, ordered by a guess at geographic
-// closeness. The fleet reports that failing ~89% of the time at ~10s an
-// attempt — inevitably, since a relay must be adjacent to BOTH ends and nothing
-// ever told us which node that is. The overlay does: the peer publishes its
-// attachments under its own id, so we can dial the right one instead of
-// guessing.
-func (n *Node) reachPeerViaOverlay(peerID string) bool {
-	key, ok := overlay.IDFromHex(peerID)
-	if !ok {
-		return false
-	}
-	n.mu.RLock()
-	ctx := n.rootCtx
-	started := n.started
-	n.mu.RUnlock()
-	if ctx == nil || !started {
-		return false
-	}
-	lookupCtx, cancel := withTimeout(ctx, overlayReachTimeout)
-	defer cancel()
-	providers, _ := n.overlayLookup(lookupCtx, key, true)
-	for _, p := range providers {
-		if len(p.Peer) != overlay.IDLen || hex.EncodeToString(p.Peer) != peerID {
-			continue
-		}
-		hint, ok := decodeHint(p.Payload)
-		if !ok || len(hint.Attachments) == 0 {
-			continue
-		}
-		return n.reachPeerViaHint(lookupCtx, peerID, hint)
-	}
-	return false
-}
-
-// overlayReachTimeout bounds resolving and reaching one peer through the
-// overlay. Kept under the blind path's cost so the informed attempt is never
-// the slower one.
-const overlayReachTimeout = 8 * time.Second
 
 func (n *Node) peerIDByAddr(addr string) string {
 	n.mu.RLock()
