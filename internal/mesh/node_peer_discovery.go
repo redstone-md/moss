@@ -169,8 +169,15 @@ func (n *Node) dialKnownPeer(peerID, addr string) {
 	_ = addr
 	// Discovered peers use direct/NAT/hole-punch first. If that path does not
 	// materialize, promote an encrypted relay session into the pubsub peer set.
-	if !n.tryDirectConnect(peerID, n.config.HandshakeTimeout()) && n.establishedRelaySession(peerID) == "" {
-		_, _ = n.OpenRelaySessionAny(peerID, n.config.HandshakeTimeout())
+	started := time.Now()
+	if n.tryDirectConnect(peerID, n.config.HandshakeTimeout()) {
+		n.reportConnectAttempt(outcomeDirect, reasonNone, started, false)
+	} else if n.establishedRelaySession(peerID) != "" {
+		n.reportConnectAttempt(outcomeRelayed, reasonNone, started, false)
+	} else if _, err := n.OpenRelaySessionAny(peerID, n.config.HandshakeTimeout()); err == nil {
+		n.reportConnectAttempt(outcomeRelayed, reasonPunchTimeout, started, false)
+	} else {
+		n.reportConnectAttempt(outcomeFailed, reasonNoRelayPeer, started, false)
 	}
 	n.mu.Lock()
 	delete(n.peerDials, peerID)
