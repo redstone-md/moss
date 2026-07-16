@@ -176,11 +176,14 @@ func (n *Node) dialKnownPeer(peerID, addr string) {
 		n.reportConnectAttempt(outcomeRelayed, reasonNone, started, false)
 	} else if _, err := n.OpenRelaySessionAny(peerID, n.config.HandshakeTimeout()); err == nil {
 		n.reportConnectAttempt(outcomeRelayed, reasonPunchTimeout, started, false)
-	} else if n.reachPeerViaOverlay(peerID) {
-		// Blind relay selection guesses which neighbour might be adjacent to the
-		// target; the overlay knows, because the peer publishes its attachments.
-		n.reportConnectAttempt(outcomeRelayed, reasonNone, started, true)
 	} else {
+		// No overlay lookup here, deliberately. dialKnownPeer runs per known
+		// peer on a cooldown measured in seconds, so anything it does is paid
+		// for by the whole peer set on repeat — and a Kademlia lookup costs up
+		// to alpha × the query timeout. Putting one here added ~12s to every
+		// attempt against every peer, which is exactly the stall players
+		// measured. Rendezvous belongs on the topic path, where it is bounded
+		// by a per-topic cooldown and nobody is waiting on it.
 		n.reportConnectAttempt(outcomeFailed, reasonNoRelayPeer, started, false)
 	}
 	n.mu.Lock()
