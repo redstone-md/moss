@@ -597,6 +597,49 @@ func (n *Node) reachPeerViaHint(ctx context.Context, peerID string, hint reachab
 	return false
 }
 
+// reachPeerViaOverlay resolves where a peer is attached and relays through that
+// node.
+//
+// Blind relay selection tries our own neighbours and hopes one of them happens
+// to also be connected to the target, ordered by a guess at geographic
+// closeness. The fleet reports that failing ~89% of the time at ~10s an
+// attempt — inevitably, since a relay must be adjacent to BOTH ends and nothing
+// ever told us which node that is. The overlay does: the peer publishes its
+// attachments under its own id, so we can dial the right one instead of
+// guessing.
+func (n *Node) reachPeerViaOverlay(peerID string) bool {
+	key, ok := overlay.IDFromHex(peerID)
+	if !ok {
+		return false
+	}
+	n.mu.RLock()
+	ctx := n.rootCtx
+	started := n.started
+	n.mu.RUnlock()
+	if ctx == nil || !started {
+		return false
+	}
+	lookupCtx, cancel := withTimeout(ctx, overlayReachTimeout)
+	defer cancel()
+	providers, _ := n.overlayLookup(lookupCtx, key, true)
+	for _, p := range providers {
+		if len(p.Peer) != overlay.IDLen || hex.EncodeToString(p.Peer) != peerID {
+			continue
+		}
+		hint, ok := decodeHint(p.Payload)
+		if !ok || len(hint.Attachments) == 0 {
+			continue
+		}
+		return n.reachPeerViaHint(lookupCtx, peerID, hint)
+	}
+	return false
+}
+
+// overlayReachTimeout bounds resolving and reaching one peer through the
+// overlay. Kept under the blind path's cost so the informed attempt is never
+// the slower one.
+const overlayReachTimeout = 8 * time.Second
+
 func (n *Node) peerIDByAddr(addr string) string {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
