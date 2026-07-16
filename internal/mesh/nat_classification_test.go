@@ -73,3 +73,59 @@ func TestRefreshNATClassificationNeedsASecondSample(t *testing.T) {
 		t.Fatalf("nat_type = %q; with no samples it must stay unknown rather than guess", got)
 	}
 }
+
+// The gossip binding reply is built from the observed host plus the port the
+// asker advertised about itself — the right answer to "what is my dialable
+// address", and a non-answer to "what is my mapping". It is the same value no
+// matter who replies, so letting it reach the classifier pinned the fleet at
+// observations=1 and nat_type=unknown: appendObservation collapsed every
+// identical echo into one entry and left nothing to compare.
+func TestSyntheticObservationNeverInformsClassification(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Trackers = nil
+	cfg.LANDiscoveryEnabled = false
+	cfg.DHTEnabled = false
+	n, err := NewNode("room", nil, cfg)
+	if err != nil {
+		t.Fatalf("NewNode: %v", err)
+	}
+	deadline := time.Now().Add(time.Second)
+
+	// Two peers echo our own port back at us — as the gossip path always does.
+	n.applySyntheticObservation("203.0.113.7:41666", deadline)
+	n.applySyntheticObservation("203.0.113.7:41666", deadline)
+
+	n.mu.RLock()
+	history := len(n.bindingHistory)
+	n.mu.RUnlock()
+	if history != 0 {
+		t.Fatalf("bindingHistory = %d entries; an echo of our own port is not evidence about our NAT and must never reach the classifier", history)
+	}
+}
+
+// A genuine observation — STUN or a peer's UDP observe — must still inform it,
+// or classification loses its only real input.
+func TestGenuineObservationDoesInformClassification(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Trackers = nil
+	cfg.LANDiscoveryEnabled = false
+	cfg.DHTEnabled = false
+	n, err := NewNode("room", nil, cfg)
+	if err != nil {
+		t.Fatalf("NewNode: %v", err)
+	}
+	deadline := time.Now().Add(time.Second)
+
+	n.applyExternalObservation("203.0.113.7:43364", deadline)
+	n.applyExternalObservation("203.0.113.7:52010", deadline)
+
+	n.mu.RLock()
+	history := append([]string(nil), n.bindingHistory...)
+	n.mu.RUnlock()
+	if len(history) != 2 {
+		t.Fatalf("bindingHistory = %v, want both genuine observations kept so the ports can be compared", history)
+	}
+	if got := n.NATType(); got != string(nat.TypeSymmetric) {
+		t.Fatalf("nat_type = %q, want symmetric_nat: two destinations saw different mapped ports", got)
+	}
+}

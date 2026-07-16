@@ -91,14 +91,17 @@ func (n *Node) refreshExternalAddress(deadline time.Time) bool {
 		if remaining <= 0 {
 			break
 		}
-		observed, ok := n.requestUDPBindingObservation(peerID, remaining)
-		if !ok {
-			observed, ok = n.requestBindingObservation(peerID, remaining)
-		}
-		if !ok {
+		// A peer's UDP observe reports the mapping it genuinely saw, so it can
+		// inform classification. The gossip reply cannot: it echoes back the
+		// port we advertised ourselves, which is a fine address to advertise and
+		// worthless as evidence about our NAT.
+		if observed, ok := n.requestUDPBindingObservation(peerID, remaining); ok {
+			updated = n.applyExternalObservation(observed, deadline) || updated
 			continue
 		}
-		updated = n.applyExternalObservation(observed, deadline) || updated
+		if observed, ok := n.requestBindingObservation(peerID, remaining); ok {
+			updated = n.applySyntheticObservation(observed, deadline) || updated
+		}
 	}
 	if !updated {
 		if remaining := time.Until(deadline); remaining > 0 {
@@ -162,7 +165,31 @@ func trackerUsesPublicBootstrap(tracker string) bool {
 	return ip.IsGlobalUnicast() && !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() && !isCarrierGradeAddr(ip)
 }
 
+// applyExternalObservation records a genuine observation of our own mapping —
+// STUN, a port mapper, or a peer's UDP observe. Only these may reach the NAT
+// classifier, because only these actually report what the far side saw.
 func (n *Node) applyExternalObservation(observed string, deadline time.Time) bool {
+	return n.applyObservation(observed, deadline, true)
+}
+
+// applySyntheticObservation records an address that is usable for advertising
+// but says nothing about our NAT.
+//
+// The gossip binding reply is built from the observed HOST plus the port the
+// asker itself advertised (see handleBindingRequest) — the right answer to
+// "what is my dialable address", and a non-answer to "what is my mapping": it
+// hands back our own port, so it is a constant no matter who we ask. Feeding it
+// to the classifier is what pinned the whole fleet at observations=1 and
+// nat_type=unknown, since appendObservation then collapsed every identical
+// echo into a single entry and left nothing to compare.
+func (n *Node) applySyntheticObservation(observed string, deadline time.Time) bool {
+	return n.applyObservation(observed, deadline, false)
+}
+
+// applyObservation folds an observed address into the profile. mapping reports
+// whether it is a true observation of our NAT mapping and may inform
+// classification, or merely an address good enough to advertise.
+func (n *Node) applyObservation(observed string, deadline time.Time, mapping bool) bool {
 	if observed == "" {
 		return false
 	}
@@ -170,11 +197,13 @@ func (n *Node) applyExternalObservation(observed string, deadline time.Time) boo
 	observed = preferredExternalAddr(previous.ExternalAddress, observed)
 	profile := n.profiler.WithExternalAddress(previous, observed)
 
-	n.mu.Lock()
-	n.bindingHistory = appendObservation(n.bindingHistory, observed)
-	bindingHistory := append([]string(nil), n.bindingHistory...)
-	n.mu.Unlock()
-	profile = n.profiler.WithBindingObservations(profile, bindingHistory)
+	if mapping {
+		n.mu.Lock()
+		n.bindingHistory = appendObservation(n.bindingHistory, observed)
+		bindingHistory := append([]string(nil), n.bindingHistory...)
+		n.mu.Unlock()
+		profile = n.profiler.WithBindingObservations(profile, bindingHistory)
+	}
 	if requiresReachabilityConfirmation(observed) && !profile.PublicReachable {
 		profile = n.profiler.WithReachability(profile, n.confirmReachability(observed, deadline))
 	}
