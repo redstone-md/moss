@@ -75,7 +75,7 @@ func (n *Node) removePeer(peerID string, session *transport.Session) {
 	n.recalculateIPColocationPenalties()
 	if peer != nil {
 		n.enqueueEvent(EventPeerLeft, map[string]string{"peer": peerID, "addr": peer.addr})
-		n.reportSessionLifetime(endedRelayed, endedAt, endedMisses, endedOrigin, endedTransport, endedInbound)
+		n.reportSessionLifetime(endedRelayed, endedAt, endedMisses, endedOrigin, endedTransport, endedInbound, peerID)
 	}
 }
 

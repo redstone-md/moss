@@ -220,7 +220,7 @@ func (n *Node) reportRendezvous(found, reached int, started time.Time) {
 // A mapping that dies on a clock — moss watched sessions drop at a flat ~38s —
 // is a NAT timeout, not bad luck, and this is what makes that visible instead
 // of something to be inferred from logs after the fact.
-func (n *Node) reportSessionLifetime(relayed bool, connectedAt time.Time, pingMisses int, origin, transport string, inbound uint64) {
+func (n *Node) reportSessionLifetime(relayed bool, connectedAt time.Time, pingMisses int, origin, transport string, inbound uint64, remotePeerID string) {
 	if n.axiom.Load() == nil || connectedAt.IsZero() {
 		return
 	}
@@ -244,6 +244,21 @@ func (n *Node) reportSessionLifetime(relayed bool, connectedAt time.Time, pingMi
 	// into a void the whole time; arrivals without pongs would mean the reply
 	// path, not the route, is what fails.
 	fields["inbound_packets"] = inbound
+	// Name the other end, so the two halves of one link can be joined.
+	//
+	// From inside a single node "zero packets arrived" means both "they never
+	// sent" and "their packets never landed" — the two candidates for every
+	// hole-punched session dying at 37s, and indistinguishable from here. They
+	// are not indistinguishable across BOTH ends: if the far side reports no
+	// session to us, it discarded the punch; if it reports one that received our
+	// traffic, the route is one-way. This is a public-key prefix, the same
+	// identity the mesh already gossips — not an address.
+	if remotePeerID != "" {
+		if len(remotePeerID) > 16 {
+			remotePeerID = remotePeerID[:16]
+		}
+		fields["peer"] = remotePeerID
+	}
 	fields["relayed"] = relayed
 	fields["ping_misses"] = pingMisses
 	n.LogEvent("info", "session_end", "peer session ended", fields)
