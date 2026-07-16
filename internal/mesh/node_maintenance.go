@@ -23,6 +23,11 @@ func (n *Node) removePeer(peerID string, session *transport.Session) {
 		n.mu.Unlock()
 		return
 	}
+	// Capture before the entry goes: how long the session held, and whether it
+	// died on missed pings, is what tells a NAT mapping timing out apart from an
+	// ordinary disconnect. Sessions dropping at a flat interval is a signature,
+	// and it should be a query rather than something to reconstruct from logs.
+	endedRelayed, endedAt, endedMisses := peer.relayed, peer.connectedAt, peer.pingMisses
 	delete(n.peers, peerID)
 	delete(n.suppress, peerID)
 	delete(n.relayBuckets, peerID)
@@ -58,6 +63,7 @@ func (n *Node) removePeer(peerID string, session *transport.Session) {
 	n.recalculateIPColocationPenalties()
 	if peer != nil {
 		n.enqueueEvent(EventPeerLeft, map[string]string{"peer": peerID, "addr": peer.addr})
+		n.reportSessionLifetime(endedRelayed, endedAt, endedMisses)
 	}
 }
 

@@ -534,10 +534,12 @@ func (n *Node) maybeDiscoverTopicPeers(topic string) {
 // makes each of them reachable, then re-runs mesh upkeep so the fresh peers can
 // be grafted.
 func (n *Node) discoverTopicPeers(ctx context.Context, topic string) {
+	started := time.Now()
 	lookupCtx, cancel := withTimeout(ctx, 20*time.Second)
 	defer cancel()
 	found := n.findChannelPeers(lookupCtx, topic)
 	if len(found) == 0 {
+		n.reportRendezvous(0, 0, started)
 		return
 	}
 	reached := 0
@@ -549,10 +551,15 @@ func (n *Node) discoverTopicPeers(ctx context.Context, topic string) {
 			reached++
 			continue // already connected, directly or through a relay
 		}
+		attemptAt := time.Now()
 		if n.reachPeerViaHint(lookupCtx, peerID, hint) {
 			reached++
+			n.reportConnectAttempt(outcomeRelayed, reasonNone, attemptAt, true)
+		} else {
+			n.reportConnectAttempt(outcomeFailed, reasonUnreachablePex, attemptAt, true)
 		}
 	}
+	n.reportRendezvous(len(found), reached, started)
 	if reached > 0 {
 		n.maintainTopicMesh(topic)
 	}
