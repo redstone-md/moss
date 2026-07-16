@@ -216,7 +216,7 @@ func (n *Node) connectPeerUDPWithHint(ctx context.Context, targetPeerID, addr st
 	if err != nil {
 		return err
 	}
-	n.registerPeer(session, true)
+	n.registerPeerFrom(session, true, originHolePunchUDP)
 	return nil
 }
 

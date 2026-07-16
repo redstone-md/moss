@@ -94,6 +94,6 @@ func (n *Node) AttachDataChannel(dc js.Value, initiator bool, label string) {
 			_ = conn.Close()
 			return
 		}
-		n.registerPeer(session, initiator)
+		n.registerPeerFrom(session, initiator, originWebRTC)
 	}()
 }

@@ -220,12 +220,21 @@ func (n *Node) reportRendezvous(found, reached int, started time.Time) {
 // A mapping that dies on a clock — moss watched sessions drop at a flat ~38s —
 // is a NAT timeout, not bad luck, and this is what makes that visible instead
 // of something to be inferred from logs after the fact.
-func (n *Node) reportSessionLifetime(relayed bool, connectedAt time.Time, pingMisses int) {
+func (n *Node) reportSessionLifetime(relayed bool, connectedAt time.Time, pingMisses int, origin string) {
 	if n.axiom.Load() == nil || connectedAt.IsZero() {
 		return
 	}
 	fields := n.natContext()
-	fields["lifetime_sec"] = int(time.Since(connectedAt).Seconds())
+	lifetime := time.Since(connectedAt)
+	fields["lifetime_sec"] = int(lifetime.Seconds())
+	fields["lifetime_ms"] = lifetime.Milliseconds()
+	// Which path opened this session. A session that dies at zero seconds was a
+	// duplicate the dedup closed on arrival; when 95% of them do that, the path
+	// producing them is the one to fix — and naming it beats guessing, which has
+	// a poor record here.
+	if origin != "" {
+		fields["origin"] = origin
+	}
 	fields["relayed"] = relayed
 	fields["ping_misses"] = pingMisses
 	n.LogEvent("info", "session_end", "peer session ended", fields)

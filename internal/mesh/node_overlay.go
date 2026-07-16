@@ -280,9 +280,13 @@ func (n *Node) overlayLookup(ctx context.Context, key overlay.NodeID, wantValue 
 				OverlayKey: append([]byte(nil), key[:]...),
 			})
 			if err != nil {
-				if n.overlayTable != nil {
-					n.overlayTable.Remove(c.ID)
-				}
+				// Do NOT drop the contact. One timeout is not death: a query can
+				// lose to a busy moment or a slow dial, and evicting on the first
+				// miss made the table drain itself — the fleet reported lookups
+				// that queried three contacts and then reported contacts=0,
+				// having emptied the very table publishing also depends on.
+				// Staleness is already handled: bucket eviction drops the least
+				// recently seen, and every contact is re-learnable from gossip.
 				continue
 			}
 			if len(resp.OverlayProviders) > 0 {
