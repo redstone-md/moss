@@ -81,6 +81,12 @@ type Node struct {
 	relayLocals     map[string]relayLocalSession
 	relayBuckets    map[string]*nat.TokenBucket
 
+	// overlayMu guards the overlay's own bookkeeping. It is deliberately NOT
+	// n.mu: routing discovery traffic through the node's central RWMutex meant
+	// every query a core node answered took a write lock on the whole node, and
+	// Go queues readers behind a waiting writer — the reachability probe starved
+	// and a reachable relay sat at nat_type=unknown for over an hour.
+	overlayMu sync.Mutex
 	// overlayTable is the Kademlia routing table over publicly reachable peers;
 	// overlayStore holds the records this node is responsible for (it stays
 	// empty on a leaf, which answers no queries); overlayPending correlates
