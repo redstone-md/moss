@@ -120,7 +120,15 @@ func (s *Session) HandshakeMode() byte {
 	return s.handshake
 }
 
+// RemoteAddr returns the carrier's remote address, or nil when the session has
+// no carrier. A session without one is not hypothetical — it is what a relayed
+// peer holds, and what remains once a carrier has been torn down — so an
+// accessor that dereferences blindly turns an ordinary disconnect into a
+// panic that takes the whole node with it.
 func (s *Session) RemoteAddr() net.Addr {
+	if s == nil || s.carrier == nil {
+		return nil
+	}
 	return s.carrier.RemoteAddr()
 }
 

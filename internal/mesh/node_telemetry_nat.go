@@ -220,7 +220,7 @@ func (n *Node) reportRendezvous(found, reached int, started time.Time) {
 // A mapping that dies on a clock — moss watched sessions drop at a flat ~38s —
 // is a NAT timeout, not bad luck, and this is what makes that visible instead
 // of something to be inferred from logs after the fact.
-func (n *Node) reportSessionLifetime(relayed bool, connectedAt time.Time, pingMisses int, origin string) {
+func (n *Node) reportSessionLifetime(relayed bool, connectedAt time.Time, pingMisses int, origin, transport string, inbound uint64) {
 	if n.axiom.Load() == nil || connectedAt.IsZero() {
 		return
 	}
@@ -235,6 +235,15 @@ func (n *Node) reportSessionLifetime(relayed bool, connectedAt time.Time, pingMi
 	if origin != "" {
 		fields["origin"] = origin
 	}
+	if transport != "" {
+		fields["transport"] = transport
+	}
+	// What actually arrived. Every UDP session dies on exactly six unanswered
+	// pings, and a UDP write succeeds locally whether or not anyone receives it —
+	// so "we sent six pings" proves nothing. Zero arrivals means we were writing
+	// into a void the whole time; arrivals without pongs would mean the reply
+	// path, not the route, is what fails.
+	fields["inbound_packets"] = inbound
 	fields["relayed"] = relayed
 	fields["ping_misses"] = pingMisses
 	n.LogEvent("info", "session_end", "peer session ended", fields)

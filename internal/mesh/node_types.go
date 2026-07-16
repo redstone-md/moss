@@ -134,8 +134,17 @@ type peerConn struct {
 	// zero seconds was a duplicate the dedup closed on arrival, and knowing
 	// WHICH path keeps producing them is the difference between fixing the
 	// cause and guessing at it.
-	origin   string
-	outbound bool
+	origin string
+	// inboundPackets counts what has actually ARRIVED on this session.
+	//
+	// Every UDP session dies on exactly 6 unanswered pings, and UDP hides why: a
+	// write to a dead remote succeeds locally, so the sender believes it sent.
+	// This separates the two candidates — a session that receives nothing has a
+	// one-way path (we are writing somewhere nobody listens), while one that
+	// receives data but no pongs means the reply, not the path, is broken.
+	// Atomic: readPeer touches it per packet and must not take the node lock.
+	inboundPackets atomic.Uint64
+	outbound       bool
 	bootstrap      bool
 	connectedAt    time.Time
 	lastRTT        time.Duration
