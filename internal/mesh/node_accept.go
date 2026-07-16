@@ -251,22 +251,12 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 		if existing.relayed {
 			replacedPeer = existing
 		} else {
-			existingReliable := existing.session != nil && isReliableNetwork(existing.session.RemoteAddr().Network())
-			newReliable := isReliableNetwork(network)
-			if res, decided := resolveReliabilityPreference(existingReliable, existing.pingMisses == 0, newReliable); decided {
-				if res == keepExistingSession {
-					n.mu.Unlock()
-					_ = session.Close()
-					return
-				}
-				replacedPeer = existing // adoptNewSession: upgrade UDP → TCP
-			} else if !yieldsToNewConnection(n.localPeerID(), existing, outbound) {
+			if !yieldsToNewConnection(n.localPeerID(), existing, outbound) {
 				n.mu.Unlock()
 				_ = session.Close()
 				return
-			} else {
-				replacedPeer = existing
 			}
+			replacedPeer = existing
 		}
 	}
 	if replacedPeer == nil && n.directPeerCountLocked() >= n.config.MaxPeers {
@@ -418,40 +408,6 @@ func shouldReplaceDuplicatePeer(localPeerID, remotePeerID string, existingOutbou
 // direction-only dedup would discard the live connection and keep the dead one
 // until the ping-miss prune fires. A healthy existing connection falls back to
 // the deterministic direction rule.
-// isReliableNetwork reports whether a transport network name (as returned by
-// net.Addr.Network) is connection-oriented and therefore bidirectional through
-// any NAT — currently the TCP family. A datagram (UDP) session, by contrast,
-// writes to a fixed remote address whose return path is dead once a
-// symmetric-NAT peer's mapping differs from the one the session was opened on.
-func isReliableNetwork(network string) bool {
-	return strings.HasPrefix(network, "tcp")
-}
-
-type duplicateResolution int
-
-const (
-	keepExistingSession duplicateResolution = iota // drop the new session
-	adoptNewSession                                 // close existing, adopt new
-)
-
-// resolveReliabilityPreference applies transport reliability to a duplicate
-// direct session, ahead of the direction rule. A healthy reliable (TCP)
-// session is never displaced by an unreliable (UDP) one — letting UDP win here
-// is what stranded symmetric-NAT peers on a dead-return-path session and made
-// them flap off every ~38s. Conversely an unreliable session is always
-// upgraded to a reliable one. decided reports whether reliability settled it;
-// when false the caller falls back to yieldsToNewConnection (same transport).
-func resolveReliabilityPreference(existingReliable, existingHealthy, newReliable bool) (duplicateResolution, bool) {
-	switch {
-	case existingReliable && existingHealthy && !newReliable:
-		return keepExistingSession, true
-	case !existingReliable && newReliable:
-		return adoptNewSession, true
-	default:
-		return 0, false
-	}
-}
-
 func yieldsToNewConnection(localPeerID string, existing *peerConn, newOutbound bool) bool {
 	if existing.pingMisses > 0 {
 		return true

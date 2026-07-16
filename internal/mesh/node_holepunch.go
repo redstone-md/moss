@@ -220,20 +220,30 @@ func (n *Node) connectBootstrapPeer(ctx context.Context, addr string) error {
 	if n.udpListener == nil {
 		return n.connectPeer(ctx, addr)
 	}
-	// TCP first, UDP only as a fallback — do NOT race them. A connection-
-	// oriented session to a public seed is stable and bidirectional through any
-	// NAT. Racing a UDP session alongside it left the seed holding a datagram
-	// session whose return path a symmetric-NAT dialer strands (its mapping
-	// differs per destination / rebinds), so the seed's pings all missed and it
-	// pruned the peer after the 30s grace — an endless ~38s flap. We fall back
-	// to UDP only when TCP genuinely cannot connect (e.g. TCP blocked on the
-	// path), never when it merely loses a race.
-	if err := n.connectPeer(ctx, addr); err == nil {
-		return nil
-	} else if ctx.Err() != nil {
-		return err
+	attemptCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	results := make(chan error, 2)
+	go func() {
+		results <- n.connectPeer(attemptCtx, addr)
+	}()
+	go func() {
+		results <- n.connectPeerUDPWithHint(attemptCtx, "", addr)
+	}()
+	var firstErr error
+	for range 2 {
+		err := <-results
+		if err == nil {
+			cancel()
+			return nil
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
 	}
-	return n.connectPeerUDPWithHint(ctx, "", addr)
+	if firstErr != nil {
+		return firstErr
+	}
+	return nil
 }
 
 func (n *Node) connectBootstrapSeed(ctx context.Context, addr string) error {

@@ -4,36 +4,25 @@ All notable changes to this project are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project
 uses semantic versioning.
 
-## [0.6.23] - 2026-07-16
+## [0.6.24] - 2026-07-17
 
 ### Fixed
-- **Symmetric-NAT flap, the real fix — bootstrap no longer races UDP against
-  TCP to a public seed.** v0.6.22 made a node *keep* its TCP session, but the
-  bootstrap still *opened* a parallel UDP session to every public supernode,
-  and the supernode (dialed side) independently latched onto that UDP session —
-  whose return path a symmetric-NAT dialer strands — so its pings missed and it
-  pruned the peer every ~38s regardless of what the dialer preferred. Bootstrap
-  now connects **TCP-first and only falls back to UDP when TCP genuinely fails**
-  (e.g. TCP blocked on the path), instead of racing both. A symmetric-NAT node
-  (e.g. a Flux container) forms a single stable TCP session to each supernode —
-  the fix works with only the dialer upgraded; supernodes need no change. The
-  v0.6.22 transport-preference dedup stays as defense in depth.
-
-## [0.6.22] - 2026-07-16
-
-### Fixed
-- **Symmetric-NAT peers flapped off every ~38s.** The bootstrap path races a
-  TCP and a UDP connection to a public supernode, and the duplicate-session
-  dedup in `registerPeer` picked the winner purely by direction and ping
-  health — **ignoring transport type**. So a UDP session would silently
-  replace the healthy TCP one; but a datagram session writes to a fixed remote
-  address whose return path is dead once a symmetric-NAT peer's mapping
-  differs, so the supernode's pings all missed and the peer was pruned after
-  the 30s retain grace (~38s PeerJoined→PeerLeft cycle, endlessly). Dedup now
-  prefers the reliable transport: a healthy TCP session is never displaced by
-  UDP, and a UDP session is upgraded to TCP when one arrives. A node behind
-  symmetric NAT (e.g. a container on Flux) now holds a stable link to public
-  supernodes over TCP, which is bidirectional through any NAT.
+- **Revert v0.6.22 + v0.6.23 — they broke NAT hole-punch, so two NAT'd clients
+  could no longer see each other (gse_moss lobbies invisible).** Both changes
+  removed the UDP session a node keeps with its bootstrap peers: v0.6.22's dedup
+  closed it in favour of TCP, and v0.6.23 stopped opening it at all (TCP-first,
+  no race). That session is load-bearing, not a redundant race:
+  `ObserveContext` refuses without one (`errUDPObserveRequiresSession`), so
+  killing it removes the UDP binding observations that feed `bindingHistory` →
+  NAT classification stays `unknown` and `attemptHolePunch` cannot predict the
+  peer's ports. A node with only a TCP session also has its *TCP* source port
+  observed and gossiped as its endpoint, which is useless for UDP punching. Net
+  effect: no direct P2P between NAT'd peers. This matters at any topology — a
+  supernode-less mesh depends on hole-punch even more, having no relay fallback.
+  Both commits chased a cosmetic per-peer reconnect churn that never actually
+  cost connectivity (the affected node held 4-7 direct peers throughout), and
+  traded real P2P for it. Bootstrap races TCP and UDP again, and duplicate-session
+  dedup is back to the direction rule.
 
 ## [0.6.21] - 2026-07-16
 
