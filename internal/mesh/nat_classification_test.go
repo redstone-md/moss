@@ -129,3 +129,38 @@ func TestGenuineObservationDoesInformClassification(t *testing.T) {
 		t.Fatalf("nat_type = %q, want symmetric_nat: two destinations saw different mapped ports", got)
 	}
 }
+
+// The regression this cost the fleet: classification ran while the profile was
+// still Unknown, and the profiler's "ports agree → port_restricted_cone"
+// upgrade fired. A public node starts Unknown and only becomes public once an
+// inbound probe confirms it — via a path that fires solely FROM Unknown. Taking
+// the cone label first locks a relay out of public permanently, and deploying
+// that turned every box into port_restricted_cone with supernode_ready=false:
+// the relays stopped relaying.
+//
+// So only the symmetric verdict — the one that actually needed two vantage
+// points — may be adopted here.
+func TestClassificationNeverStealsTheRoadToPublic(t *testing.T) {
+	p := nat.NewProfiler()
+	// A box at startup: not yet probed, so Unknown; its port is stable.
+	fresh := nat.Profile{Type: nat.TypeUnknown}
+	classified := p.WithBindingObservations(fresh, []string{"203.0.113.7:4001", "203.0.113.7:4001"})
+
+	// The profiler itself does take the cone label — which is why the caller
+	// must not adopt it wholesale.
+	if classified.Type != nat.TypePortRestricted {
+		t.Fatalf("profiler gave %v; this test guards the caller against exactly this upgrade", classified.Type)
+	}
+	if classified.Type == nat.TypeSymmetric {
+		t.Fatal("agreeing ports are not symmetric")
+	}
+
+	// And once the label is taken, public is unreachable forever: the upgrade
+	// only fires from Unknown.
+	confirmed := classified
+	confirmed.PublicReachable = true
+	n := &Node{}
+	if got := n.labelExternalReachability(confirmed, "203.0.113.7:4001"); got.Type == nat.TypePublic {
+		t.Fatal("test premise wrong: labelExternalReachability would have rescued it")
+	}
+}
