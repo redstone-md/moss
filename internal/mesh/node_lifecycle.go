@@ -11,6 +11,7 @@ import (
 	mcrypto "github.com/redstone-md/moss/internal/crypto"
 	"github.com/redstone-md/moss/internal/gossip"
 	"github.com/redstone-md/moss/internal/nat"
+	"github.com/redstone-md/moss/internal/overlay"
 	"github.com/redstone-md/moss/internal/stat"
 	"github.com/redstone-md/moss/internal/transport"
 )
@@ -90,6 +91,12 @@ func NewNodeWithIdentity(meshID string, psk []byte, cfg Config, identity *mcrypt
 		relayRoutes:      make(map[string]relayRoute),
 		relayLocals:      make(map[string]relayLocalSession),
 		relayBuckets:     make(map[string]*nat.TokenBucket),
+		overlayStore:     overlay.NewStore(0, 0),
+		overlayPending:   make(map[string]chan gossip.Envelope),
+		overlayDiscovery: make(map[string]time.Time),
+		// The overlay keyspace is the peer id itself: localPeerID is the hex of
+		// this same Ed25519 public key, so a peer id is already a point in it.
+		overlayTable:     overlay.NewTable(overlay.NodeID(identity.PublicKey()), 0),
 		directProbes:     make(map[string]time.Time),
 		peerDials:        make(map[string]time.Time),
 		explicitTargets:  make(map[string]time.Time),
@@ -150,6 +157,7 @@ func (n *Node) Start() int32 {
 	n.started = true
 	n.startedAt = time.Now()
 	n.cancel = cancel
+	n.rootCtx = ctx
 	// ln is nil in UDP-only mode (TCP couldn't bind — e.g. under Wine/Proton).
 	// Fall back to the UDP listener's address for NAT profiling and port mapping.
 	listenAddrStr := udpListener.Addr().String()
@@ -184,6 +192,8 @@ func (n *Node) Start() int32 {
 	}
 	n.startVeilBearer(ctx)
 	n.startVeilDialers(ctx)
+	n.wg.Add(1)
+	go n.overlayPublishLoop(ctx)
 	go n.probePortMapping(ctx, listenAddrStr, port)
 	go func() {
 		if addrs := loadPeerCache(n.config.PeerCachePath, n.config.peerCacheTTL()); len(addrs) > 0 {

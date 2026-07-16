@@ -10,6 +10,7 @@ import (
 	mcrypto "github.com/redstone-md/moss/internal/crypto"
 	"github.com/redstone-md/moss/internal/gossip"
 	"github.com/redstone-md/moss/internal/nat"
+	"github.com/redstone-md/moss/internal/overlay"
 	"github.com/redstone-md/moss/internal/stat"
 	"github.com/redstone-md/moss/internal/telemetry"
 	"github.com/redstone-md/moss/internal/transport"
@@ -69,16 +70,29 @@ type Node struct {
 	seq              uint64
 	heartbeat        uint64
 
-	mu               sync.RWMutex
-	started          bool
-	supernodeActive  bool
-	cancel           context.CancelFunc
-	wg               sync.WaitGroup
-	peers            map[string]*peerConn
-	suppress         map[string]map[string]time.Time
-	relayRoutes      map[string]relayRoute
-	relayLocals      map[string]relayLocalSession
-	relayBuckets     map[string]*nat.TokenBucket
+	mu              sync.RWMutex
+	started         bool
+	supernodeActive bool
+	cancel          context.CancelFunc
+	wg              sync.WaitGroup
+	peers           map[string]*peerConn
+	suppress        map[string]map[string]time.Time
+	relayRoutes     map[string]relayRoute
+	relayLocals     map[string]relayLocalSession
+	relayBuckets    map[string]*nat.TokenBucket
+
+	// overlayTable is the Kademlia routing table over publicly reachable peers;
+	// overlayStore holds the records this node is responsible for (it stays
+	// empty on a leaf, which answers no queries); overlayPending correlates
+	// in-flight lookups with their replies. See node_overlay.go.
+	overlayTable   *overlay.Table
+	overlayStore   *overlay.Store
+	overlayPending map[string]chan gossip.Envelope
+	// overlayDiscovery rate-limits topic rendezvous per topic; rootCtx lets the
+	// maintenance path launch a lookup that dies with the node.
+	overlayDiscovery map[string]time.Time
+	rootCtx          context.Context
+
 	directProbes     map[string]time.Time
 	peerDials        map[string]time.Time
 	explicitTargets  map[string]time.Time

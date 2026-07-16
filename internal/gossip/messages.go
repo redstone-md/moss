@@ -24,7 +24,29 @@ const (
 	TypePing                 EnvelopeType = "ping"
 	TypePong                 EnvelopeType = "pong"
 	TypeStatDelta            EnvelopeType = "stat_delta"
+
+	// Overlay (Kademlia) lookup. Only publicly reachable nodes answer these —
+	// a query cannot be delivered to a node nobody can dial — but any node,
+	// NAT'd included, may ask, since outbound dials always work.
+	TypeOverlayFindNode  EnvelopeType = "ov_find_node"
+	TypeOverlayFindValue EnvelopeType = "ov_find_value"
+	TypeOverlayNodes     EnvelopeType = "ov_nodes"
+	TypeOverlayValues    EnvelopeType = "ov_values"
+	TypeOverlayStore     EnvelopeType = "ov_store"
 )
+
+// OverlayContact is a routable core node returned by a lookup.
+type OverlayContact struct {
+	ID   []byte `json:"id"`
+	Addr string `json:"addr"`
+}
+
+// OverlayProvider is one answer to a FIND_VALUE: peer P provides the key, and
+// Payload carries the hint for reaching it (the core nodes it is attached to).
+type OverlayProvider struct {
+	Peer    []byte `json:"peer"`
+	Payload []byte `json:"payload,omitempty"`
+}
 
 type Envelope struct {
 	Type                   EnvelopeType `json:"type"`
@@ -50,4 +72,9 @@ type Envelope struct {
 	AdvertisedSignature    []byte       `json:"advertised_signature,omitempty"`
 	Reachable              bool         `json:"reachable,omitempty"`
 	Payload                []byte       `json:"payload,omitempty"`
+
+	// Overlay lookup fields.
+	OverlayKey       []byte            `json:"ov_key,omitempty"`
+	OverlayContacts  []OverlayContact  `json:"ov_contacts,omitempty"`
+	OverlayProviders []OverlayProvider `json:"ov_providers,omitempty"`
 }

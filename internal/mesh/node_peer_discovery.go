@@ -226,6 +226,7 @@ func (n *Node) maintainTopicMesh(channel string) {
 	n.opportunisticGraft(channel)
 	n.pruneTopicMeshExcess(channel)
 	n.gossipRecentMessages(channel)
+	n.maybeDiscoverTopicPeers(channel)
 }
 
 func (n *Node) ensureTopicMeshMinimum(channel string) {
