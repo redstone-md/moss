@@ -66,7 +66,25 @@ func (n *Node) refreshNATClassification(timeout time.Duration) bool {
 	if !ok {
 		return false
 	}
-	n.natProfile.Store(n.profiler.WithBindingObservations(profile, observations))
+	classified := n.profiler.WithBindingObservations(profile, observations)
+	// Adopt ONLY a symmetric verdict.
+	//
+	// When the ports agree, the profiler also upgrades Unknown →
+	// port_restricted_cone — and that is poison this early. A public node starts
+	// out Unknown and reaches public only once an inbound probe confirms it, via
+	// a path that fires solely from Unknown (labelExternalReachability). Taking
+	// the cone label first locks a relay out of being public forever: deployed
+	// to the fleet, it turned every box into port_restricted_cone with
+	// supernode_ready=false and stopped the relays from relaying.
+	//
+	// The upgrade never used to fire because the classifier was only ever handed
+	// one observation and returned unchanged. Giving it two woke it up — so the
+	// verdict worth having here is the one that needed two samples in the first
+	// place, and nothing else.
+	if classified.Type != nat.TypeSymmetric {
+		return false
+	}
+	n.natProfile.Store(classified)
 	return true
 }
 
