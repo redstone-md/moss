@@ -118,11 +118,35 @@ type VeilConfig struct {
 	ListenAddr string `json:"listen_addr"`
 	CoverSNI   string `json:"cover_sni"`
 	TargetAddr string `json:"target_addr"`
+	// Relays lists Veil-fronted relays this node dials at startup and keeps
+	// a session to, regardless of Role. It is how a client behind DPI joins
+	// the mesh when its ordinary UDP/TCP paths are throttled: it holds each
+	// relay's veil endpoint (address + cover SNI) and static Noise key out
+	// of band (shipped in the client config), so it can authenticate to the
+	// listener and ride the mesh inside the TLS-masked tunnel.
+	Relays []VeilRelay `json:"relays"`
+}
+
+// VeilRelay is a known Veil-fronted relay a dialer bootstraps through. Addr
+// is the relay's Veil listener (host:port); CoverSNI must match the relay's
+// TargetSNI; PubKeyHex is the relay's 32-byte static Noise public key (hex),
+// from which the auth secret is derived — the same key the relay would
+// otherwise gossip in its descriptor, pinned here so no secret is shared out
+// of band.
+type VeilRelay struct {
+	Addr      string `json:"addr"`
+	CoverSNI  string `json:"cover_sni"`
+	PubKeyHex string `json:"pubkey"`
 }
 
 // IsListener reports whether this node should run the Veil Reality
 // listener (relay/gateway/supernode role).
 func (v VeilConfig) IsListener() bool { return v.Enabled && v.Role == "listener" }
+
+// IsDialer reports whether this node should bootstrap through one or more
+// Veil-fronted relays. It is independent of Role: any node may hold veil
+// relay descriptors to survive DPI, including a listener bridging to another.
+func (v VeilConfig) IsDialer() bool { return v.Enabled && len(v.Relays) > 0 }
 
 // TelemetryConfig controls the privacy-preserving network observability layer.
 // It is disabled by default. When enabled, the node contributes DP-noised,

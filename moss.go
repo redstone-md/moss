@@ -1,6 +1,7 @@
 package moss
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -71,7 +72,33 @@ type Config struct {
 	// default (on). Set false to rely solely on trackers/static peers.
 	DHTEnabled *bool `json:"dht_enabled,omitempty"`
 
+	// Veil configures the DPI-resistant "Reality" transport bearer. A relay
+	// sets Role="listener"; a client behind DPI lists the relays to reach in
+	// Relays. Omitted (nil) leaves it disabled.
+	Veil *VeilConfig `json:"veil,omitempty"`
+
 	IdentityPath string `json:"identity_path,omitempty"`
+}
+
+// VeilConfig is the public mirror of the Veil "Reality" DPI-mask settings
+// (see mesh.VeilConfig). CoverSNI must match on both legs and SHOULD be a
+// real domain the listener can reach.
+type VeilConfig struct {
+	Enabled    bool        `json:"enabled"`
+	Role       string      `json:"role,omitempty"`        // "listener" or "dialer" (default)
+	ListenAddr string      `json:"listen_addr,omitempty"` // listener bind, host:port
+	CoverSNI   string      `json:"cover_sni,omitempty"`
+	TargetAddr string      `json:"target_addr,omitempty"` // listener: real origin for spliced probes
+	Relays     []VeilRelay `json:"relays,omitempty"`      // dialer: known Veil-fronted relays
+}
+
+// VeilRelay is a public mirror of mesh.VeilRelay: a Veil-fronted relay a
+// dialer bootstraps through. PubKeyHex is the relay's 32-byte static Noise
+// public key in hex.
+type VeilRelay struct {
+	Addr      string `json:"addr"`
+	CoverSNI  string `json:"cover_sni"`
+	PubKeyHex string `json:"pubkey"`
 }
 
 func (c Config) toMeshConfig() mesh.Config {
@@ -151,6 +178,22 @@ func (c Config) toMeshConfig() mesh.Config {
 	if c.TelemetryKAnon > 0 {
 		base.Telemetry.KAnon = c.TelemetryKAnon
 	}
+	if c.Veil != nil {
+		base.Veil = mesh.VeilConfig{
+			Enabled:    c.Veil.Enabled,
+			Role:       c.Veil.Role,
+			ListenAddr: c.Veil.ListenAddr,
+			CoverSNI:   c.Veil.CoverSNI,
+			TargetAddr: c.Veil.TargetAddr,
+		}
+		for _, r := range c.Veil.Relays {
+			base.Veil.Relays = append(base.Veil.Relays, mesh.VeilRelay{
+				Addr:      r.Addr,
+				CoverSNI:  r.CoverSNI,
+				PubKeyHex: r.PubKeyHex,
+			})
+		}
+	}
 	if c.IdentityPath != "" {
 		base.PeerCachePath = filepath.Join(filepath.Dir(c.IdentityPath), "peers.json")
 	}
@@ -226,6 +269,14 @@ func (n *Node) MeshInfoJSON() string {
 // PublicKey returns the node's Ed25519 public key as a 32-byte array.
 func (n *Node) PublicKey() [32]byte {
 	return n.inner.PublicKey()
+}
+
+// NoiseStaticPublicHex returns the node's X25519 Noise static public key as
+// hex. A relay operator publishes this so Veil dialers can pin it in their
+// veil relay config (`pubkey`); it is the key the masked-tunnel auth secret
+// is derived from, distinct from PublicKey (the Ed25519 identity key).
+func (n *Node) NoiseStaticPublicHex() string {
+	return hex.EncodeToString(n.inner.NoiseStaticPublic())
 }
 
 // NATType returns the detected NAT type as a string (e.g. "public",

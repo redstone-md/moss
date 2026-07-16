@@ -72,7 +72,7 @@ func TestVeilBearerFormsSessionAndCarriesPubSub(t *testing.T) {
 
 	dialCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := client.veilDial(dialCtx, veilAddr, coverSNI, relay.identity.NoiseStaticPublic()); err != nil {
+	if _, err := client.veilDial(dialCtx, veilAddr, coverSNI, relay.identity.NoiseStaticPublic()); err != nil {
 		t.Fatalf("veilDial over Reality failed: %v", err)
 	}
 

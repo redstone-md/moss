@@ -4,6 +4,27 @@ All notable changes to this project are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project
 uses semantic versioning.
 
+## [0.6.21] - 2026-07-16
+
+### Added
+- **Veil dialer integration — the mesh now bootstraps through the DPI-mask
+  bearer, not just listens on it.** A node can list Veil-fronted relays in
+  `veil.relays` (`{addr, cover_sni, pubkey}`); at startup it holds a masked
+  "Reality" session open to each, redialing with capped backoff whenever one
+  drops, so a client behind active DPI (e.g. RU TSPU) keeps a mesh foothold
+  when its ordinary UDP/TCP paths are throttled. `pubkey` is the relay's
+  X25519 Noise static key, from which the tunnel auth secret is derived — no
+  secret is shared out of band.
+  - Public `Config.Veil` (`VeilConfig`/`VeilRelay`) exposes the whole bearer
+    (listener + dialer) to external consumers; previously only the internal
+    config carried it.
+  - New `Node.NoiseStaticPublicHex()` returns the key a relay operator pins in
+    dialer configs — distinct from `PublicKey()` (the Ed25519 identity key).
+  - Measured cost of the masked tunnel vs plain TCP over a real path: ~2%
+    throughput (within noise, 92 vs 94 Mbit/s) and a one-time +20 ms connect
+    for the TLS handshake. Verified end to end with trackers/DHT/LAN disabled
+    so Veil was the sole bootstrap path: peer formed and gossip flowed.
+
 ## [0.6.20] - 2026-07-16
 
 ### Added

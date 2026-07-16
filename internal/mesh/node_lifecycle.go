@@ -183,6 +183,7 @@ func (n *Node) Start() int32 {
 		go n.statLoop(ctx)
 	}
 	n.startVeilBearer(ctx)
+	n.startVeilDialers(ctx)
 	go n.probePortMapping(ctx, listenAddrStr, port)
 	go func() {
 		if addrs := loadPeerCache(n.config.PeerCachePath, n.config.peerCacheTTL()); len(addrs) > 0 {
@@ -435,6 +436,14 @@ func (n *Node) MeshInfoJSON() string {
 
 func (n *Node) PublicKey() [32]byte {
 	return n.identity.PublicKey()
+}
+
+// NoiseStaticPublic returns the node's 32-byte X25519 Noise static public
+// key. This — not PublicKey (the Ed25519 identity key) — is the value a Veil
+// dialer pins for a relay: DeriveAuthSecret and the client handshake both key
+// off it (see node_veil.go).
+func (n *Node) NoiseStaticPublic() []byte {
+	return n.identity.NoiseStaticPublic()
 }
 
 func (n *Node) NATType() string {
