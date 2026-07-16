@@ -106,6 +106,7 @@ type Node struct {
 
 	directProbes     map[string]time.Time
 	peerDials        map[string]time.Time
+	peerDialFailures map[string]int
 	explicitTargets  map[string]time.Time
 	bootstrapDials   map[string]time.Time
 	lanBeaconBuckets map[string]*lanBeaconRateBucket

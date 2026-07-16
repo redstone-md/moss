@@ -57,7 +57,7 @@ func (n *Node) discoveredPeerTargets() []discoveredPeerTarget {
 			continue
 		}
 		lastDial := n.peerDials[peerID]
-		if !lastDial.IsZero() && now.Sub(lastDial) < cooldown {
+		if !lastDial.IsZero() && now.Sub(lastDial) < peerDialBackoff(cooldown, n.peerDialFailures[peerID]) {
 			continue
 		}
 		targets = append(targets, discoveredPeerTarget{
@@ -165,6 +165,64 @@ func selectDialTargets(targets []discoveredPeerTarget, limit, relayDeficit int) 
 	return selected
 }
 
+// peerDialBackoff spaces out retries against a peer that keeps failing.
+//
+// Trying direct first, always, is the design and stays. Trying it at the same
+// rate forever is not the same thing: a peer with no path costs a full
+// HandshakeTimeout per attempt, and the fleet spent 723 attempts x ~9.8s doing
+// exactly that against peers it never once reached — 81% of all attempts,
+// against 165 that succeeded. That is not persistence, it is a spin.
+//
+// So the interval grows with consecutive failures and any success resets it: an
+// unreachable peer is still retried, just not thousands of times an hour, and a
+// peer whose path appears (the far end restarts, its NAT rebinds, a relay shows
+// up) is picked up within a capped delay rather than never.
+func peerDialBackoff(base time.Duration, failures int) time.Duration {
+	if failures <= 0 {
+		return base
+	}
+	if failures > peerDialBackoffShiftMax {
+		failures = peerDialBackoffShiftMax
+	}
+	backoff := base << uint(failures)
+	if backoff > peerDialBackoffMax || backoff <= 0 {
+		return peerDialBackoffMax
+	}
+	return backoff
+}
+
+const (
+	// peerDialBackoffMax caps the retry interval: an unreachable peer is still
+	// retried this often forever, because "no path now" is not "no path ever" —
+	// NATs rebind and relays arrive.
+	peerDialBackoffMax = 5 * time.Minute
+	// peerDialBackoffShiftMax bounds the shift so the doubling cannot overflow
+	// the duration before the cap is applied.
+	peerDialBackoffShiftMax = 16
+)
+
+// noteDialOutcome drives the backoff. Only a total failure counts against a
+// peer: relayed IS a path, and treating it as failure would back off exactly the
+// peers that need the relay most.
+func (n *Node) noteDialOutcome(peerID string, ok bool) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if ok {
+		delete(n.peerDialFailures, peerID)
+		// A live peer is skipped by the connected check, and a dropped one gets
+		// an immediate redial — neither wants a cooldown standing in the way.
+		delete(n.peerDials, peerID)
+		return
+	}
+	n.peerDialFailures[peerID]++
+	// Time the cooldown from when the attempt ENDED. Timing it from the start —
+	// which is all peerDials ever held — meant a 10s attempt had already outlived
+	// a 10s cooldown by the time it returned, so the entry was simply deleted and
+	// the next tick redialled at once. peerDials was an in-flight marker wearing a
+	// cooldown's name, and nothing was ever actually spaced out.
+	n.peerDials[peerID] = time.Now()
+}
+
 func (n *Node) dialKnownPeer(peerID, addr string) {
 	_ = addr
 	// Discovered peers use direct/NAT/hole-punch first. If that path does not
@@ -172,10 +230,13 @@ func (n *Node) dialKnownPeer(peerID, addr string) {
 	started := time.Now()
 	if n.tryDirectConnect(peerID, n.config.HandshakeTimeout()) {
 		n.reportConnectAttempt(outcomeDirect, reasonNone, started, false)
+		n.noteDialOutcome(peerID, true)
 	} else if n.establishedRelaySession(peerID) != "" {
 		n.reportConnectAttempt(outcomeRelayed, reasonNone, started, false)
+		n.noteDialOutcome(peerID, true)
 	} else if _, err := n.OpenRelaySessionAny(peerID, n.config.HandshakeTimeout()); err == nil {
 		n.reportConnectAttempt(outcomeRelayed, reasonPunchTimeout, started, false)
+		n.noteDialOutcome(peerID, true)
 	} else {
 		// No overlay lookup here, deliberately. dialKnownPeer runs per known
 		// peer on a cooldown measured in seconds, so anything it does is paid
@@ -185,10 +246,8 @@ func (n *Node) dialKnownPeer(peerID, addr string) {
 		// measured. Rendezvous belongs on the topic path, where it is bounded
 		// by a per-topic cooldown and nobody is waiting on it.
 		n.reportConnectAttempt(outcomeFailed, reasonNoRelayPeer, started, false)
+		n.noteDialOutcome(peerID, false)
 	}
-	n.mu.Lock()
-	delete(n.peerDials, peerID)
-	n.mu.Unlock()
 }
 
 func (n *Node) rememberSuppression(peerID string, ids []string, fallback string) {
