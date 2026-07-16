@@ -41,7 +41,7 @@ func (n *Node) acceptUDPLoop(ctx context.Context) {
 			}
 			return
 		}
-		n.registerPeer(session, false)
+		n.registerPeerFrom(session, false, originInboundUDP)
 	}
 }
 
@@ -67,7 +67,7 @@ func (n *Node) handleInbound(ctx context.Context, conn net.Conn) {
 		_ = conn.Close()
 		return
 	}
-	n.registerPeer(session, false)
+	n.registerPeerFrom(session, false, originInboundTCP)
 }
 
 func (n *Node) bootstrapLoop(ctx context.Context) {
@@ -223,11 +223,22 @@ func (n *Node) connectPeerOnce(ctx context.Context, addr string, remoteStatic []
 		_ = conn.Close()
 		return err
 	}
-	n.registerPeer(session, true)
+	n.registerPeerFrom(session, true, originDialTCP)
 	return nil
 }
 
-func (n *Node) registerPeer(session *transport.Session, outbound bool) {
+// Session origins, so a churning path can be named rather than guessed at.
+const (
+	originInboundTCP    = "inbound_tcp"
+	originInboundUDP    = "inbound_udp"
+	originDialTCP       = "dial_tcp"
+	originHolePunchUDP  = "holepunch_udp"
+	originVeilInbound   = "veil_inbound"
+	originVeilDial      = "veil_dial"
+	originWebRTC        = "webrtc"
+)
+
+func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origin string) {
 	remoteID := session.RemoteID()
 	peerID := hex.EncodeToString(remoteID[:])
 	addr := session.RemoteAddr().String()
@@ -269,7 +280,7 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 		return
 	}
 	bootstrapSeed := !n.trackerSeeds[addr].IsZero()
-	peer := &peerConn{id: peerID, addr: addr, session: session, outbound: outbound, bootstrap: bootstrapSeed, connectedAt: time.Now()}
+	peer := &peerConn{id: peerID, addr: addr, session: session, origin: origin, outbound: outbound, bootstrap: bootstrapSeed, connectedAt: time.Now()}
 	current := n.knownPeers[peerID]
 	knownAddr := addr
 	if !outbound && strings.HasPrefix(network, "tcp") {

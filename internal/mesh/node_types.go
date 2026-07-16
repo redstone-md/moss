@@ -127,10 +127,15 @@ type Node struct {
 }
 
 type peerConn struct {
-	id             string
-	addr           string
-	session        *transport.Session
-	outbound       bool
+	id      string
+	addr    string
+	session *transport.Session
+	// origin names the path that opened this session. A session that dies at
+	// zero seconds was a duplicate the dedup closed on arrival, and knowing
+	// WHICH path keeps producing them is the difference between fixing the
+	// cause and guessing at it.
+	origin   string
+	outbound bool
 	bootstrap      bool
 	connectedAt    time.Time
 	lastRTT        time.Duration

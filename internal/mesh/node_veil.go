@@ -93,7 +93,7 @@ func (n *Node) handleVeilInbound(ctx context.Context, conn vtransport.Conn) {
 		_ = conn.Close()
 		return
 	}
-	n.registerPeer(session, false)
+	n.registerPeerFrom(session, false, originVeilInbound)
 }
 
 // startVeilDialers launches one persistent bootstrap goroutine per
@@ -218,6 +218,6 @@ func (n *Node) veilDial(ctx context.Context, addr, coverSNI string, remoteStatic
 	}
 	remoteID := session.RemoteID()
 	peerID := hex.EncodeToString(remoteID[:])
-	n.registerPeer(session, true)
+	n.registerPeerFrom(session, true, originVeilDial)
 	return peerID, nil
 }
