@@ -183,6 +183,27 @@ func (n *Node) connectPeerWithHint(ctx context.Context, addr, peerID string) err
 		n.mu.RUnlock()
 		return errors.New("max peers reached")
 	}
+	// Identity first, address only as a fallback.
+	//
+	// Matching on the address string alone missed constantly: a session
+	// remembers the address it was OBSERVED on, while we dial the one a peer
+	// ADVERTISES, and for anything behind NAT those differ. So we redialed peers
+	// we were already connected to, completed a full Noise handshake, and had
+	// registerPeer's dedup close it on arrival — 1131 such sessions in fifteen
+	// minutes on one client, median lifetime 0ms, roughly 75 wasted handshakes a
+	// minute. Handshakes are asymmetric crypto; players felt the pile as stalls.
+	//
+	// The caller almost always knows who it is dialing. Ask that first.
+	// Only a DIRECT session means "already connected". A relayed peer lives in
+	// this same map, and dialing it is precisely how it gets upgraded off the
+	// relay — declining that would make relay a terminus again, which is the one
+	// thing a P2P mesh must not do.
+	if peerID != "" {
+		if peer, connected := n.peers[peerID]; connected && peer != nil && !peer.relayed {
+			n.mu.RUnlock()
+			return nil
+		}
+	}
 	for _, peer := range n.peers {
 		if peer.addr == addr {
 			n.mu.RUnlock()
