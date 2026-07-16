@@ -12,6 +12,64 @@ import (
 	"github.com/redstone-md/moss/internal/nat"
 )
 
+// requestSTUNBindingObservations samples up to `want` DISTINCT vantage points
+// and returns everything it got.
+//
+// One observation cannot classify a NAT. Symmetric NAT is *defined* by the
+// mapped port differing per destination, so a single vantage point has nothing
+// to compare against and the profiler can only answer "unknown" — which is what
+// it answered for the entire fleet, always. The telemetry made it plain: every
+// event carried observations=1, so ports_differed was never once computed and
+// no node ever discovered it was behind symmetric NAT.
+//
+// That is not cosmetic. shouldPreferRelayBetween suppresses a hole punch only
+// when BOTH ends are known symmetric, so an unclassified node kept punching at
+// targets it could never reach — ~10s burnt per attempt, and the bulk of the
+// failures the fleet reports.
+func (n *Node) requestSTUNBindingObservations(timeout time.Duration, want int) []string {
+	if n.udpListener == nil || timeout <= 0 || want <= 0 || !n.shouldUseSTUNBootstrap() {
+		return nil
+	}
+	deadline := time.Now().Add(timeout)
+	observations := make([]string, 0, want)
+	for _, server := range defaultSTUNServers {
+		if len(observations) >= want {
+			break
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), minDuration(remaining, 1500*time.Millisecond))
+		observed, err := n.udpListener.ObserveSTUNContext(ctx, server)
+		cancel()
+		if err == nil && observed != "" {
+			observations = append(observations, observed)
+		}
+	}
+	return observations
+}
+
+// refreshNATClassification compares vantage points sampled in one round and
+// lets the profiler decide.
+//
+// The comparison must run on that round's own set: appendObservation collapses
+// consecutive duplicates, so feeding these through the long-lived history would
+// fold a cone NAT's two identical mappings back into one and destroy the very
+// evidence proving it is not symmetric.
+func (n *Node) refreshNATClassification(timeout time.Duration) bool {
+	observations := n.requestSTUNBindingObservations(timeout, 2)
+	if len(observations) < 2 {
+		return false
+	}
+	profile, ok := n.natProfile.Load().(nat.Profile)
+	if !ok {
+		return false
+	}
+	n.natProfile.Store(n.profiler.WithBindingObservations(profile, observations))
+	return true
+}
+
 func (n *Node) refreshExternalAddress(deadline time.Time) bool {
 	n.mu.RLock()
 	peerIDs := make([]string, 0, len(n.peers))
