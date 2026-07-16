@@ -12,13 +12,16 @@ import (
 )
 
 // startOverlayNode builds a node with discovery disabled, so the only topology
-// is the one the test wires by hand.
-func startOverlayNode(t *testing.T, meshID string) *Node {
+// is the one the test wires by hand. maxPeers <= 0 leaves the default.
+func startOverlayNode(t *testing.T, meshID string, maxPeers ...int) *Node {
 	t.Helper()
 	cfg := DefaultConfig()
 	cfg.Trackers = nil
 	cfg.LANDiscoveryEnabled = false
 	cfg.DHTEnabled = false
+	if len(maxPeers) > 0 && maxPeers[0] > 0 {
+		cfg.MaxPeers = maxPeers[0]
+	}
 	n, err := NewNode(meshID, nil, cfg)
 	if err != nil {
 		t.Fatalf("NewNode: %v", err)
@@ -123,11 +126,18 @@ func TestOverlayLeavesFindEachOtherThroughCore(t *testing.T) {
 // on a channel nobody else shares, connected only to a relay, publish and see
 // nothing. Nothing here wires A to B — the mesh must find the path itself:
 // overlay rendezvous → relay through the attachment → graft → delivery.
+//
+// The leaves are capped at ONE direct peer, which the core occupies. That is
+// what makes this test mean anything: A physically cannot dial B, so ordinary
+// peer exchange — which on a tiny topology would hand them each other's address
+// and connect them directly, passing this test while proving nothing — is off
+// the table. The only remaining path is the one under test. (Relayed peers do
+// not consume the direct-peer budget.) Disabling the overlay must fail this.
 func TestOverlayDeliversBetweenLeavesWithNoDirectPath(t *testing.T) {
 	core := startOverlayNode(t, "room")
 	makeCore(core)
-	a := startOverlayNode(t, "room")
-	b := startOverlayNode(t, "room")
+	a := startOverlayNode(t, "room", 1)
+	b := startOverlayNode(t, "room", 1)
 
 	received := make(chan []byte, 4)
 	b.SetMessageCallback(func(channel string, _ [32]byte, data []byte) {
