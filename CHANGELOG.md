@@ -4,6 +4,50 @@ All notable changes to this project are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project
 uses semantic versioning.
 
+## [0.7.1] - 2026-07-16
+
+### Fixed
+- **A node could never classify its own NAT, so it kept punching at peers it
+  could not reach.** Fleet telemetry showed every event carrying
+  `observations=1` — never two — and ~89% of connect attempts failing with
+  `no_relay_peer` at ~10s each. One cause, two leaks:
+  - The gossip binding reply answers *"what is my dialable address"* with the
+    observed host plus **the port the asker advertised about itself**. Right for
+    advertising, worthless as evidence about a NAT: every peer hands back our
+    own port, so the value is a constant. It reached the classifier anyway, and
+    `appendObservation` collapsed each identical echo into one entry — leaving
+    nothing to compare. Genuine observations (STUN, a port mapper, a peer's UDP
+    observe, which does report what it truly saw) now inform classification; the
+    echo only updates the address we advertise.
+  - STUN returned on the first server that answered, so only one vantage point
+    was ever sampled. Symmetric NAT is *defined* by the mapped port differing per
+    destination — one sample has nothing to differ from. Two distinct servers are
+    now compared within the round, deliberately not through the long-lived
+    history, which would fold a cone NAT's two identical mappings back into one.
+
+  Downstream this is what matters: `shouldPreferRelayBetween` suppresses a hole
+  punch only when **both** ends are known symmetric, so an unclassifiable fleet
+  never used it.
+
+  Not fixed by simply reporting the observed port: over a TCP session that is an
+  ephemeral source port, unrelated to the UDP mapping a punch needs. Feeding
+  those in would make ports differ every time and classify everyone symmetric —
+  trading "never detects" for "always wrong".
+- **Relay selection guessed instead of asking.** `OpenRelaySessionAny` walked our
+  own neighbours hoping one happened to also be connected to the target, ordered
+  by a guess at geographic closeness — but a relay must be adjacent to **both**
+  ends, and nothing ever said which node that is. `dialKnownPeer` now consults
+  the overlay, where every node publishes its attachments under its own id, and
+  dials the node the peer actually reports being attached to.
+
+### Known gap
+- A UDP session closed by duplicate-session dedup takes the peer-observe path
+  down with it (`ObserveContext` requires one), so the bootstrap's TCP+UDP race
+  creates a UDP session and then discards it — the churn behind the
+  zero-length sessions the fleet reports. Classification no longer depends on
+  that path, so this is now waste rather than breakage; fixing it properly means
+  a transport-level observation session, not a patch to the dedup.
+
 ## [0.7.0] - 2026-07-16
 
 ### Added
