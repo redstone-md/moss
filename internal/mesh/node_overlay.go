@@ -60,11 +60,11 @@ func (n *Node) noteOverlayContact(info knownPeer) {
 	if !ok {
 		return
 	}
-	n.mu.Lock()
-	defer n.mu.Unlock()
 	if n.overlayTable == nil {
 		return
 	}
+	// The table guards itself; taking the node's lock here would put discovery
+	// traffic in the way of everything else the node does.
 	n.overlayTable.Add(overlay.Contact{ID: cid, Addr: info.addr, LastSeen: time.Now()})
 }
 
@@ -106,9 +106,7 @@ func (n *Node) handleOverlayFindValue(peer *peerConn, env gossip.Envelope) {
 		return
 	}
 	var providers []gossip.OverlayProvider
-	n.mu.RLock()
 	store := n.overlayStore
-	n.mu.RUnlock()
 	if store != nil {
 		for _, e := range store.Get(key, time.Now()) {
 			id := e.Peer
@@ -138,9 +136,7 @@ func (n *Node) handleOverlayStore(peer *peerConn, env gossip.Envelope) {
 	if !ok {
 		return
 	}
-	n.mu.RLock()
 	store := n.overlayStore
-	n.mu.RUnlock()
 	if store == nil {
 		return
 	}
@@ -152,9 +148,9 @@ func (n *Node) handleOverlayResponse(env gossip.Envelope) {
 	if env.RequestID == "" {
 		return
 	}
-	n.mu.Lock()
+	n.overlayMu.Lock()
 	wait, ok := n.overlayPending[env.RequestID]
-	n.mu.Unlock()
+	n.overlayMu.Unlock()
 	if !ok {
 		return
 	}
@@ -165,15 +161,11 @@ func (n *Node) handleOverlayResponse(env gossip.Envelope) {
 }
 
 func (n *Node) closestContacts(key overlay.NodeID) []gossip.OverlayContact {
-	n.mu.RLock()
 	table := n.overlayTable
-	n.mu.RUnlock()
 	if table == nil {
 		return nil
 	}
-	n.mu.Lock()
 	found := table.Closest(key, overlay.DefaultK)
-	n.mu.Unlock()
 	out := make([]gossip.OverlayContact, 0, len(found))
 	for _, c := range found {
 		id := c.ID
@@ -216,13 +208,13 @@ func (n *Node) overlayQuery(ctx context.Context, c overlay.Contact, env gossip.E
 		return gossip.Envelope{}, err
 	}
 	wait := make(chan gossip.Envelope, 1)
-	n.mu.Lock()
+	n.overlayMu.Lock()
 	n.overlayPending[requestID] = wait
-	n.mu.Unlock()
+	n.overlayMu.Unlock()
 	defer func() {
-		n.mu.Lock()
+		n.overlayMu.Lock()
 		delete(n.overlayPending, requestID)
-		n.mu.Unlock()
+		n.overlayMu.Unlock()
 	}()
 
 	env.RequestID = requestID
@@ -250,13 +242,11 @@ func (n *Node) peerByID(peerID string) *peerConn {
 // closest contacts. It returns whatever providers it saw and the closest
 // contacts it ended on.
 func (n *Node) overlayLookup(ctx context.Context, key overlay.NodeID, wantValue bool) ([]gossip.OverlayProvider, []overlay.Contact) {
-	n.mu.Lock()
 	table := n.overlayTable
 	var shortlist []overlay.Contact
 	if table != nil {
 		shortlist = table.Closest(key, overlay.DefaultK)
 	}
-	n.mu.Unlock()
 	if len(shortlist) == 0 {
 		return nil, nil
 	}
@@ -290,11 +280,9 @@ func (n *Node) overlayLookup(ctx context.Context, key overlay.NodeID, wantValue 
 				OverlayKey: append([]byte(nil), key[:]...),
 			})
 			if err != nil {
-				n.mu.Lock()
 				if n.overlayTable != nil {
 					n.overlayTable.Remove(c.ID)
 				}
-				n.mu.Unlock()
 				continue
 			}
 			if len(resp.OverlayProviders) > 0 {
@@ -305,11 +293,9 @@ func (n *Node) overlayLookup(ctx context.Context, key overlay.NodeID, wantValue 
 				if !ok || rc.Addr == "" {
 					continue
 				}
-				n.mu.Lock()
 				if n.overlayTable != nil {
 					n.overlayTable.Add(overlay.Contact{ID: cid, Addr: rc.Addr, LastSeen: time.Now()})
 				}
-				n.mu.Unlock()
 				learned = true
 			}
 			if ctx.Err() != nil {
@@ -322,11 +308,9 @@ func (n *Node) overlayLookup(ctx context.Context, key overlay.NodeID, wantValue 
 		if !learned {
 			break
 		}
-		n.mu.Lock()
 		if n.overlayTable != nil {
 			shortlist = n.overlayTable.Closest(key, overlay.DefaultK)
 		}
-		n.mu.Unlock()
 	}
 	return providers, shortlist
 }
@@ -510,18 +494,20 @@ func (n *Node) maybeDiscoverTopicPeers(topic string) {
 	if len(n.pubsub.NonMeshSubscribers(topic)) > 0 {
 		return // a connected peer already claims this topic; graft handles it
 	}
-	n.mu.Lock()
+	n.mu.RLock()
 	ctx := n.rootCtx
-	if !n.started || ctx == nil {
-		n.mu.Unlock()
+	started := n.started
+	n.mu.RUnlock()
+	if !started || ctx == nil {
 		return
 	}
+	n.overlayMu.Lock()
 	if until, ok := n.overlayDiscovery[topic]; ok && time.Now().Before(until) {
-		n.mu.Unlock()
+		n.overlayMu.Unlock()
 		return
 	}
 	n.overlayDiscovery[topic] = time.Now().Add(overlayTopicDiscoveryEvery)
-	n.mu.Unlock()
+	n.overlayMu.Unlock()
 
 	n.wg.Add(1)
 	go func() {

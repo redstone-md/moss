@@ -24,6 +24,7 @@ import (
 	"encoding/hex"
 	"math/bits"
 	"sort"
+	"sync"
 	"time"
 )
 
@@ -106,7 +107,17 @@ type Contact struct {
 }
 
 // Table is a Kademlia routing table over the moss keyspace.
+//
+// It carries its own lock. Leaning on the caller's mutex instead was a real
+// outage: the node guards peers, knownPeers and the rest with one central
+// RWMutex, and routing this table's traffic through it meant every query a core
+// node answered took a WRITE lock on the whole node. Go's RWMutex queues
+// readers behind a waiting writer, so the reachability probe — which only wants
+// a read — starved, and a genuinely reachable relay sat at nat_type=unknown for
+// over an hour while quieter boxes were fine. Discovery state must never
+// contend with the node's own.
 type Table struct {
+	mu      sync.Mutex
 	self    NodeID
 	k       int
 	buckets [IDBits][]Contact
@@ -135,6 +146,8 @@ func (t *Table) Self() NodeID { return t.self }
 //
 // Adding self is a no-op: a node is never its own contact.
 func (t *Table) Add(c Contact) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	idx := BucketIndex(t.self, c.ID)
 	if idx < 0 {
 		return
@@ -159,6 +172,8 @@ func (t *Table) Add(c Contact) {
 
 // Remove drops a contact.
 func (t *Table) Remove(id NodeID) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	idx := BucketIndex(t.self, id)
 	if idx < 0 {
 		return
@@ -174,6 +189,12 @@ func (t *Table) Remove(id NodeID) {
 
 // Len reports how many contacts the table holds.
 func (t *Table) Len() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.lenLocked()
+}
+
+func (t *Table) lenLocked() int {
 	n := 0
 	for i := range t.buckets {
 		n += len(t.buckets[i])
@@ -188,10 +209,12 @@ func (t *Table) Closest(target NodeID, n int) []Contact {
 	if n <= 0 {
 		return nil
 	}
-	all := make([]Contact, 0, t.Len())
+	t.mu.Lock()
+	all := make([]Contact, 0, t.lenLocked())
 	for i := range t.buckets {
 		all = append(all, t.buckets[i]...)
 	}
+	t.mu.Unlock()
 	sort.Slice(all, func(i, j int) bool {
 		return Closer(target, all[i].ID, all[j].ID)
 	})
@@ -203,7 +226,9 @@ func (t *Table) Closest(target NodeID, n int) []Contact {
 
 // Contacts returns every contact, unordered.
 func (t *Table) Contacts() []Contact {
-	all := make([]Contact, 0, t.Len())
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	all := make([]Contact, 0, t.lenLocked())
 	for i := range t.buckets {
 		all = append(all, t.buckets[i]...)
 	}
