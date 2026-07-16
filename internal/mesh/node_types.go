@@ -56,6 +56,11 @@ type Node struct {
 	statAgg       *stat.Aggregator
 
 	natProfile atomic.Value
+	// natSample holds the evidence from the last multi-vantage classification
+	// round (natSample struct). Telemetry reads it instead of bindingHistory,
+	// which the round deliberately bypasses — reporting from there described a
+	// path the classifier no longer uses.
+	natSample atomic.Value
 	// lastErr holds the human-readable text of the most recent operation that
 	// failed with a coarse error code (currently just Start's listener bind), so
 	// callers can surface the real OS reason — e.g. why a bind fails under

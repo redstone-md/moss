@@ -9,11 +9,18 @@ import (
 	"github.com/redstone-md/moss/internal/nat"
 )
 
+// attemptHolePunch honours the relay preference; attemptHolePunchPolicy with
+// force=true is the upgrade path, where a relayed peer is retried for a direct
+// path with nobody waiting on the result.
 func (n *Node) attemptHolePunch(targetPeerID string, timeout time.Duration) bool {
+	return n.attemptHolePunchPolicy(targetPeerID, timeout, false)
+}
+
+func (n *Node) attemptHolePunchPolicy(targetPeerID string, timeout time.Duration, force bool) bool {
 	if timeout <= 0 {
 		return false
 	}
-	if n.shouldPreferRelayForTarget(targetPeerID) {
+	if !force && n.shouldPreferRelayForTarget(targetPeerID) {
 		return false
 	}
 	n.mu.RLock()

@@ -32,27 +32,102 @@ const (
 // Why a direct path was not used or did not hold.
 const (
 	reasonNone           = ""
-	reasonNoObservation  = "no_observation"  // never learned our own mapping
-	reasonSymmetricBoth  = "symmetric_both"  // both ends port-varying: punch is hopeless
-	reasonPunchTimeout   = "punch_timeout"   // punch ran out of time
-	reasonNoRelayPeer    = "no_relay_peer"   // nothing relay-capable connected
+	reasonNoObservation  = "no_observation"   // never learned our own mapping
+	reasonSymmetricBoth  = "symmetric_both"   // both ends port-varying: punch is hopeless
+	reasonPunchTimeout   = "punch_timeout"    // punch ran out of time
+	reasonNoRelayPeer    = "no_relay_peer"    // nothing relay-capable connected
 	reasonUnreachablePex = "peer_unreachable" // no address anyone could dial
 )
+
+// natSample is the evidence from one multi-vantage classification round: how
+// many distinct vantage points answered, and whether the mapped port they saw
+// differed — which is the entire definition of symmetric NAT.
+//
+// It has to be recorded separately from bindingHistory. The round compares its
+// samples directly and deliberately never feeds them to that history, whose
+// consecutive-duplicate dedup would fold a cone NAT's two identical mappings
+// back into one and destroy the evidence. So a metric read from bindingHistory
+// reports a path the classifier no longer uses — which is exactly what happened:
+// the fleet kept reporting observations=1 after the classifier had moved on, and
+// the number described nothing.
+type natSample struct {
+	vantages      int
+	portsDiffered bool
+	mappedPort    int
+	family        string
+}
+
+// recordNATSample publishes the round's evidence for telemetry to read.
+func (n *Node) recordNATSample(observations []string) {
+	sample := natSample{vantages: len(observations)}
+	ports := make([]string, 0, len(observations))
+	for _, obs := range observations {
+		host, port, err := net.SplitHostPort(obs)
+		if err != nil {
+			continue
+		}
+		ports = append(ports, port)
+		if sample.family == "" {
+			sample.family = addrFamily(host)
+		}
+	}
+	if len(ports) > 0 {
+		if p, err := strconv.Atoi(ports[len(ports)-1]); err == nil {
+			sample.mappedPort = p
+		}
+		for _, p := range ports[1:] {
+			if p != ports[0] {
+				sample.portsDiffered = true
+				break
+			}
+		}
+	}
+	n.natSample.Store(sample)
+}
+
+func addrFamily(host string) string {
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return ""
+	}
+	if ip.To4() != nil {
+		return "ipv4"
+	}
+	return "ipv6"
+}
 
 // natContext describes this node's NAT as observed, with no address in it.
 //
 // ports_differed is the single most useful bit and the one moss's classifier
 // kept missing: if our mapped port varies by destination we are behind
-// symmetric NAT, whatever nat_type currently claims.
+// symmetric NAT, whatever nat_type currently claims. It is reported from the
+// classification round that actually decides it — reading bindingHistory here
+// would describe a path nothing uses.
 func (n *Node) natContext() map[string]any {
+	ctx := map[string]any{"nat_type": n.NATType()}
+	if sample, ok := n.natSample.Load().(natSample); ok && sample.vantages > 0 {
+		ctx["observations"] = sample.vantages
+		if sample.mappedPort > 0 {
+			ctx["mapped_port"] = sample.mappedPort
+		}
+		if sample.family != "" {
+			ctx["family"] = sample.family
+		}
+		// Only meaningful from more than one vantage point: a single look
+		// cannot distinguish symmetric from cone.
+		if sample.vantages > 1 {
+			ctx["ports_differed"] = sample.portsDiffered
+		}
+		return ctx
+	}
+
+	// No classification round has completed yet — fall back to whatever the
+	// long-lived history holds, and say so rather than implying a verdict.
 	n.mu.RLock()
 	history := append([]string(nil), n.bindingHistory...)
 	n.mu.RUnlock()
-
-	ctx := map[string]any{
-		"nat_type":     n.NATType(),
-		"observations": len(history),
-	}
+	ctx["observations"] = len(history)
+	ctx["awaiting_sample"] = true
 	ports := make([]string, 0, len(history))
 	family := ""
 	for _, obs := range history {

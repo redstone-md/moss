@@ -33,7 +33,29 @@ func (n *Node) establishedRelaySession(targetPeerID string) string {
 	return ""
 }
 
+// tryDirectConnect reaches a peer directly, honouring the relay preference: a
+// pair that is hard on both ends should land on a relay quickly rather than sit
+// out a punch that is unlikely to complete. Someone is waiting on this path.
 func (n *Node) tryDirectConnect(targetPeerID string, timeout time.Duration) bool {
+	return n.tryDirect(targetPeerID, timeout, false)
+}
+
+// tryDirectUpgrade punches regardless of the relay preference.
+//
+// It runs against a peer we ALREADY reach through a relay, so nobody is waiting
+// and there is nothing to lose by trying: success trades a volunteer's bandwidth
+// and an extra hop for a direct path, which is the entire point of the mesh.
+// moss also carries port prediction, built precisely for the symmetric NAT this
+// preference gives up on.
+//
+// Without this split, the preference reached the upgrade path too — so a
+// symmetric pair, once relayed, was never tried again and relay stopped being a
+// fallback and became a terminus.
+func (n *Node) tryDirectUpgrade(targetPeerID string, timeout time.Duration) bool {
+	return n.tryDirect(targetPeerID, timeout, true)
+}
+
+func (n *Node) tryDirect(targetPeerID string, timeout time.Duration, force bool) bool {
 	deadline := time.Now().Add(timeout)
 	n.mu.RLock()
 	targetInfo, ok := n.knownPeers[targetPeerID]
@@ -64,10 +86,10 @@ func (n *Node) tryDirectConnect(targetPeerID string, timeout time.Duration) bool
 	if !ok || targetInfo.addr == "" {
 		return n.waitForDirectPeer(targetPeerID, time.Until(deadline))
 	}
-	if n.shouldPreferRelayForTarget(targetPeerID) {
+	if !force && n.shouldPreferRelayForTarget(targetPeerID) {
 		return n.waitForDirectPeer(targetPeerID, time.Until(deadline))
 	}
-	if n.attemptHolePunch(targetPeerID, time.Until(deadline)) {
+	if n.attemptHolePunchPolicy(targetPeerID, time.Until(deadline), force) {
 		return true
 	}
 	finalBudget := finalDirectDialBudget(targetInfo, time.Until(deadline))
