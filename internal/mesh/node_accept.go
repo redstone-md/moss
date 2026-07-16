@@ -457,6 +457,7 @@ func (n *Node) readPeer(peer *peerConn) {
 		if err != nil {
 			return
 		}
+		peer.inboundPackets.Add(1)
 		var env gossip.Envelope
 		if err := json.Unmarshal(packet, &env); err != nil {
 			n.scoring.PenalizeInvalid(peer.id)
