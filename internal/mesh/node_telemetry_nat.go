@@ -202,6 +202,13 @@ func (n *Node) reportRendezvous(found, reached int, started time.Time) {
 	fields["found"] = found
 	fields["reached"] = reached
 	fields["took_ms"] = time.Since(started).Milliseconds()
+	// The routing table's size is the difference between "nobody is on this
+	// channel" and "we had nobody to ask" — found=0 reads identically either
+	// way, and publishing needs the same table a lookup does, so an empty one
+	// means records are never stored either and the layer cannot bootstrap.
+	if n.overlayTable != nil {
+		fields["contacts"] = n.overlayTable.Len()
+	}
 	level := "info"
 	if found > 0 && reached == 0 {
 		level = "warn"

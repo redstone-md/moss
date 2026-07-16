@@ -73,6 +73,37 @@ func (n *Node) announceLocalSubscription(channel string) {
 	}
 }
 
+// introduceSelfTo tells a peer that just joined what we are, immediately.
+//
+// Capabilities are never taken from a plain peer-announce — deliberately, since
+// anyone could claim them — so a peer learns we are publicly reachable only from
+// a signed SupernodeAnnounce. refreshSupernodeStatus emits one on a status
+// CHANGE, and reannounceSupernodeStatus re-broadcasts periodically; a peer that
+// joins in between waits for the next tick to find out what it is attached to.
+//
+// The overlay makes that wait expensive: only a peer known to be publicly
+// reachable becomes a routing contact, so until this lands the joiner has an
+// empty table — nobody to look up through and nobody to publish to, and since
+// publishing needs the same table a lookup does, the layer cannot bootstrap at
+// all. Sending it on join costs one envelope and removes the wait.
+func (n *Node) introduceSelfTo(peer *peerConn) {
+	if peer == nil {
+		return
+	}
+	info := n.localKnownPeer()
+	if info.id == "" || info.addr == "" || !info.relayCapable {
+		return // nothing trustworthy to say yet
+	}
+	n.sendEnvelope(peer, n.signSupernodeEnvelope(gossip.Envelope{
+		Type:                   gossip.TypeSupernodeAnnounce,
+		AdvertisedPeerID:       info.id,
+		AdvertisedAddr:         info.addr,
+		AdvertisedNATType:      string(info.natType),
+		AdvertisedReachable:    info.publicReachable,
+		AdvertisedRelayCapable: true,
+	}))
+}
+
 func (n *Node) announceLocalSubscriptionsToPeer(peer *peerConn) {
 	if peer == nil || !n.canGossipWithPeer(peer.id) {
 		return
