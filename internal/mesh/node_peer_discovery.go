@@ -176,6 +176,10 @@ func (n *Node) dialKnownPeer(peerID, addr string) {
 		n.reportConnectAttempt(outcomeRelayed, reasonNone, started, false)
 	} else if _, err := n.OpenRelaySessionAny(peerID, n.config.HandshakeTimeout()); err == nil {
 		n.reportConnectAttempt(outcomeRelayed, reasonPunchTimeout, started, false)
+	} else if n.reachPeerViaOverlay(peerID) {
+		// Blind relay selection guesses which neighbour might be adjacent to the
+		// target; the overlay knows, because the peer publishes its attachments.
+		n.reportConnectAttempt(outcomeRelayed, reasonNone, started, true)
 	} else {
 		n.reportConnectAttempt(outcomeFailed, reasonNoRelayPeer, started, false)
 	}
