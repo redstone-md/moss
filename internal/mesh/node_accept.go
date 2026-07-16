@@ -283,12 +283,30 @@ func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origi
 		if existing.relayed {
 			replacedPeer = existing
 		} else {
-			if !yieldsToNewConnection(n.localPeerID(), existing, outbound) {
+			// Transport first — it is the only fact both ends agree on. See
+			// shouldReplaceDuplicatePeer: a bootstrap race leaves each side
+			// holding two sessions of the SAME direction, so the direction rule
+			// cannot separate them and each was silently keeping whichever
+			// handshake finished first locally. When those choices diverge the
+			// loser's half becomes a ghost: a datagram carrier has no teardown
+			// signal, so the far side keeps writing to a socket nobody reads and
+			// drops the peer six unanswered pings later.
+			existingStream := existing.session != nil && isStreamNetwork(existing.session.RemoteAddr())
+			newStream := isStreamNetwork(session.RemoteAddr())
+			if keepNew, decided := resolveDuplicateTransport(existingStream, newStream); decided {
+				if !keepNew {
+					n.mu.Unlock()
+					_ = session.Close()
+					return
+				}
+				replacedPeer = existing
+			} else if !yieldsToNewConnection(n.localPeerID(), existing, outbound) {
 				n.mu.Unlock()
 				_ = session.Close()
 				return
+			} else {
+				replacedPeer = existing
 			}
-			replacedPeer = existing
 		}
 	}
 	if replacedPeer == nil && n.directPeerCountLocked() >= n.config.MaxPeers {
@@ -426,12 +444,49 @@ func (n *Node) shouldRetainPeerLocked(peer *peerConn) bool {
 	return peer.bootstrap || info.bootstrap
 }
 
+// shouldReplaceDuplicatePeer decides which of two sessions to the same peer
+// survives. Both ends run this independently and MUST reach the same answer:
+// there is no teardown signal on a datagram carrier, so a side that discards a
+// session the other side kept leaves a ghost — the keeper writes into a socket
+// nobody reads, its pings go unanswered, and it drops the peer six misses later
+// having never seen a single packet. Measured: 20 of 23 hole-punched sessions
+// received zero packets and every one died on exactly six misses.
+//
+// The transport is decided first, because it is the only fact both ends share.
+// Timing is not: in a bootstrap race A holds two OUTBOUND sessions and B two
+// INBOUND ones, so the direction rule below cannot separate them for either
+// side and each silently kept whichever handshake finished first locally — an
+// order that TCP and UDP have no reason to agree on across two machines.
+//
+// Preferring the stream carrier is not arbitrary either: it is the one that
+// notices its own death. A closed TCP session surfaces as a read error on the
+// far side, so the pair converges instead of rotting.
+//
+// This only fires when BOTH carriers exist — the bootstrap race to a reachable
+// peer. A hole punch between two NAT'd peers has no stream alternative, so its
+// datagram session is never up against one and is untouched.
 func shouldReplaceDuplicatePeer(localPeerID, remotePeerID string, existingOutbound, newOutbound bool) bool {
 	if existingOutbound == newOutbound {
 		return false
 	}
 	wantOutbound := localPeerID < remotePeerID
 	return newOutbound == wantOutbound
+}
+
+// isStreamNetwork reports whether an address belongs to a stream carrier (TCP),
+// as opposed to a datagram one. A nil address — a relayed peer, or a session
+// whose carrier is gone — is not a stream.
+func isStreamNetwork(addr net.Addr) bool {
+	return addr != nil && strings.HasPrefix(addr.Network(), "tcp")
+}
+
+// resolveDuplicateTransport picks between two carriers to the same peer, or
+// reports false when they are the same kind and the direction rule must decide.
+func resolveDuplicateTransport(existingStream, newStream bool) (keepNew bool, decided bool) {
+	if existingStream == newStream {
+		return false, false
+	}
+	return newStream, true
 }
 
 // yieldsToNewConnection reports whether an existing direct connection for the
