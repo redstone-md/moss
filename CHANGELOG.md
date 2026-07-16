@@ -4,6 +4,62 @@ All notable changes to this project are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project
 uses semantic versioning.
 
+## [0.7.0] - 2026-07-16
+
+### Added
+- **Overlay: a Kademlia discovery layer, so sparse topics find each other.**
+  The shared substrate gave moss one network that can grow, but the layers above
+  it still assumed the small isolated mesh it replaced. Two of those assumptions
+  are now false: subscription state travels exactly one hop, and a starved topic
+  falls back to grafting whatever is connected. On a five-node network every
+  peer was a topic-mate, so both held; on a shared substrate the peers around
+  you are strangers who prune the graft, and the one node that shares your
+  channel is somewhere you have no link to. A two-player topic therefore never
+  formed a mesh at all — `Publish` returned `NO_PEERS` and the announcement went
+  nowhere, which is what made game lobbies invisible to each other.
+
+  A node now publishes, under the hash of each opaque room topic it subscribes
+  to, a record naming the core nodes it is attached to; a starved topic resolves
+  its mates through the same keyspace, dials one of their attachments, relays to
+  them and grafts.
+
+  - It is **discovery, not packet routing**. Every routing node is publicly
+    reachable by definition and a NAT'd node can always dial one outbound, so
+    once a lookup answers "B is attached to S" the path is A → S → B: two hops,
+    always. Chained forwarding buys nothing.
+  - Membership is **two-tier by physics**: a lookup cannot be delivered to a node
+    nobody can dial, so only reachable nodes hold buckets and answer queries.
+    NAT'd nodes are full clients of the overlay, never hops.
+  - **Sized for the target, not today**: with a handful of core nodes every
+    contact falls out of `Closest`, which is exactly a full mesh — the same code
+    serves six nodes and six million, with no second flag day.
+  - Keys derive from the **opaque room topic**, never the bare channel, so a core
+    node holding a record still cannot tell which room or game it belongs to.
+- **Per-attempt connectivity telemetry** — `nat_attempt` (how an attempt to reach
+  a peer ended, why it fell back, whether the overlay found the peer),
+  `topic_rendezvous` (what a lookup resolved vs. how much became reachable) and
+  `session_end` (how long a session held, and whether it died on missed pings —
+  sessions dropping at a flat interval is a NAT mapping timing out, and that
+  should be a query rather than a night of reading logs). Every event carries
+  `nat_type`, `mapped_port`, `ports_differed`, `observations` and `family`, and
+  **no address**: the diagnostic value of an observed endpoint is entirely in the
+  port's behaviour, and the IP would only make the dataset a map of who plays
+  what from where. `ports_differed` is withheld on a single observation — one
+  vantage point cannot tell symmetric from cone.
+- `Node.AxiomEnabled` and `axiom_shipping` in `MeshInfoJSON`, so "configured" and
+  "actually reporting" are distinguishable.
+
+### Fixed
+- **The FFI dropped the Axiom config, so no client has ever reported.** The sink
+  is enabled inside the public `moss.NewNode`, but the FFI builds a node straight
+  from `mesh.NewNodeWithIdentity`, and `mesh.ParseConfig` has no Axiom fields —
+  so `axiom_token` and friends were parsed into nothing and discarded silently.
+  Both desktop clients set that config and assume it works (gse says so in a
+  comment); neither ever shipped an event, while the Go-native spores reported
+  fine. The FFI now honours the same keys and enables the sink before the caller
+  can `Start`, so even a first-start bind failure — the Wine/Proton case the sink
+  exists for — is reported instead of dying with the node.
+
 ## [0.6.24] - 2026-07-17
 
 ### Fixed
