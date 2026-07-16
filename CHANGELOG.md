@@ -4,6 +4,83 @@ All notable changes to this project are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project
 uses semantic versioning.
 
+## [0.6.20] - 2026-07-16
+
+### Added
+- Public `Config.DHTEnabled` (`dht_enabled`) so consumers can turn DHT off where
+  it is unsafe, and a `MOSS_FORCE_RAW_UDP` env escape hatch to force the raw
+  blocking-socket UDP path on Windows. Both default to current behaviour.
+
+## [0.6.19] - 2026-07-15
+
+### Added
+- `SetMessageCallback` on the public `Node` — the Go API could set event and
+  relay callbacks but had no way to receive pub/sub messages (the FFI already
+  exposed it via `Moss_SetCallback`).
+
+## [0.6.18] - 2026-07-15
+
+### Added
+- Public Axiom config (`axiom_token`/`axiom_dataset`/`axiom_endpoint`/
+  `axiom_service`), wired before Start so the first bind failure is captured;
+  public `LogEvent`; a periodic `node_stats` event (peer/supernode/relay counts)
+  so a dashboard can chart network health, not just errors.
+
+## [0.6.16] - [0.6.17] - 2026-07-15
+
+### Added
+- Opt-in Axiom error/log sink behind the FFI (`Moss_EnableAxiom`,
+  `Moss_LogEvent`): a node ships nothing until a host enables it. moss forwards
+  its own errors (listen/tracker/handshake/relay), attaching an anonymous node
+  id and os/arch. One implementation in `moss.dll` serves every consumer.
+
+### Changed
+- Telemetry (the DP-noised, k-anonymous network layer) is now **on by default**;
+  opt out with `telemetry_enabled=false`.
+
+## [0.6.14] - [0.6.15] - 2026-07-15
+
+### Added
+- **Wine/Proton UDP fallback:** when the Go netpoller cannot bind a socket
+  (older Wine/Proton, where IOCP association fails), moss falls back to a raw
+  blocking Winsock socket; `ListenPair` binds UDP first and treats TCP as
+  best-effort, coming up UDP-only when TCP cannot bind. A failed `Start` now
+  returns a dedicated `MOSS_ERR_LISTEN_FAILED` and records the real OS error,
+  exposed via the new `Moss_LastError` export.
+- Explicit peer targets that bypass glare/dial-ranking, a `Moss_ConnectToPeer`
+  export, and neutral dial ranking (v0.6.15).
+
+## [0.6.13] - 2026-07-15
+
+### Fixed
+- **Relay-route leak:** a supernode's forwarding table was only pruned on peer
+  disconnect or explicit teardown, so relayed pairs that vanished left routes
+  behind forever (hundreds against a single live session). Route liveness is now
+  tied to the session — refreshed by traffic, reaped when idle past the TTL.
+
+## [0.6.12] - 2026-07-15
+
+### Fixed
+- **Connection glare between supernodes:** two publicly-dialable nodes each
+  dialed the other, producing duplicate sessions that oscillated ~1–2×/s under
+  latency. Dial initiation now follows the id ordering the dedup already uses —
+  only the lower-id node dials when both ends are public.
+
+## [0.6.11] - 2026-07-15
+
+### Added
+- `peer_details` in `MeshInfoJSON` (`{id, addr, relayed}` per connected peer), so
+  a caller can check whether one specific counterpart is present rather than
+  trusting a bare peer count (needed on the shared substrate).
+
+## [0.6.10] - 2026-07-15
+
+### Fixed
+- **Client flapping:** peer/connection maintenance (score decay, prune,
+  reconnect) was driven by the gossip heartbeat, so a fast heartbeat (e.g. a
+  chat client's 250 ms) aged peers ~4× too fast and continuously flapped healthy
+  connections. Maintenance now runs at ~1 s regardless of the heartbeat.
+
 ## [0.4.0] - 2026-06-30
 
 ### BREAKING
