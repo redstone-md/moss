@@ -301,6 +301,7 @@ func (n *Node) registerPeer(session *transport.Session, outbound bool) {
 	n.wg.Add(1)
 	go n.readPeer(peer)
 	n.sendKnownPeerSnapshot(peer)
+	n.introduceSelfTo(peer)
 	n.broadcastPeerAnnouncement(n.localKnownPeer(), peerID)
 	go n.refreshExternalAddress(time.Now().Add(n.config.HandshakeTimeout()))
 	n.mu.Lock()
