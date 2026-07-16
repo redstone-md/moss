@@ -4,8 +4,10 @@ package mesh
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"net"
+	"time"
 
 	"github.com/redstone-md/moss/internal/transport"
 
@@ -94,28 +96,112 @@ func (n *Node) handleVeilInbound(ctx context.Context, conn vtransport.Conn) {
 	n.registerPeer(session, false)
 }
 
+// startVeilDialers launches one persistent bootstrap goroutine per
+// configured Veil relay. Each holds a masked session to its relay open,
+// redialing with backoff whenever it drops, so a client behind DPI keeps a
+// mesh foothold even when its ordinary UDP/TCP paths are throttled. It runs
+// under n.mu held by Start(); it must not re-lock.
+func (n *Node) startVeilDialers(ctx context.Context) {
+	if !n.config.Veil.IsDialer() {
+		return
+	}
+	for _, relay := range n.config.Veil.Relays {
+		relay := relay
+		n.wg.Add(1)
+		go n.veilDialLoop(ctx, relay)
+	}
+}
+
+// veilDialLoop keeps a single Veil relay session alive. veilDial returns as
+// soon as the handshake completes (registerPeer hands the session to the
+// peer maintenance loops, which run it in the background), so after a
+// successful dial the loop watches the peer's presence and only redials once
+// it drops. A failed dial backs off, capped, so a down relay does not spin.
+func (n *Node) veilDialLoop(ctx context.Context, relay VeilRelay) {
+	defer n.wg.Done()
+	remoteStatic, err := hex.DecodeString(relay.PubKeyHex)
+	if err != nil || len(remoteStatic) != 32 {
+		n.enqueueEvent(EventTrackerFailure, map[string]string{
+			"error": fmt.Sprintf("veil relay %s: bad pubkey (want 32-byte hex): %v", relay.Addr, err),
+		})
+		return
+	}
+	const (
+		minBackoff = 2 * time.Second
+		maxBackoff = 30 * time.Second
+		watchEvery = 5 * time.Second
+	)
+	backoff := minBackoff
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		dialCtx, cancel := withTimeout(ctx, n.config.HandshakeTimeout())
+		peerID, err := n.veilDial(dialCtx, relay.Addr, relay.CoverSNI, remoteStatic)
+		cancel()
+		if err != nil {
+			n.enqueueEvent(EventTrackerFailure, map[string]string{
+				"error": fmt.Sprintf("veil dial %s: %v", relay.Addr, err),
+			})
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			if backoff < maxBackoff {
+				if backoff *= 2; backoff > maxBackoff {
+					backoff = maxBackoff
+				}
+			}
+			continue
+		}
+		backoff = minBackoff // a live session resets backoff
+		// Hold here while the relay session stays up; redial the moment it
+		// drops. The session may be superseded by a better (e.g. direct)
+		// connection to the same peer — that still keeps peerID present, so
+		// we correctly stay idle rather than re-dialing the masked leg.
+		for n.peerConnected(peerID) {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(watchEvery):
+			}
+		}
+	}
+}
+
+// peerConnected reports whether a peer with the given hex id currently holds
+// a session (direct or relayed). Used by the Veil dialer to decide when a
+// bootstrap relay needs re-dialing.
+func (n *Node) peerConnected(peerID string) bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	_, ok := n.peers[peerID]
+	return ok
+}
+
 // veilDial reaches a Veil-fronted relay at addr, tunnelling the Moss
 // client handshake inside a Chrome-shaped TLS stream aimed at coverSNI.
 // The auth secret is derived from the relay's static Noise key
 // (remoteStatic) — the same key Moss already carries in the relay's
 // descriptor — so no secret is shared out of band. Mirrors
 // connectPeerOnce (node_accept.go).
-func (n *Node) veilDial(ctx context.Context, addr, coverSNI string, remoteStatic []byte) error {
+func (n *Node) veilDial(ctx context.Context, addr, coverSNI string, remoteStatic []byte) (string, error) {
 	secret, err := vtransport.DeriveAuthSecret(remoteStatic)
 	if err != nil {
-		return err
+		return "", err
 	}
 	conn, err := vtransport.Dial(ctx, addr, vtransport.DialConfig{
 		Secret: secret,
 		SNI:    coverSNI,
 	})
 	if err != nil {
-		return err
+		return "", err
 	}
 	netConn, ok := conn.(net.Conn)
 	if !ok {
 		_ = conn.Close()
-		return fmt.Errorf("veil: dialed conn is not a net.Conn")
+		return "", fmt.Errorf("veil: dialed conn is not a net.Conn")
 	}
 	hsCtx, cancel := withTimeout(ctx, n.config.HandshakeTimeout())
 	defer cancel()
@@ -128,8 +214,10 @@ func (n *Node) veilDial(ctx context.Context, addr, coverSNI string, remoteStatic
 	})
 	if err != nil {
 		_ = conn.Close()
-		return err
+		return "", err
 	}
+	remoteID := session.RemoteID()
+	peerID := hex.EncodeToString(remoteID[:])
 	n.registerPeer(session, true)
-	return nil
+	return peerID, nil
 }
