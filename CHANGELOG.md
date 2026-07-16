@@ -4,6 +4,22 @@ All notable changes to this project are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project
 uses semantic versioning.
 
+## [0.6.22] - 2026-07-16
+
+### Fixed
+- **Symmetric-NAT peers flapped off every ~38s.** The bootstrap path races a
+  TCP and a UDP connection to a public supernode, and the duplicate-session
+  dedup in `registerPeer` picked the winner purely by direction and ping
+  health — **ignoring transport type**. So a UDP session would silently
+  replace the healthy TCP one; but a datagram session writes to a fixed remote
+  address whose return path is dead once a symmetric-NAT peer's mapping
+  differs, so the supernode's pings all missed and the peer was pruned after
+  the 30s retain grace (~38s PeerJoined→PeerLeft cycle, endlessly). Dedup now
+  prefers the reliable transport: a healthy TCP session is never displaced by
+  UDP, and a UDP session is upgraded to TCP when one arrives. A node behind
+  symmetric NAT (e.g. a container on Flux) now holds a stable link to public
+  supernodes over TCP, which is bidirectional through any NAT.
+
 ## [0.6.21] - 2026-07-16
 
 ### Added
