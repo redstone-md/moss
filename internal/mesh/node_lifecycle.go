@@ -99,6 +99,7 @@ func NewNodeWithIdentity(meshID string, psk []byte, cfg Config, identity *mcrypt
 		overlayTable:     overlay.NewTable(overlay.NodeID(identity.PublicKey()), 0),
 		directProbes:     make(map[string]time.Time),
 		peerDials:        make(map[string]time.Time),
+		peerDialFailures: make(map[string]int),
 		explicitTargets:  make(map[string]time.Time),
 		bootstrapDials:   make(map[string]time.Time),
 		lanBeaconBuckets: make(map[string]*lanBeaconRateBucket),
