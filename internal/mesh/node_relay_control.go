@@ -288,10 +288,18 @@ func (n *Node) closeRelaySession(session relayLocalSession) {
 	})
 }
 
+// promoteRelayPeers keeps trying to replace a relayed path with a direct one.
+//
+// It uses the upgrade policy deliberately: these peers are already reachable
+// through a relay, so nobody is waiting and a punch costs nothing but effort —
+// while success frees a volunteer's bandwidth and drops a hop. Routed through
+// the ordinary connect policy, the relay preference applied here too and a
+// symmetric pair was never retried once relayed: relay became the destination
+// rather than the fallback it is meant to be.
 func (n *Node) promoteRelayPeers() {
 	targets := n.relayPromotionTargets()
 	for _, peerID := range targets {
-		go n.tryDirectConnect(peerID, n.config.HandshakeTimeout())
+		go n.tryDirectUpgrade(peerID, n.config.HandshakeTimeout())
 	}
 }
 

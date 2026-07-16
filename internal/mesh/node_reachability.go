@@ -59,6 +59,9 @@ func (n *Node) requestSTUNBindingObservations(timeout time.Duration, want int) [
 // evidence proving it is not symmetric.
 func (n *Node) refreshNATClassification(timeout time.Duration) bool {
 	observations := n.requestSTUNBindingObservations(timeout, 2)
+	// Publish the evidence even when it is too thin to decide: a metric that
+	// silently reports the old path is worse than one that says "one vantage".
+	n.recordNATSample(observations)
 	if len(observations) < 2 {
 		return false
 	}
