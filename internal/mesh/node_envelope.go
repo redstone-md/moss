@@ -9,6 +9,14 @@ func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 		return
 	}
 	switch env.Type {
+	case gossip.TypeOverlayFindNode:
+		n.handleOverlayFindNode(peer, env)
+	case gossip.TypeOverlayFindValue:
+		n.handleOverlayFindValue(peer, env)
+	case gossip.TypeOverlayStore:
+		n.handleOverlayStore(peer, env)
+	case gossip.TypeOverlayNodes, gossip.TypeOverlayValues:
+		n.handleOverlayResponse(env)
 	case gossip.TypeGraft:
 		n.pubsub.SetPeerSubscription(peer.id, env.Channel, true)
 		if n.pubsub.IsLocalSubscriber(env.Channel) && n.eligibleForMeshCandidate(peer.id) {
