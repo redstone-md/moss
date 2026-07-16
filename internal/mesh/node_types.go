@@ -223,6 +223,10 @@ type meshInfo struct {
 	PublicKey             string       `json:"public_key"`
 	SupernodeReady        bool         `json:"supernode_ready"`
 	TelemetryEnabled      bool         `json:"telemetry_enabled"`
+	// AxiomShipping tells an operator whether this node is actually reporting.
+	// A host can set the sink config and still ship nothing (the FFI dropped it
+	// silently for the whole client fleet); this makes that visible.
+	AxiomShipping bool `json:"axiom_shipping"`
 }
 
 // peerDetail carries a connected peer's stable identity (noise-static public key

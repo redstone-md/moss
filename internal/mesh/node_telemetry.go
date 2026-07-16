@@ -15,6 +15,14 @@ import (
 // (peer/supernode/relay counts) so the dashboard can chart network health.
 const axiomStatsInterval = 60 * time.Second
 
+// AxiomEnabled reports whether the sink is actually on. Worth surfacing: a host
+// that sets the config but never reaches EnableAxiom ships nothing and says
+// nothing about it — precisely how both desktop clients stayed invisible while
+// looking configured.
+func (n *Node) AxiomEnabled() bool {
+	return n.axiom.Load() != nil
+}
+
 // EnableAxiom turns on the opt-in Axiom error/log sink for this node. token is
 // an ingest-only Axiom token, dataset the target dataset, endpoint the Axiom
 // base URL (empty → cloud default), and service a host-supplied identifier such

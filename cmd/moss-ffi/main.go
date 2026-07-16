@@ -477,6 +477,33 @@ func validatePublishPayloadPointer(data unsafe.Pointer, length uint32, maxLength
 	return mesh.MOSS_OK
 }
 
+// axiomConfig mirrors the Axiom keys of the public Go config. The Go API turns
+// the sink on inside moss.NewNode, but the FFI builds a node straight from
+// mesh, so it must honour the same keys itself — and did not. Every host that
+// set them (both desktop clients do, believing "moss ships nothing unless these
+// are set") therefore shipped nothing at all: mesh.ParseConfig carries no Axiom
+// fields, so the keys were dropped without a word and the entire client fleet
+// stayed invisible while the Go-native spores reported fine.
+type axiomConfig struct {
+	Token    string `json:"axiom_token"`
+	Dataset  string `json:"axiom_dataset"`
+	Endpoint string `json:"axiom_endpoint"`
+	Service  string `json:"axiom_service"`
+}
+
+// parseAxiomConfig reports the sink settings and whether they are usable at
+// all: shipping needs both a token and a dataset.
+func parseAxiomConfig(raw string) (axiomConfig, bool) {
+	var ax axiomConfig
+	if raw == "" {
+		return ax, false
+	}
+	if err := json.Unmarshal([]byte(raw), &ax); err != nil {
+		return ax, false
+	}
+	return ax, ax.Token != "" && ax.Dataset != ""
+}
+
 func initNode(meshID string, psk []byte, config string) int64 {
 	cfg, err := mesh.ParseConfig(config)
 	if err != nil {
@@ -489,6 +516,12 @@ func initNode(meshID string, psk []byte, config string) int64 {
 	node, err := mesh.NewNodeWithIdentity(meshID, psk, cfg, identity)
 	if err != nil {
 		return int64(mesh.MOSS_ERR_CONFIG_INVALID)
+	}
+	// Enable before the caller can Start, so a bind failure on the very first
+	// start — the Wine/Proton case this sink exists for — is reported instead of
+	// dying with the node.
+	if ax, ok := parseAxiomConfig(config); ok {
+		node.EnableAxiom(ax.Token, ax.Dataset, ax.Endpoint, ax.Service)
 	}
 	handle := handleCounter.Add(1)
 	registryMu.Lock()

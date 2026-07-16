@@ -398,6 +398,7 @@ func (n *Node) MeshInfoJSON() string {
 		PublicKey:        hex.EncodeToString(pubKey[:]),
 		SupernodeReady:   n.supernodeReady(profile),
 		TelemetryEnabled: n.statAgg != nil,
+		AxiomShipping:    n.AxiomEnabled(),
 	}
 	n.mu.RLock()
 	info.PeerCount = len(n.peers)
