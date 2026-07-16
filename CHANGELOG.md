@@ -4,6 +4,21 @@ All notable changes to this project are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project
 uses semantic versioning.
 
+## [0.6.23] - 2026-07-16
+
+### Fixed
+- **Symmetric-NAT flap, the real fix — bootstrap no longer races UDP against
+  TCP to a public seed.** v0.6.22 made a node *keep* its TCP session, but the
+  bootstrap still *opened* a parallel UDP session to every public supernode,
+  and the supernode (dialed side) independently latched onto that UDP session —
+  whose return path a symmetric-NAT dialer strands — so its pings missed and it
+  pruned the peer every ~38s regardless of what the dialer preferred. Bootstrap
+  now connects **TCP-first and only falls back to UDP when TCP genuinely fails**
+  (e.g. TCP blocked on the path), instead of racing both. A symmetric-NAT node
+  (e.g. a Flux container) forms a single stable TCP session to each supernode —
+  the fix works with only the dialer upgraded; supernodes need no change. The
+  v0.6.22 transport-preference dedup stays as defense in depth.
+
 ## [0.6.22] - 2026-07-16
 
 ### Fixed
