@@ -44,7 +44,27 @@ func (n *Node) removePeer(peerID string, session *transport.Session) {
 	delete(n.suppress, peerID)
 	delete(n.relayBuckets, peerID)
 	delete(n.directProbes, peerID)
-	delete(n.peerDials, peerID)
+	// A session that died on missed pings is a FAILED path, whatever the dial
+	// thought.
+	//
+	// Clearing the cooldown here means an instant redial, which is right for a
+	// peer that simply went away. It is wrong for one that answers the dial and
+	// then never speaks: the connect succeeds, so the backoff records success and
+	// resets, the session dies at six misses ~37s later, and it redials at once —
+	// forever, with no backoff ever engaging. That loop is what players feel as
+	// entering a lobby on the fourth or fifth try.
+	//
+	// A peer drowning in its own flood cannot be fixed from here, and there is no
+	// need to keep proving it every 37s: charge it as a failure so the interval
+	// grows, and let a peer that works be preferred instead. Any healthy session
+	// clears it again.
+	if endedMisses >= peerDisconnectMissLimit {
+		n.peerDialFailures[peerID]++
+		n.peerDials[peerID] = time.Now()
+	} else {
+		delete(n.peerDials, peerID)
+		delete(n.peerDialFailures, peerID)
+	}
 	removedRelayed := make([]string, 0)
 	for sessionID, relaySession := range n.relayLocals {
 		if relaySession.viaPeerID == peerID || relaySession.remotePeerID == peerID {
