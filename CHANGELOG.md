@@ -4,6 +4,66 @@ All notable changes to this project are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project
 uses semantic versioning.
 
+## [0.8.8] - 2026-07-17
+
+### Fixed
+- **Nodes drowned each other in announcements, and the lost packets were
+  pings.** A relay with seven peers took 21,808 supernode announcements in two
+  minutes — against 29 pings — while discarding 142,125 packets in a single
+  minute, all on the stream it reads itself, at 2% capacity. When a node
+  disagreed with an arriving announcement it forwarded its OWN view with the
+  signature stripped; the signature covers the sender's claims, not ours, so the
+  next hop could not verify it, kept its own value, and corrected us straight
+  back. Two nodes disagreed forever and every correction went to every peer.
+  `readPeer` dispatches synchronously, so the flood stalled the read and the
+  256-packet buffer silently dropped everything behind it. That is why sessions
+  died at six missed pings with the connection healthy: both ends of one such
+  link each reported receiving two packets while both were writing. An
+  announcement we cannot vouch for is no longer re-told; a signed one is still
+  relayed verbatim. Links where both ends run this build now show ZERO six-miss
+  deaths and a median session life of 457s, against 37s and 154 deaths in 221
+  sessions to nodes without it.
+- **The overlay never asked the nodes holding the record.** Every rendezvous the
+  fleet ran — 205 of 205 — returned `found=0` while the record sat on a core node
+  the whole time. The batch took the alpha nearest contacts without regard to
+  sessions (the overlay speaks only over established ones), so unreachable
+  contacts consumed every slot; the round then gave up as soon as it learned
+  nothing new, which is not Kademlia's termination rule; and alpha was queried
+  sequentially, giving the measured 12s p95 and 20s worst case.
+- **Failing dials were never spaced out.** `peerDials` was an in-flight marker
+  wearing a cooldown's name — deleted the instant an attempt returned — so an
+  unreachable peer was redialled every tick at a full HandshakeTimeout: 723
+  attempts x ~9.8s, 81% of every connect attempt made, against 165 that
+  succeeded.
+- Config accessors took a value receiver, copying the whole struct and so reading
+  every field in it — `AnnounceInterval()` was landing on `MaxPeers` and racing
+  anything that touched it.
+- `Session.RemoteAddr()` is nil-safe: reading through it took the node down on an
+  ordinary disconnect.
+
+### Added
+- `stream_drops` / `stream_drops_default` / `stream_drops_other`: packets thrown
+  away for want of buffer space. An overflow hook was already here to notice this
+  and nothing ever installed it, so these drops had never once been counted —
+  which is why a flood could hide behind "the peer stopped answering".
+- `in_<envelope_type>` counters: a flood is only fixable once you know which
+  envelope is making it.
+- `peer_capacity_pct` / `relay_capacity_pct` with their denominators: 8 peers is
+  half-idle at MaxPeers=16 and wedged at MaxPeers=8, and only the ratio says
+  which. A node at 90% warns.
+- `session_end` names the far end, so both halves of one link can be joined —
+  "zero packets arrived" means both "they never sent" and "their packets never
+  landed", and one node cannot tell those apart.
+- `overlay_publish` reports how many nodes accepted a record: a lookup cannot
+  distinguish "nobody is in this room" from "nothing was ever stored".
+
+### Reverted
+- The session goodbye shipped in 0.8.3 tore down live links: a test that ran 5/5
+  at a steady 16.17s went 0.2s / 7.3s / hang with it. It was also aimed at the
+  wrong target — nothing was closing those sessions, their packets were being
+  thrown away. A datagram carrier still has no teardown signal; that remains
+  worth fixing, but not before the flood was.
+
 ## [0.7.1] - 2026-07-16
 
 ### Fixed
