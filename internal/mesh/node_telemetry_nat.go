@@ -216,6 +216,32 @@ func (n *Node) reportRendezvous(found, reached int, started time.Time) {
 	n.LogEvent(level, "topic_rendezvous", "overlay topic lookup", fields)
 }
 
+// reportOverlayPublish records whether our records actually landed anywhere.
+//
+// A lookup that finds nothing is indistinguishable from a channel nobody is on,
+// and both read as found=0 — so a publish silently storing at zero nodes stayed
+// invisible while it made every rendezvous on the network fail. The count of
+// nodes that accepted a STORE is the difference between "the layer works and the
+// room is empty" and "the layer has never once worked".
+func (n *Node) reportOverlayPublish(stored, topics int, started time.Time) {
+	if n.axiom.Load() == nil {
+		return
+	}
+	fields := map[string]any{
+		"stored":  stored,
+		"topics":  topics,
+		"took_ms": time.Since(started).Milliseconds(),
+	}
+	if n.overlayTable != nil {
+		fields["contacts"] = n.overlayTable.Len()
+	}
+	level := "info"
+	if stored == 0 {
+		level = "warn"
+	}
+	n.LogEvent(level, "overlay_publish", "overlay record publish", fields)
+}
+
 // reportSessionLifetime records how long a direct session to a peer survived.
 // A mapping that dies on a clock — moss watched sessions drop at a flat ~38s —
 // is a NAT timeout, not bad luck, and this is what makes that visible instead
