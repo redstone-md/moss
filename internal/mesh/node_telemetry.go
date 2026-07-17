@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/redstone-md/moss/internal/transport"
@@ -106,6 +107,7 @@ func (n *Node) emitNodeStats() {
 		}
 	}
 	n.addCapacityFields(fields, info)
+	n.addInboundTypeFields(fields)
 	level := "info"
 	if pct, ok := fields["peer_capacity_pct"].(int); ok && pct >= capacitySaturatedPct {
 		level = "warn"
@@ -130,6 +132,25 @@ const capacitySaturatedPct = 90
 // fleet the ratio is what shows saturation and where the bottleneck actually is —
 // and it needs no new plumbing, since both the usage and the ceilings are already
 // here.
+// countInbound tallies one arriving envelope by type.
+func (n *Node) countInbound(envType string) {
+	if envType == "" {
+		envType = "__empty__"
+	}
+	counter, _ := n.inboundByType.LoadOrStore(envType, new(atomic.Uint64))
+	counter.(*atomic.Uint64).Add(1)
+}
+
+// addInboundTypeFields names what is arriving. A flood is only fixable once you
+// know which envelope is doing the flooding; without this the drop counters say
+// a storm is happening and nothing about what it is made of.
+func (n *Node) addInboundTypeFields(fields map[string]any) {
+	n.inboundByType.Range(func(key, value any) bool {
+		fields["in_"+key.(string)] = value.(*atomic.Uint64).Load()
+		return true
+	})
+}
+
 func (n *Node) addCapacityFields(fields, info map[string]any) {
 	// Packets thrown away because a reader fell behind. readPeer dispatches each
 	// envelope synchronously, so anything slow in handleEnvelope stops the session

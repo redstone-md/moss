@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redstone-md/moss/internal/gossip"
 	"github.com/redstone-md/moss/internal/overlay"
 )
 
@@ -85,8 +86,18 @@ func TestLookupReachesPastUnreachableNearestContacts(t *testing.T) {
 		b.overlayTable.Add(decoy)
 	}
 
+	// STORE is one-way and unacknowledged, so A's publish returning says only
+	// that it was SENT — the core may not have processed it yet. Looking up
+	// immediately raced it, and the test failed one run in four: my own proof was
+	// part luck. Retry the way anything real does.
 	started := time.Now()
-	providers, _ := b.overlayLookup(ctx, key, true)
+	var providers []gossip.OverlayProvider
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
+		if providers, _ = b.overlayLookup(ctx, key, true); len(providers) > 0 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 	elapsed := time.Since(started)
 
 	if len(providers) == 0 {

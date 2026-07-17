@@ -107,6 +107,13 @@ type Node struct {
 	directProbes     map[string]time.Time
 	peerDials        map[string]time.Time
 	peerDialFailures map[string]int
+
+	// inboundByType counts arriving envelopes per type. The relays discard
+	// packets by the hundred thousand a minute at 2% capacity, all on the stream
+	// they read themselves — so something is flooding, and the totals cannot say
+	// what. Naming the type is the difference between fixing the flood and
+	// widening the buffer in front of it.
+	inboundByType    sync.Map
 	explicitTargets  map[string]time.Time
 	bootstrapDials   map[string]time.Time
 	lanBeaconBuckets map[string]*lanBeaconRateBucket

@@ -250,13 +250,13 @@ func (n *Node) connectPeerOnce(ctx context.Context, addr string, remoteStatic []
 
 // Session origins, so a churning path can be named rather than guessed at.
 const (
-	originInboundTCP    = "inbound_tcp"
-	originInboundUDP    = "inbound_udp"
-	originDialTCP       = "dial_tcp"
-	originHolePunchUDP  = "holepunch_udp"
-	originVeilInbound   = "veil_inbound"
-	originVeilDial      = "veil_dial"
-	originWebRTC        = "webrtc"
+	originInboundTCP   = "inbound_tcp"
+	originInboundUDP   = "inbound_udp"
+	originDialTCP      = "dial_tcp"
+	originHolePunchUDP = "holepunch_udp"
+	originVeilInbound  = "veil_inbound"
+	originVeilDial     = "veil_dial"
+	originWebRTC       = "webrtc"
 )
 
 func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origin string) {
@@ -296,13 +296,13 @@ func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origi
 			if keepNew, decided := resolveDuplicateTransport(existingStream, newStream); decided {
 				if !keepNew {
 					n.mu.Unlock()
-					farewellAndClose(session)
+					_ = session.Close()
 					return
 				}
 				replacedPeer = existing
 			} else if !yieldsToNewConnection(n.localPeerID(), existing, outbound) {
 				n.mu.Unlock()
-				farewellAndClose(session)
+				_ = session.Close()
 				return
 			} else {
 				replacedPeer = existing
@@ -315,7 +315,7 @@ func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origi
 		if overflowPeer != nil {
 			overflowPeer.closeSession()
 		}
-		farewellAndClose(session)
+		_ = session.Close()
 		return
 	}
 	bootstrapSeed := !n.trackerSeeds[addr].IsZero()
@@ -515,9 +515,11 @@ func (n *Node) readPeer(peer *peerConn) {
 		peer.inboundPackets.Add(1)
 		var env gossip.Envelope
 		if err := json.Unmarshal(packet, &env); err != nil {
+			n.countInbound("__invalid__")
 			n.scoring.PenalizeInvalid(peer.id)
 			return
 		}
+		n.countInbound(string(env.Type))
 		n.handleEnvelope(peer, env)
 	}
 }
