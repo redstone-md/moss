@@ -103,7 +103,73 @@ func (n *Node) emitNodeStats() {
 			fields[k] = v
 		}
 	}
-	sink.Log(telemetry.Event{Time: time.Now(), Level: "info", Kind: "node_stats", Fields: fields})
+	n.addCapacityFields(fields, info)
+	level := "info"
+	if pct, ok := fields["peer_capacity_pct"].(int); ok && pct >= capacitySaturatedPct {
+		level = "warn"
+	}
+	if pct, ok := fields["relay_capacity_pct"].(int); ok && pct >= capacitySaturatedPct {
+		level = "warn"
+	}
+	sink.Log(telemetry.Event{Time: time.Now(), Level: level, Kind: "node_stats", Fields: fields})
+}
+
+// capacitySaturatedPct is where a node stops having room to accept work. A node
+// at its peer ceiling evicts an existing peer for every new one it takes, so the
+// mesh around it churns instead of growing — worth seeing as a warning rather
+// than reading off a chart afterwards.
+const capacitySaturatedPct = 90
+
+// addCapacityFields reports how full this node is, as a fraction of its own
+// ceilings.
+//
+// Counts alone cannot answer whether the network has room: direct_peer_count=8
+// is half-idle at MaxPeers=16 and wedged at MaxPeers=8. Rolled up across the
+// fleet the ratio is what shows saturation and where the bottleneck actually is —
+// and it needs no new plumbing, since both the usage and the ceilings are already
+// here.
+func (n *Node) addCapacityFields(fields, info map[string]any) {
+	if maxPeers := n.config.MaxPeers; maxPeers > 0 {
+		fields["max_peers"] = maxPeers
+		if direct, ok := numericField(info, "direct_peer_count"); ok {
+			fields["peer_capacity_pct"] = percentOf(direct, float64(maxPeers))
+		}
+	}
+	if capacity := n.relaySessions.Capacity(); capacity > 0 {
+		fields["max_relay_sessions"] = capacity
+		if used, ok := numericField(info, "relay_session_count"); ok {
+			fields["relay_capacity_pct"] = percentOf(used, float64(capacity))
+		}
+	}
+}
+
+// percentOf clamps to 100: a node may momentarily hold more than its ceiling
+// while an eviction is in flight, and "112% full" reads as a bug in the metric
+// rather than the truth it is telling.
+func percentOf(used, capacity float64) int {
+	if capacity <= 0 {
+		return 0
+	}
+	pct := int(used / capacity * 100)
+	if pct > 100 {
+		return 100
+	}
+	if pct < 0 {
+		return 0
+	}
+	return pct
+}
+
+// numericField reads a number out of the decoded MeshInfoJSON, which comes back
+// through encoding/json and so is always float64.
+func numericField(info map[string]any, key string) (float64, bool) {
+	switch v := info[key].(type) {
+	case float64:
+		return v, true
+	case int:
+		return float64(v), true
+	}
+	return 0, false
 }
 
 // LogEvent ships a structured event through the Axiom sink when enabled; a no-op
