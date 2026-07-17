@@ -46,6 +46,18 @@ type SessionManager struct {
 	sessions    map[string]time.Time
 }
 
+// Capacity is the most relay sessions this node will carry at once. Reporting
+// usage without it is meaningless: 40 sessions is idle on one node and wedged on
+// another, and only the ratio says which.
+func (m *SessionManager) Capacity() int {
+	if m == nil {
+		return 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.maxSessions
+}
+
 func NewSessionManager(maxSessions int, ttl time.Duration) *SessionManager {
 	return &SessionManager{
 		maxSessions: maxSessions,
