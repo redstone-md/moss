@@ -213,6 +213,85 @@ Tore down live links. Use v0.8.6 or later.
   at ~38s had no duplicate to be judged against. The cause was found in v0.8.8:
   their packets were being silently discarded.
 
+## [0.7.9] - 2026-07-16
+
+### Added
+- **Sessions count what actually arrives.** A UDP write succeeds locally whether
+  or not anyone receives it, so "we sent six pings and got nothing back" proved
+  nothing about which direction was broken. `inbound_packets` on `session_end`
+  distinguishes a route that never carried anything from one whose replies are
+  lost — and it is what later showed both ends of a link each receiving two
+  packets while both were writing.
+
+## [0.7.8] - 2026-07-16
+
+### Fixed
+- **The node redialled peers it already held.** Clients were opening ~1.7 sessions
+  a second with ~95% dying instantly as duplicates the dedup closed on arrival.
+  Players felt that storm of handshakes as multi-second stalls mid-game. The redial
+  guard is now identity-first — if we hold a live session with this peer, do not
+  dial it — while still sparing relayed peers, which must be allowed to upgrade to
+  a direct path.
+
+## [0.7.7] - 2026-07-16
+
+### Fixed
+- **The overlay was in the hot path, and it was the lag.** A Kademlia lookup was
+  running inside `dialKnownPeer`, which fires per known peer on a cooldown measured
+  in seconds — so its cost (up to alpha x the query timeout, ~12s) was paid again
+  for every peer in the set. That is the stall players measured at ~12 seconds.
+  Rendezvous belongs on the topic path, bounded by a per-topic cooldown, where
+  nothing is waiting on it.
+
+## [0.7.6] - 2026-07-16
+
+### Added
+- **Every session names the path that opened it** (`origin`: inbound TCP, dial,
+  hole punch, Veil, WebRTC...). A session dying at zero seconds is a duplicate the
+  dedup closed on arrival; when 95% of them do that, the path producing them is
+  the one to fix, and naming it beats guessing.
+
+### Fixed
+- The overlay stopped draining its own routing table: a contact was evicted on its
+  first timed-out query, so lookups queried three contacts and then reported
+  `contacts=0`, having emptied the very table publishing also depends on. One
+  timeout is not death.
+
+## [0.7.5] - 2026-07-16
+
+### Fixed
+- **The overlay could not bootstrap.** A node now introduces itself with its signed
+  SupernodeAnnounce on joining, so peers learn its capabilities from something they
+  can verify — capabilities are never trusted from a plain peer announcement, so
+  without this a fresh node was invisible as a core.
+
+## [0.7.4] - 2026-07-16
+
+### Fixed
+- **A relay is a fallback, not a terminus.** A relayed session was being treated as
+  the destination rather than as a stopgap, so a peer reachable directly stayed on
+  the relay forever. moss must always try to work directly and fall back to a relay
+  only in the last resort; connect and upgrade are now separate policies.
+
+## [0.7.3] - 2026-07-16
+
+### Fixed
+- **Discovery no longer runs on the node's central mutex.** The overlay's routing
+  table guards itself, so taking the node lock for a lookup put discovery traffic
+  in the way of everything else the node does.
+
+## [0.7.2] - 2026-07-16
+
+### Fixed
+- **Early NAT classification stole a public node's road to reachable.** With two
+  vantage points the profiler finally woke up — and immediately upgraded Unknown to
+  port_restricted_cone, which is poison this early: a public node starts Unknown and
+  only reaches public once an inbound probe confirms it, by a path that fires solely
+  from Unknown. Deployed to the fleet it turned every box into port_restricted_cone
+  with `supernode_ready=false` and stopped the relays relaying; rolled back in ~2
+  minutes. Only a symmetric verdict is adopted now — the one that needed two samples
+  in the first place.
+
 ## [0.7.1] - 2026-07-16
 
 ### Fixed
@@ -332,6 +411,23 @@ Tore down live links. Use v0.8.6 or later.
   cost connectivity (the affected node held 4-7 direct peers throughout), and
   traded real P2P for it. Bootstrap races TCP and UDP again, and duplicate-session
   dedup is back to the direction rule.
+
+## [0.6.23] - 2026-07-16
+
+### Fixed
+- Bootstrap goes TCP-first to public seeds instead of racing UDP against it.
+
+  Both of these were aimed at a symmetric-NAT flap and **both made things worse**:
+  killing the UDP bootstrap session took `ObserveContext` down with it — it needs
+  an established UDP session — so a node got no observations at all, could not
+  learn its own mapping, and could not hole-punch. Players saw each other's
+  lobbies disappear. Reverted in v0.6.24.
+
+## [0.6.22] - 2026-07-16
+
+### Fixed
+- Duplicate-session dedup prefers the more reliable transport. See v0.6.23: this
+  is the pair that broke hole-punching and was reverted in v0.6.24.
 
 ## [0.6.21] - 2026-07-16
 
