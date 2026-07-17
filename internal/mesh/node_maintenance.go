@@ -2,6 +2,7 @@ package mesh
 
 import (
 	"context"
+	"encoding/json"
 	"sync/atomic"
 	"time"
 
@@ -237,13 +238,38 @@ func (n *Node) pruneHighLatencyPeers() {
 	}
 }
 
-// closeSession closes the peer's transport session if it has one. A relayed
-// peer reaches us through a supernode and has NO direct session (session is
-// nil), so calling Close on it would panic on a nil receiver — this guards it.
+// closeSession closes the peer's transport session if it has one, telling the
+// far side first. A relayed peer reaches us through a supernode and has NO
+// direct session (session is nil), so calling Close on it would panic on a nil
+// receiver — this guards it.
 func (p *peerConn) closeSession() {
 	if p != nil && p.session != nil {
+		farewell(p.session)
 		_ = p.session.Close()
 	}
+}
+
+// farewell tells the far side this session is over. Best-effort by nature: the
+// link may already be gone, which is precisely when the write fails and there is
+// nothing to do about it. It costs one datagram and saves the peer 37 seconds of
+// talking to a socket nobody reads.
+func farewell(session *transport.Session) {
+	if session == nil {
+		return
+	}
+	payload, err := json.Marshal(gossip.Envelope{Type: gossip.TypeGoodbye})
+	if err != nil {
+		return
+	}
+	_ = session.WritePacket(payload)
+}
+
+// farewellAndClose is farewell for a session we hold no peerConn for — the
+// duplicate the dedup rejects on arrival. The far side may well have registered
+// it, and without this it would keep writing into it until the pings run out.
+func farewellAndClose(session *transport.Session) {
+	farewell(session)
+	_ = session.Close()
 }
 
 func (n *Node) maintenanceLoop(ctx context.Context) {
