@@ -11,6 +11,20 @@ later. Nothing is deleted: the tags stay published because builds that already
 resolved them must keep resolving them.
 
 
+## [0.8.11] - 2026-07-17
+
+No code changes: this release exists to carry the retractions, which only take
+effect once published in a version above the ones they retract.
+
+### Changed
+- **v0.8.3, v0.8.4 and v0.8.5 are retracted** in go.mod, so version selection
+  skips them. The tags stay published — deleting them would break every build
+  that already resolved them, and the module proxy keeps them regardless.
+- The changelog now has an entry per released version, including 0.8.0 which had
+  none, and says which releases were wrong and why. Ten releases went out in one
+  night and three were not fit to use; a changelog that records only the fixes
+  reads as though the line went smoothly.
+
 ## [0.8.10] - 2026-07-17
 
 ### Fixed
