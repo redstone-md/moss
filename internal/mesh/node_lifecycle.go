@@ -100,6 +100,7 @@ func NewNodeWithIdentity(meshID string, psk []byte, cfg Config, identity *mcrypt
 		directProbes:     make(map[string]time.Time),
 		peerDials:        make(map[string]time.Time),
 		peerDialFailures: make(map[string]int),
+		announceForwards: make(map[string]time.Time),
 		explicitTargets:  make(map[string]time.Time),
 		bootstrapDials:   make(map[string]time.Time),
 		lanBeaconBuckets: make(map[string]*lanBeaconRateBucket),

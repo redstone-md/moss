@@ -223,6 +223,42 @@ func sameHostIP(a, b string) bool {
 	return ha == hb
 }
 
+// announceForwardCooldown bounds how often one peer's state may be re-flooded.
+const announceForwardCooldown = 10 * time.Second
+
+// shouldForwardAnnounce caps re-flooding at one message per advertised peer per
+// cooldown, and reports whether this one may go.
+//
+// The meaningfulChange gate above is state-based: it forwards when the arriving
+// announcement disagrees with what we hold. That assumes the disagreement gets
+// settled, and it does not. A forwarding node substitutes its OWN view of the
+// peer's capabilities and strips the signature whenever it differs, so the next
+// hop cannot verify it, keeps its own value instead, and disagrees straight
+// back. Two nodes then correct each other forever, each correction flooding
+// every peer they have.
+//
+// That is not theoretical. A relay with seven peers took 21,808 supernode
+// announcements in two minutes — against 29 pings — and threw away 142,125
+// packets in one of them, all on the stream it reads itself. The pings lost in
+// that flood are why healthy sessions die at six misses.
+//
+// The cure for the disagreement is to fix the trust rules so a forward stays
+// verifiable, which is not a 5am change. This bounds the blast radius instead:
+// even a permanent oscillation now costs one message per peer per cooldown.
+func (n *Node) shouldForwardAnnounce(advertisedPeerID string) bool {
+	if advertisedPeerID == "" {
+		return false
+	}
+	now := time.Now()
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if last, ok := n.announceForwards[advertisedPeerID]; ok && now.Sub(last) < announceForwardCooldown {
+		return false
+	}
+	n.announceForwards[advertisedPeerID] = now
+	return true
+}
+
 func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forwardType gossip.EnvelopeType, verifiedEnvelope bool) {
 	if env.AdvertisedPeerID == "" || env.AdvertisedAddr == "" || env.AdvertisedPeerID == n.localPeerID() {
 		return
@@ -322,7 +358,7 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 		current.relayCapable != relayCapable ||
 		!equalBytes(current.noiseStatic, noiseStatic) ||
 		!sameHostIP(current.addr, addr)
-	if changed && meaningfulChange {
+	if changed && meaningfulChange && n.shouldForwardAnnounce(env.AdvertisedPeerID) {
 		advertisedSignature := append([]byte(nil), env.AdvertisedSignature...)
 		if forwardType != gossip.TypePeerAnnounce && (nat.Type(env.AdvertisedNATType) != natType || env.AdvertisedReachable != publicReachable || env.AdvertisedRelayCapable != relayCapable) {
 			advertisedSignature = nil

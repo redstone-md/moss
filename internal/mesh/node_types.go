@@ -108,6 +108,10 @@ type Node struct {
 	peerDials        map[string]time.Time
 	peerDialFailures map[string]int
 
+	// announceForwards throttles re-flooding per advertised peer. See
+	// shouldForwardAnnounce.
+	announceForwards map[string]time.Time
+
 	// inboundByType counts arriving envelopes per type. The relays discard
 	// packets by the hundred thousand a minute at 2% capacity, all on the stream
 	// they read themselves — so something is flooding, and the totals cannot say
