@@ -13,6 +13,7 @@ import (
 
 	"github.com/redstone-md/moss/internal/bootstrap"
 	"github.com/redstone-md/moss/internal/gossip"
+	"github.com/redstone-md/moss/internal/nat"
 	"github.com/redstone-md/moss/internal/transport"
 )
 
@@ -319,7 +320,11 @@ func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origi
 		return
 	}
 	bootstrapSeed := !n.trackerSeeds[addr].IsZero()
-	peer := &peerConn{id: peerID, addr: addr, session: session, origin: origin, outbound: outbound, bootstrap: bootstrapSeed, connectedAt: time.Now()}
+	peer := &peerConn{
+		id: peerID, addr: addr, session: session, origin: origin,
+		outbound: outbound, bootstrap: bootstrapSeed, connectedAt: time.Now(),
+		announceBudget: nat.NewTokenBucket(announceBurst, announceRatePerSecond),
+	}
 	current := n.knownPeers[peerID]
 	knownAddr := addr
 	if !outbound && strings.HasPrefix(network, "tcp") {

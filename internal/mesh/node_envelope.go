@@ -4,8 +4,48 @@ import (
 	"github.com/redstone-md/moss/internal/gossip"
 )
 
+// A peer may only cost us so much announcement traffic.
+//
+// announceRatePerSecond is far above anything a correct peer needs: a node
+// re-announces itself about every 10s and forwards a peer's state at most once
+// per 10s, so even a large mesh stays orders of magnitude below this. It is a
+// ceiling on damage, not a schedule.
+const (
+	announceRatePerSecond = 20
+	announceBurst         = 60
+)
+
+// isAnnounceType reports whether an envelope is announcement traffic — the kind
+// that is redundant by design, so discarding a surplus one costs nothing.
+func isAnnounceType(t gossip.EnvelopeType) bool {
+	switch t {
+	case gossip.TypePeerAnnounce, gossip.TypeSupernodeAnnounce, gossip.TypeSupernodeRevoke:
+		return true
+	}
+	return false
+}
+
 func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 	if peer != nil && n.isPeerGraylisted(peer.id) {
+		return
+	}
+	// Charge announcements against the peer's budget BEFORE doing any work on
+	// them, and drop the surplus.
+	//
+	// Handling one costs an Ed25519 verification and the node's central lock.
+	// readPeer dispatches synchronously, so at ~900 announcements a second — what
+	// the fleet actually sent — the read loop cannot keep up, the 256-packet
+	// stream buffer fills, and every packet behind it is discarded without a
+	// trace. The pings among them are why sessions die at six misses with a
+	// healthy connection.
+	//
+	// Not re-telling unvouched announcements stops US from feeding that flood.
+	// This is the other half: a node must survive a peer that floods it whatever
+	// the reason — an old build, a broken client, or malice — rather than depend
+	// on every peer being well-behaved. An announcement is redundant by design, so
+	// dropping a surplus one costs nothing; being unable to read is what costs.
+	if peer != nil && isAnnounceType(env.Type) && peer.announceBudget != nil && !peer.announceBudget.Allow(1) {
+		n.countInbound("__announce_throttled__")
 		return
 	}
 	switch env.Type {
