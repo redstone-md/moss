@@ -361,7 +361,22 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 	if changed && meaningfulChange && n.shouldForwardAnnounce(env.AdvertisedPeerID) {
 		advertisedSignature := append([]byte(nil), env.AdvertisedSignature...)
 		if forwardType != gossip.TypePeerAnnounce && (nat.Type(env.AdvertisedNATType) != natType || env.AdvertisedReachable != publicReachable || env.AdvertisedRelayCapable != relayCapable) {
-			advertisedSignature = nil
+			// We disagree with this announcement and cannot vouch for our own
+			// version of it: the signature covers the sender's claims, not ours.
+			//
+			// This used to forward our view with the signature stripped, and that
+			// is the flood. The next hop cannot verify an unsigned claim, so it
+			// keeps its own value and corrects us straight back — two nodes
+			// disagreeing forever, every correction going to every peer. One relay
+			// took 21,808 of these in two minutes against 29 pings and threw away
+			// 142,125 packets, which is why sessions with healthy connections die
+			// at six missed pings.
+			//
+			// A signed announcement is self-authenticating and gets relayed
+			// verbatim (our values equal the envelope's whenever we trust it, so
+			// the branch above is not taken). One we do not trust is not ours to
+			// re-tell.
+			return
 		}
 		excludePeerID := ""
 		if peer != nil {
