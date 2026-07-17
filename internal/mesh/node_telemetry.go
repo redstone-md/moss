@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/redstone-md/moss/internal/transport"
+
 	"github.com/redstone-md/moss/internal/telemetry"
 )
 
@@ -129,6 +131,13 @@ const capacitySaturatedPct = 90
 // and it needs no new plumbing, since both the usage and the ceilings are already
 // here.
 func (n *Node) addCapacityFields(fields, info map[string]any) {
+	// Packets thrown away because a reader fell behind. readPeer dispatches each
+	// envelope synchronously, so anything slow in handleEnvelope stops the session
+	// being read, the stream buffer fills, and further packets are silently
+	// discarded — the sender sees a successful write and the receiver never learns
+	// the packet existed. Pings lost that way cost a healthy session at six
+	// misses. Counting them is the difference between knowing that and guessing.
+	fields["stream_drops"] = transport.StreamDrops()
 	if maxPeers := n.config.MaxPeers; maxPeers > 0 {
 		fields["max_peers"] = maxPeers
 		if direct, ok := numericField(info, "direct_peer_count"); ok {
