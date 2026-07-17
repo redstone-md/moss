@@ -11,6 +11,13 @@ later. Nothing is deleted: the tags stay published because builds that already
 resolved them must keep resolving them.
 
 
+## [0.8.12] - 2026-07-17
+
+No code changes. Records 0.8.11 in the changelog, which was the one release
+without an entry — added as a new version rather than by moving the v0.8.11 tag,
+because the proxy holds a published version immutably and a moved tag would make
+git and `go get` disagree about what v0.8.11 is.
+
 ## [0.8.11] - 2026-07-17
 
 No code changes: this release exists to carry the retractions, which only take
