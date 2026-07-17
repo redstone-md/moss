@@ -90,6 +90,13 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          # Full history and tags: the notes are built from the commits between
+          # this tag and the last one, and a shallow clone has neither.
+          fetch-depth: 0
+
       - name: Download shared artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -97,14 +104,24 @@ jobs:
           path: release-assets
           merge-multiple: true
 
+      - name: Build release notes
+        run: bash scripts/release-notes.sh "$GITHUB_REF_NAME" > release-notes.md
+
       - name: Publish release assets
         env:
           GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # --generate-notes is deliberately not used: it builds its list from
+          # merged PULL REQUESTS, and this repo commits straight to main. There
+          # were none to list, so every release after v0.7.2 got a body of one
+          # compare link and nothing else. release-notes.sh uses the changelog
+          # section plus the actual commits instead.
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" release-assets/*.zip --clobber
+            gh release edit "$GITHUB_REF_NAME" --notes-file release-notes.md
           else
-            gh release create "$GITHUB_REF_NAME" release-assets/*.zip --title "$GITHUB_REF_NAME" --generate-notes
+            gh release create "$GITHUB_REF_NAME" release-assets/*.zip \
+              --title "$GITHUB_REF_NAME" --notes-file release-notes.md
           fi
