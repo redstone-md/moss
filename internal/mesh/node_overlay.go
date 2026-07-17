@@ -2,6 +2,7 @@ package mesh
 
 import (
 	"context"
+	"sync"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -247,6 +248,39 @@ func (n *Node) peerByID(peerID string) *peerConn {
 // set it stops as soon as providers are found; otherwise it narrows to the
 // closest contacts. It returns whatever providers it saw and the closest
 // contacts it ended on.
+// overlayCanReach reports whether this contact is one we could actually ask.
+//
+// The overlay speaks only over established sessions — overlayQuery and
+// overlaySend both refuse to dial, deliberately, because dialing from the
+// lookup path is what put 12s of latency on every peer connect. The table,
+// however, is ordered purely by XOR distance and knows nothing about sessions,
+// so the nodes a lookup selects and the nodes it can talk to are two nearly
+// disjoint sets. Selecting a contact we cannot reach spends one of only alpha
+// slots on a guaranteed failure.
+func (n *Node) overlayCanReach(c overlay.Contact) bool {
+	return n.peerByID(c.ID.String()) != nil
+}
+
+// overlayReachableContacts returns every contact in the table we hold a session
+// with, nearest-first. This is the honest extent of the overlay's reach today.
+func (n *Node) overlayReachableContacts(key overlay.NodeID) []overlay.Contact {
+	if n.overlayTable == nil {
+		return nil
+	}
+	// Ask for the WHOLE table, not the k nearest: the k nearest is exactly the
+	// slice that can be entirely unreachable, which is the situation this exists
+	// to rescue. Contacts come back ordered by distance either way, and k-buckets
+	// bound the table's size, so this stays cheap.
+	all := n.overlayTable.Closest(key, n.overlayTable.Len())
+	reachable := make([]overlay.Contact, 0, len(all))
+	for _, c := range all {
+		if n.overlayCanReach(c) {
+			reachable = append(reachable, c)
+		}
+	}
+	return reachable
+}
+
 func (n *Node) overlayLookup(ctx context.Context, key overlay.NodeID, wantValue bool) ([]gossip.OverlayProvider, []overlay.Contact) {
 	table := n.overlayTable
 	var shortlist []overlay.Contact
@@ -270,6 +304,10 @@ func (n *Node) overlayLookup(ctx context.Context, key overlay.NodeID, wantValue 
 			if queried[c.ID.String()] {
 				continue
 			}
+			// Spend the alpha budget only on contacts we can actually ask.
+			if !n.overlayCanReach(c) {
+				continue
+			}
 			batch = append(batch, c)
 			if len(batch) == overlayAlpha {
 				break
@@ -278,13 +316,31 @@ func (n *Node) overlayLookup(ctx context.Context, key overlay.NodeID, wantValue 
 		if len(batch) == 0 {
 			break
 		}
-		learned := false
-		for _, c := range batch {
+		// Query the batch concurrently. alpha means "ask this many at once" —
+		// asking them one after another turned a 4s query timeout into alpha x 4s
+		// per round, which is precisely the 12s p95 and 20s worst case the fleet
+		// measured on lookups that found nothing at all.
+		type overlayQueryResult struct {
+			resp gossip.Envelope
+			err  error
+		}
+		results := make([]overlayQueryResult, len(batch))
+		var wg sync.WaitGroup
+		for i, c := range batch {
 			queried[c.ID.String()] = true
-			resp, err := n.overlayQuery(ctx, c, gossip.Envelope{
-				Type:       queryType,
-				OverlayKey: append([]byte(nil), key[:]...),
-			})
+			wg.Add(1)
+			go func(i int, c overlay.Contact) {
+				defer wg.Done()
+				resp, err := n.overlayQuery(ctx, c, gossip.Envelope{
+					Type:       queryType,
+					OverlayKey: append([]byte(nil), key[:]...),
+				})
+				results[i] = overlayQueryResult{resp: resp, err: err}
+			}(i, c)
+		}
+		wg.Wait()
+		for _, result := range results {
+			resp, err := result.resp, result.err
 			if err != nil {
 				// Do NOT drop the contact. One timeout is not death: a query can
 				// lose to a busy moment or a slow dial, and evicting on the first
@@ -306,7 +362,6 @@ func (n *Node) overlayLookup(ctx context.Context, key overlay.NodeID, wantValue 
 				if n.overlayTable != nil {
 					n.overlayTable.Add(overlay.Contact{ID: cid, Addr: rc.Addr, LastSeen: time.Now()})
 				}
-				learned = true
 			}
 			if ctx.Err() != nil {
 				return providers, shortlist
@@ -315,14 +370,31 @@ func (n *Node) overlayLookup(ctx context.Context, key overlay.NodeID, wantValue 
 		if wantValue && len(providers) > 0 {
 			break
 		}
-		if !learned {
-			break
-		}
+		// Do NOT stop because a round learned no new contacts.
+		//
+		// A lookup ends when the closest contacts have all been ASKED — that is
+		// Kademlia's termination rule. Ending it when a round returns nothing new
+		// meant asking the first alpha of them and quitting: with six core
+		// contacts holding the record, a node would query three, learn nothing it
+		// did not already know, give up, and report found=0 while the record sat
+		// on one of the three it never asked. That is every rendezvous the fleet
+		// ran. The batch running out of unqueried contacts below is the real
+		// terminator, and it is bounded by overlayLookupRounds.
 		if n.overlayTable != nil {
 			shortlist = n.overlayTable.Closest(key, overlay.DefaultK)
 		}
 	}
 	return providers, shortlist
+}
+
+// anyReachable reports whether at least one contact can be asked at all.
+func anyReachable(n *Node, contacts []overlay.Contact) bool {
+	for _, c := range contacts {
+		if n.overlayCanReach(c) {
+			return true
+		}
+	}
+	return false
 }
 
 func contactID(c gossip.OverlayContact) (overlay.NodeID, bool) {
@@ -356,6 +428,19 @@ func (n *Node) overlaySend(ctx context.Context, c overlay.Contact, env gossip.En
 // timeout, so it is sent one-way.
 func (n *Node) overlayPublish(ctx context.Context, key overlay.NodeID, payload []byte) int {
 	_, closest := n.overlayLookup(ctx, key, false)
+	// A record nobody holds can never be found. STORE goes only to contacts we
+	// hold a session with, and closest-by-XOR is chosen without regard to
+	// sessions — so publishing to the closest alone silently stored NOTHING
+	// whenever those happened to be nodes we could not talk to. That is not a
+	// degraded lookup, it is a dead one: every rendezvous the fleet ran, all 205
+	// of them, found zero, because there was never anything anywhere to find.
+	//
+	// So fall back to replicating at every core contact within reach. It costs a
+	// handful of one-way sends and it is what makes two clients on the same
+	// bootstrap nodes meet at all.
+	if !anyReachable(n, closest) {
+		closest = n.overlayReachableContacts(key)
+	}
 	stored := 0
 	for _, c := range closest {
 		if err := n.overlaySend(ctx, c, gossip.Envelope{
@@ -450,26 +535,33 @@ func (n *Node) overlayPublishLoop(ctx context.Context) {
 	}
 }
 
-func (n *Node) republishOverlayRecords(ctx context.Context) {
+// republishOverlayRecords refreshes our records and reports how many nodes
+// accepted them. The count is the layer's only honest health signal: a lookup
+// cannot tell "nobody is on this channel" from "nothing was ever stored".
+func (n *Node) republishOverlayRecords(ctx context.Context) int {
 	self, ok := n.localOverlayID()
 	if !ok {
-		return
+		return 0
 	}
 	hint := encodeHint(n.localReachabilityHint())
+	started := time.Now()
 	pubCtx, cancel := withTimeout(ctx, 20*time.Second)
 	defer cancel()
 	// Where we can be reached, keyed by our own id.
-	n.overlayPublish(pubCtx, self, hint)
+	stored := n.overlayPublish(pubCtx, self, hint)
 	// Presence on each topic we subscribe to. These are already the opaque room
 	// topics (Subscribe converts the bare channel before it reaches pubsub), so
 	// two nodes in the same room derive the same key while a core node holding
 	// the record still cannot tell which room or game it belongs to.
-	for _, topic := range n.pubsub.SnapshotLocal() {
+	topics := n.pubsub.SnapshotLocal()
+	for _, topic := range topics {
 		if pubCtx.Err() != nil {
-			return
+			break
 		}
-		n.overlayPublish(pubCtx, overlay.ChannelKey(topic), hint)
+		stored += n.overlayPublish(pubCtx, overlay.ChannelKey(topic), hint)
 	}
+	n.reportOverlayPublish(stored, len(topics), started)
+	return stored
 }
 
 // ---- topic rendezvous ----
