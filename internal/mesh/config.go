@@ -256,21 +256,28 @@ func DefaultConfig() Config {
 	}
 }
 
-func (c Config) obfsPadMax() int {
+// Config accessors take a POINTER receiver on purpose.
+//
+// A value receiver copies the whole struct on every call, which means every
+// accessor reads every field — including ones it has no interest in. The race
+// detector is right to call that a read: n.config.AnnounceInterval() was landing
+// on MaxPeers and racing anything that touched it, an entanglement between
+// unrelated settings that no caller asked for and none could see.
+func (c *Config) obfsPadMax() int {
 	if c.ObfsPadMax <= 0 {
 		return 256
 	}
 	return c.ObfsPadMax
 }
 
-func (c Config) peerCacheMax() int {
+func (c *Config) peerCacheMax() int {
 	if c.PeerCacheMax <= 0 {
 		return 256
 	}
 	return c.PeerCacheMax
 }
 
-func (c Config) peerCacheTTL() time.Duration {
+func (c *Config) peerCacheTTL() time.Duration {
 	if c.PeerCacheTTLSec <= 0 {
 		return 7 * 24 * time.Hour
 	}
@@ -363,14 +370,14 @@ func (c *Config) applyDefaults(fields map[string]json.RawMessage) {
 	}
 }
 
-func (c Config) Heartbeat() time.Duration {
+func (c *Config) Heartbeat() time.Duration {
 	return time.Duration(c.GossipSub.HeartbeatMS) * time.Millisecond
 }
 
-func (c Config) HandshakeTimeout() time.Duration {
+func (c *Config) HandshakeTimeout() time.Duration {
 	return time.Duration(c.Security.HandshakeTimeoutSec) * time.Second
 }
 
-func (c Config) AnnounceInterval() time.Duration {
+func (c *Config) AnnounceInterval() time.Duration {
 	return time.Duration(c.AnnounceIntervalSec) * time.Second
 }
