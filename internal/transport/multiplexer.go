@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 )
 
 type StreamID uint32
@@ -15,10 +16,29 @@ const maxInboundStreams = 1024
 const defaultStreamBufferSize = 256
 
 var (
+	// streamDrops counts inbound packets thrown away because the destination
+	// stream's buffer was full.
+	//
+	// A drop here is invisible everywhere else: the sender's WritePacket returns
+	// nil, the carrier delivers, TCP stays up — and the packet simply ceases to
+	// exist. If those are pings, the peer counts six misses and drops a session
+	// whose connection was healthy the whole time, which is exactly what the fleet
+	// keeps doing at 37-38s. An overflow hook was already here to notice this and
+	// nothing ever installed it, so the drops have never once been counted.
+	streamDrops atomic.Uint64
+
 	streamOverflowMu       sync.RWMutex
 	streamBufferOnOverflow func(streamID StreamID, queueLen int)
 	errUnknownStream       = errors.New("transport: unknown stream")
 )
+
+// StreamDrops reports how many inbound packets have been dropped process-wide
+// for want of buffer space. Process-wide rather than per session on purpose: a
+// drop is a symptom of the reader falling behind, and which session lost the
+// packet matters far less than whether packets are being lost at all.
+func StreamDrops() uint64 {
+	return streamDrops.Load()
+}
 
 // SetStreamOverflowHook installs a callback fired whenever an inbound
 // payload is dropped because the stream buffer is full. Useful for
@@ -188,6 +208,7 @@ func (s *Stream) enqueue(payload []byte) {
 	select {
 	case s.buffer <- packet:
 	default:
+		streamDrops.Add(1)
 		streamOverflowMu.RLock()
 		hook := streamBufferOnOverflow
 		streamOverflowMu.RUnlock()
