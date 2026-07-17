@@ -11,26 +11,32 @@ later. Nothing is deleted: the tags stay published because builds that already
 resolved them must keep resolving them.
 
 
-## [0.8.12] - 2026-07-17
+## [0.8.11] - [0.8.14] - 2026-07-17
 
-No code changes. Records 0.8.11 in the changelog, which was the one release
-without an entry — added as a new version rather than by moving the v0.8.11 tag,
-because the proxy holds a published version immutably and a moved tag would make
-git and `go get` disagree about what v0.8.11 is.
-
-## [0.8.11] - 2026-07-17
-
-No code changes: this release exists to carry the retractions, which only take
-effect once published in a version above the ones they retract.
+Release hygiene only; no code changes in any of them.
 
 ### Changed
 - **v0.8.3, v0.8.4 and v0.8.5 are retracted** in go.mod, so version selection
-  skips them. The tags stay published — deleting them would break every build
-  that already resolved them, and the module proxy keeps them regardless.
-- The changelog now has an entry per released version, including 0.8.0 which had
-  none, and says which releases were wrong and why. Ten releases went out in one
-  night and three were not fit to use; a changelog that records only the fixes
+  skips them. They carry a session goodbye that tore down live links, and v0.8.4
+  also shipped with a failing test suite. The tags stay published: deleting them
+  would break every build that already resolved them, and the module proxy keeps
+  them regardless. A retraction only takes effect once published in a version
+  above the ones it retracts, which is what v0.8.11 is for.
+- The changelog now carries an entry per released version, including 0.8.0 which
+  had none, and says which releases were wrong and why. Ten releases went out in
+  one night and three were not fit to use; a changelog that records only the fixes
   reads as though the line went smoothly.
+
+### Notes
+- Four versions for a documentation change is three too many, and the reason is
+  worth writing down: each was tagged BEFORE its own changelog entry existed, so
+  every release needed another one to describe it. The entry goes in the commit
+  the tag points at — that is the whole discipline, and this range is what
+  skipping it costs.
+- v0.8.11's tag was briefly moved to a later commit and then put back. The proxy
+  serves a published version immutably, so a moved tag makes git and `go get`
+  disagree about what that version is; the correction shipped as a new version
+  instead.
 
 ## [0.8.10] - 2026-07-17
 
