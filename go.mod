@@ -46,3 +46,19 @@ require (
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
 )
+
+// Retracted: these three carry a session "goodbye" that tore down live links.
+// It was meant to stop a dropped UDP session leaving the far side with a ghost
+// (a datagram carrier has no FIN), but it also killed sessions that should have
+// lived: a test that ran 5/5 at a steady 16.17s went 0.2s / 7.3s / hang with it
+// in. It was aimed at the wrong target too — nothing was closing those sessions;
+// their packets were being silently discarded by a stream buffer nobody could
+// see filling. Reverted in v0.8.6, root cause fixed in v0.8.8.
+//
+// v0.8.4 additionally shipped with a failing test suite: the release command
+// chained on a pipeline whose exit status came from `tail`, not from `go test`.
+retract (
+	v0.8.5 // same
+	v0.8.4 // same, and released with a failing test suite
+	v0.8.3 // session goodbye tears down live links
+)
