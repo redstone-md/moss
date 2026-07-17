@@ -138,6 +138,9 @@ func (n *Node) addCapacityFields(fields, info map[string]any) {
 	// the packet existed. Pings lost that way cost a healthy session at six
 	// misses. Counting them is the difference between knowing that and guessing.
 	fields["stream_drops"] = transport.StreamDrops()
+	dropsDefault, dropsOther := transport.StreamDropsSplit()
+	fields["stream_drops_default"] = dropsDefault
+	fields["stream_drops_other"] = dropsOther
 	if maxPeers := n.config.MaxPeers; maxPeers > 0 {
 		fields["max_peers"] = maxPeers
 		if direct, ok := numericField(info, "direct_peer_count"); ok {
