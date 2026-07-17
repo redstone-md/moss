@@ -156,6 +156,11 @@ type peerConn struct {
 	// receives data but no pongs means the reply, not the path, is broken.
 	// Atomic: readPeer touches it per packet and must not take the node lock.
 	inboundPackets atomic.Uint64
+
+	// announceBudget bounds how much announcement traffic this peer may cost us.
+	// Per peerConn, so charging it needs no shared lock — the whole point is to
+	// be cheaper than what it protects.
+	announceBudget *nat.TokenBucket
 	outbound       bool
 	bootstrap      bool
 	connectedAt    time.Time
