@@ -4,65 +4,187 @@ All notable changes to this project are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project
 uses semantic versioning.
 
+**Retracted versions: v0.8.3, v0.8.4, v0.8.5.** They carry a session "goodbye"
+that tore down live links; v0.8.4 also shipped with a failing test suite. They
+are marked `retract` in go.mod, so `go get` will not select them. Use v0.8.6 or
+later. Nothing is deleted: the tags stay published because builds that already
+resolved them must keep resolving them.
+
+
+## [0.8.10] - 2026-07-17
+
+### Fixed
+- **A peer that connects and then never speaks was redialled forever.** The dial
+  succeeding is not proof of a working path. A node drowning in its own
+  announcement flood accepts the connection and then drops every ping sent to it,
+  so the session died at six misses ~37s later — whereupon `removePeer` cleared
+  the cooldown, the redial went out at once, succeeded again, and died again, the
+  backoff never engaging because as far as it knew every connect had worked.
+  Players felt that loop as entering a lobby on the fourth or fifth try. A session
+  that dies on missed pings is now charged as the failed path it is; a clean
+  disconnect still redials immediately, and any healthy session clears the
+  history. Measured: sessions opened against nodes that behave this way fell from
+  74 per six minutes to 17, and kept falling.
+
+## [0.8.9] - 2026-07-17
+
+### Fixed
+- **A node now survives a peer that floods it, rather than trusting it not to.**
+  v0.8.8 stopped this node FEEDING the flood; this is the other half. Requiring
+  every peer to be well-behaved — or upgraded — before anyone is safe is a hope,
+  not a design, and the same hole is open to a broken client or a malicious one.
+  Handling an announcement costs an Ed25519 verification and the node's central
+  lock, and `readPeer` dispatches synchronously, so ~900 a second is enough to
+  stop the read loop outright. Announcement traffic is now charged against a
+  per-peer token budget before any work is done on it, and the surplus dropped.
+  The ceiling sits orders of magnitude above what a correct peer needs — a node
+  announces itself about every 10s — so it bounds damage rather than setting a
+  schedule. The budget lives on the peerConn, so charging it takes no shared lock:
+  it must be cheaper than what it guards.
+
 ## [0.8.8] - 2026-07-17
 
 ### Fixed
-- **Nodes drowned each other in announcements, and the lost packets were
-  pings.** A relay with seven peers took 21,808 supernode announcements in two
-  minutes — against 29 pings — while discarding 142,125 packets in a single
-  minute, all on the stream it reads itself, at 2% capacity. When a node
-  disagreed with an arriving announcement it forwarded its OWN view with the
-  signature stripped; the signature covers the sender's claims, not ours, so the
-  next hop could not verify it, kept its own value, and corrected us straight
-  back. Two nodes disagreed forever and every correction went to every peer.
-  `readPeer` dispatches synchronously, so the flood stalled the read and the
-  256-packet buffer silently dropped everything behind it. That is why sessions
-  died at six missed pings with the connection healthy: both ends of one such
-  link each reported receiving two packets while both were writing. An
-  announcement we cannot vouch for is no longer re-told; a signed one is still
-  relayed verbatim. Links where both ends run this build now show ZERO six-miss
-  deaths and a median session life of 457s, against 37s and 154 deaths in 221
-  sessions to nodes without it.
-- **The overlay never asked the nodes holding the record.** Every rendezvous the
-  fleet ran — 205 of 205 — returned `found=0` while the record sat on a core node
-  the whole time. The batch took the alpha nearest contacts without regard to
-  sessions (the overlay speaks only over established ones), so unreachable
-  contacts consumed every slot; the round then gave up as soon as it learned
-  nothing new, which is not Kademlia's termination rule; and alpha was queried
-  sequentially, giving the measured 12s p95 and 20s worst case.
-- **Failing dials were never spaced out.** `peerDials` was an in-flight marker
-  wearing a cooldown's name — deleted the instant an attempt returned — so an
-  unreachable peer was redialled every tick at a full HandshakeTimeout: 723
-  attempts x ~9.8s, 81% of every connect attempt made, against 165 that
-  succeeded.
-- Config accessors took a value receiver, copying the whole struct and so reading
-  every field in it — `AnnounceInterval()` was landing on `MaxPeers` and racing
-  anything that touched it.
-- `Session.RemoteAddr()` is nil-safe: reading through it took the node down on an
-  ordinary disconnect.
+- **Nodes drowned each other in announcements, and the packets they lost were
+  pings.** This is the root cause behind lobbies taking forever to appear, joining
+  on the fourth attempt, and mid-game freezes and desync.
 
-### Added
-- `stream_drops` / `stream_drops_default` / `stream_drops_other`: packets thrown
-  away for want of buffer space. An overflow hook was already here to notice this
-  and nothing ever installed it, so these drops had never once been counted —
-  which is why a flood could hide behind "the peer stopped answering".
-- `in_<envelope_type>` counters: a flood is only fixable once you know which
-  envelope is making it.
-- `peer_capacity_pct` / `relay_capacity_pct` with their denominators: 8 peers is
-  half-idle at MaxPeers=16 and wedged at MaxPeers=8, and only the ratio says
-  which. A node at 90% warns.
-- `session_end` names the far end, so both halves of one link can be joined —
-  "zero packets arrived" means both "they never sent" and "their packets never
-  landed", and one node cannot tell those apart.
-- `overlay_publish` reports how many nodes accepted a record: a lookup cannot
-  distinguish "nobody is in this room" from "nothing was ever stored".
+  A relay with seven peers took 21,808 supernode announcements in two minutes —
+  against 29 pings — while discarding 142,125 packets in a single minute, all on
+  the stream it reads itself, at 2% capacity. When a node disagreed with an
+  arriving announcement it forwarded its OWN view with the signature stripped; the
+  signature covers the sender's claims, not ours, so the next hop could not verify
+  it, kept its own value, and corrected us straight back. Two nodes disagreed
+  forever, and every correction went to every peer they had.
+
+  `readPeer` dispatches synchronously, so the flood stalled the read and the
+  256-packet stream buffer silently dropped everything behind it. That is why
+  sessions died at six missed pings with the connection perfectly healthy, and why
+  both ends of one such link each reported receiving two packets while both were
+  writing.
+
+  An announcement we cannot vouch for is no longer re-told; a signed one is still
+  relayed verbatim. Measured: `stream_drops` went from 1,937,107 climbing at
+  ~200k/min to 0. Links where both ends run this build show zero six-miss deaths
+  and a median session life of 632s, against 37s and 154 deaths in 221 sessions to
+  nodes without it.
+
+## [0.8.7] - 2026-07-17
+
+### Fixed
+- Announcement re-flooding is capped at one message per advertised peer per 10s.
+  Aimed at the flood and did not stop it: the storm was inbound from nodes without
+  the change, and capping what we forward cannot help a node already drowning.
+  v0.8.8 fixes the cause; this stays as a backstop.
+
+## [0.8.6] - 2026-07-17
 
 ### Reverted
-- The session goodbye shipped in 0.8.3 tore down live links: a test that ran 5/5
-  at a steady 16.17s went 0.2s / 7.3s / hang with it. It was also aimed at the
-  wrong target — nothing was closing those sessions, their packets were being
-  thrown away. A datagram carrier still has no teardown signal; that remains
-  worth fixing, but not before the flood was.
+- **The session goodbye from v0.8.3.** It tore down live links: a test that ran
+  5/5 at a steady 16.17s went 0.2s / 7.3s / hang with it in. Disabling only the
+  dedup-path farewells stopped the hangs; disabling all of them restored the
+  16.17s exactly. It was also aimed at the wrong target — nothing was closing
+  those sessions, their packets were being thrown away. A datagram carrier still
+  has no teardown signal and that remains worth fixing, but not before the flood
+  was.
+
+### Added
+- `in_<envelope_type>` counters. The drop counters proved a storm; these name what
+  it is made of, which is what the fix depends on.
+
+## [0.8.5] - 2026-07-17 — RETRACTED
+
+Carries the v0.8.3 regression. Use v0.8.6 or later.
+
+### Added
+- `stream_drops_default` / `stream_drops_other`. Drops on the default stream mean
+  the reader cannot keep up; drops elsewhere would mean packets arriving for a
+  stream nothing ever reads. The totals cannot tell those apart, and the two need
+  opposite fixes. (Answer: every one of them was on the default stream.)
+
+## [0.8.4] - 2026-07-17 — RETRACTED
+
+Carries the v0.8.3 regression, and was released with a failing test suite: the
+release command chained on a pipeline whose exit status came from `tail` rather
+than from `go test`. Use v0.8.6 or later.
+
+### Added
+- **`stream_drops`: the packets moss throws away.** A full stream buffer discards
+  the packet and says nothing — the sender's `WritePacket` returns nil, the
+  carrier delivered it, the connection stays up, and the packet ceases to exist.
+  An overflow hook was already in the tree to notice this and nothing had ever
+  installed it, so these drops had never once been counted. This is the counter
+  that found the flood.
+
+## [0.8.3] - 2026-07-17 — RETRACTED
+
+Tore down live links. Use v0.8.6 or later.
+
+### Added
+- `peer_capacity_pct` / `relay_capacity_pct`, with their denominators. Counts
+  alone cannot say whether the network has room: 8 peers is half-idle at
+  MaxPeers=16 and wedged at MaxPeers=8. A node at 90% warns — it evicts an
+  existing peer for every new one, so the mesh around it churns instead of
+  growing. (First reading: 2%. The bottleneck was never capacity.)
+
+### Fixed
+- Config accessors took a value receiver, copying the whole struct and so reading
+  every field in it: `AnnounceInterval()` was landing on `MaxPeers` and racing
+  anything that touched it.
+
+## [0.8.2] - 2026-07-17
+
+### Fixed
+- **The overlay never asked the nodes holding the record.** Every rendezvous the
+  fleet ran — 205 of 205 — returned `found=0` while the record sat on a core node
+  the whole time. Three faults compounded. The batch took the alpha nearest
+  contacts without regard to sessions — the overlay speaks only over established
+  ones, and XOR distance has nothing to do with who we can reach — so unreachable
+  contacts consumed every slot. The round then gave up as soon as it learned
+  nothing new, which is not Kademlia's termination rule: a lookup ends when the
+  closest have all been ASKED, and instead a node queried three contacts of six,
+  learned nothing new, and reported the channel empty without asking the three
+  that had it. And alpha was queried sequentially, turning a 4s timeout into
+  alpha x 4s per round — the measured 12s p95 and 20s worst case.
+
+### Added
+- `overlay_publish` reports how many nodes accepted a record. A lookup cannot tell
+  "nobody is in this room" from "nothing was ever stored", which is how a dead
+  layer stayed invisible.
+- `session_end` names the far end, so both halves of one link can be joined. From
+  inside one node "zero packets arrived" means both "they never sent" and "their
+  packets never landed"; across both ends it does not.
+
+## [0.8.1] - 2026-07-17
+
+### Fixed
+- **Failing dials were never spaced out.** `peerDials` was an in-flight marker
+  wearing a cooldown's name — deleted the instant an attempt returned — so the
+  cooldown check could never fire for a peer that failed, and the next maintenance
+  tick redialled it ~1s later, forever, at a full HandshakeTimeout per attempt.
+  The fleet spent 723 attempts x ~9.8s that way against peers it never once
+  reached: 81% of every connect attempt made, against 165 that succeeded. The
+  interval now doubles with consecutive failures, timed from when the attempt
+  ENDED, and any success — direct or relayed — resets it. Trying direct first,
+  always, is unchanged: an unreachable peer is still retried, capped at 5 minutes,
+  because no path now is not no path ever.
+- `Session.RemoteAddr()` is nil-safe. Reading through it took the node down on an
+  ordinary disconnect.
+
+## [0.8.0] - 2026-07-17
+
+### Fixed
+- **Both ends of a duplicate session could keep different halves of it.** A
+  bootstrap race leaves each side holding two sessions in the SAME direction, so
+  the direction rule could not separate them and each side silently kept whichever
+  handshake finished first locally. When those choices diverged, the loser's half
+  became a ghost: the far side wrote into a socket nobody read and dropped the
+  peer six unanswered pings later. Duplicates are now decided by transport, the
+  one fact both ends agree on.
+
+  This was a real bug and it was not the one killing players — the sessions dying
+  at ~38s had no duplicate to be judged against. The cause was found in v0.8.8:
+  their packets were being silently discarded.
 
 ## [0.7.1] - 2026-07-16
 
