@@ -17,25 +17,6 @@ func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 		n.handleOverlayStore(peer, env)
 	case gossip.TypeOverlayNodes, gossip.TypeOverlayValues:
 		n.handleOverlayResponse(env)
-	case gossip.TypeGoodbye:
-		// Only tears down the session it arrived on: removePeer checks identity
-		// AND session, so a goodbye on a duplicate the far side already replaced
-		// cannot take down the live link.
-		//
-		// Close our end too, and note that removePeer does NOT do this: it drops
-		// the map entry and leaves the carrier alone, which is right when it runs
-		// after a session already died. A goodbye arrives on a LIVE one, so
-		// without this its read loop blocks forever on a peer nobody holds —
-		// leaking a goroutine and a socket per goodbye, and hanging shutdown,
-		// which is how a test caught it. Close directly rather than via
-		// closeSession: that would say goodbye back to a peer that just said it
-		// first.
-		if peer != nil {
-			n.removePeer(peer.id, peer.session)
-			if peer.session != nil {
-				_ = peer.session.Close()
-			}
-		}
 	case gossip.TypeGraft:
 		n.pubsub.SetPeerSubscription(peer.id, env.Channel, true)
 		if n.pubsub.IsLocalSubscriber(env.Channel) && n.eligibleForMeshCandidate(peer.id) {

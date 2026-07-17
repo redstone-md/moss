@@ -25,20 +25,6 @@ const (
 	TypePong                 EnvelopeType = "pong"
 	TypeStatDelta            EnvelopeType = "stat_delta"
 
-	// TypeGoodbye is a session teardown signal.
-	//
-	// TCP has FIN; a datagram carrier has nothing. Session.Close() on a UDP
-	// session is a purely local act, so when one side drops a session — a dedup
-	// loser, a prune, an overflow eviction — the other side learns NOTHING and
-	// keeps a peer it can never hear from again. It sits there for six unanswered
-	// pings, ~37s, reported to the application as connected the entire time. The
-	// fleet's hole-punched sessions died at a median of exactly 37s with 14 of 15
-	// having received not one packet: they were already-dead links nobody had told.
-	//
-	// A node that ignores this type simply keeps the old behaviour, so it is safe
-	// to send to any peer.
-	TypeGoodbye EnvelopeType = "goodbye"
-
 	// Overlay (Kademlia) lookup. Only publicly reachable nodes answer these —
 	// a query cannot be delivered to a node nobody can dial — but any node,
 	// NAT'd included, may ask, since outbound dials always work.
