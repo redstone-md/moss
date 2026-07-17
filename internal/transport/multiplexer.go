@@ -27,6 +27,16 @@ var (
 	// nothing ever installed it, so the drops have never once been counted.
 	streamDrops atomic.Uint64
 
+	// Split by stream, because the two causes need opposite fixes. Drops on the
+	// default stream mean readPeer cannot keep up — it dispatches every envelope
+	// synchronously, so one slow handler stalls the read. Drops on any OTHER
+	// stream mean packets are arriving for a stream nothing in the node ever
+	// reads, in which case every one of them is lost forever and the buffer can
+	// only fill: mesh calls Stream() nowhere, so nothing should arrive there at
+	// all.
+	streamDropsDefault atomic.Uint64
+	streamDropsOther   atomic.Uint64
+
 	streamOverflowMu       sync.RWMutex
 	streamBufferOnOverflow func(streamID StreamID, queueLen int)
 	errUnknownStream       = errors.New("transport: unknown stream")
@@ -38,6 +48,11 @@ var (
 // packet matters far less than whether packets are being lost at all.
 func StreamDrops() uint64 {
 	return streamDrops.Load()
+}
+
+// StreamDropsSplit reports dropped packets as (default stream, other streams).
+func StreamDropsSplit() (uint64, uint64) {
+	return streamDropsDefault.Load(), streamDropsOther.Load()
 }
 
 // SetStreamOverflowHook installs a callback fired whenever an inbound
@@ -209,6 +224,11 @@ func (s *Stream) enqueue(payload []byte) {
 	case s.buffer <- packet:
 	default:
 		streamDrops.Add(1)
+		if s.id == DefaultStream {
+			streamDropsDefault.Add(1)
+		} else {
+			streamDropsOther.Add(1)
+		}
 		streamOverflowMu.RLock()
 		hook := streamBufferOnOverflow
 		streamOverflowMu.RUnlock()
