@@ -296,13 +296,13 @@ func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origi
 			if keepNew, decided := resolveDuplicateTransport(existingStream, newStream); decided {
 				if !keepNew {
 					n.mu.Unlock()
-					_ = session.Close()
+					farewellAndClose(session)
 					return
 				}
 				replacedPeer = existing
 			} else if !yieldsToNewConnection(n.localPeerID(), existing, outbound) {
 				n.mu.Unlock()
-				_ = session.Close()
+				farewellAndClose(session)
 				return
 			} else {
 				replacedPeer = existing
@@ -315,7 +315,7 @@ func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origi
 		if overflowPeer != nil {
 			overflowPeer.closeSession()
 		}
-		_ = session.Close()
+		farewellAndClose(session)
 		return
 	}
 	bootstrapSeed := !n.trackerSeeds[addr].IsZero()
