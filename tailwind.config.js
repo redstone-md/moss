@@ -16,8 +16,8 @@ module.exports = {
         "on-accent": "rgb(var(--c-on-accent) / <alpha-value>)",
       },
       fontFamily: {
-        display: ['"Archivo"', "ui-sans-serif", "system-ui", "sans-serif"],
-        sans: ['"Inter"', "ui-sans-serif", "system-ui", "sans-serif"],
+        display: ['"Space Grotesk"', '"Archivo"', "ui-sans-serif", "system-ui", "sans-serif"],
+        sans: ['"Space Grotesk"', '"Inter"', "ui-sans-serif", "system-ui", "sans-serif"],
         mono: ['"JetBrains Mono"', "ui-monospace", "SFMono-Regular", "Menlo", "monospace"],
       },
       letterSpacing: {

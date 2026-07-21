@@ -1,0 +1,152 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---- Theme tokens (space-separated RGB triplets for Tailwind alpha) ----
+   Default "signal": deep moss green with a lime accent — matches the 3D
+   landing's palette so the whole site reads as one organism. */
+:root,
+[data-theme="signal"] {
+  --c-bg: 5 13 8;
+  --c-surface: 10 20 13;
+  --c-surface-2: 16 30 20;
+  --c-line: 33 61 42;
+  --c-ink: 216 255 224;
+  --c-muted: 126 169 138;
+  --c-accent: 141 255 122;
+  --c-accent2: 53 217 122;
+  --c-ember: 255 196 84;
+  --c-on-accent: 6 33 13;
+}
+
+[data-theme="light"] {
+  --c-bg: 240 247 240;
+  --c-surface: 255 255 255;
+  --c-surface-2: 228 240 229;
+  --c-line: 201 221 204;
+  --c-ink: 14 34 19;
+  --c-muted: 84 112 90;
+  --c-accent: 22 138 61;
+  --c-accent2: 18 116 88;
+  --c-ember: 186 118 22;
+  --c-on-accent: 255 255 255;
+}
+
+@layer base {
+  html { scroll-behavior: smooth; }
+  body { @apply bg-bg text-ink font-sans antialiased; }
+  ::selection { @apply bg-accent/25; }
+  /* Respect reduced-motion at the platform level too. */
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+  }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-5 py-2.5 text-sm font-semibold tracking-tight transition focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60;
+  }
+  .btn-primary {
+    @apply btn bg-ink text-bg hover:bg-white;
+  }
+  .btn-accent {
+    @apply btn bg-accent text-on-accent hover:shadow-glow hover:brightness-110;
+  }
+  .btn-ghost {
+    @apply btn border border-line text-ink hover:border-accent/50 hover:bg-surface;
+  }
+  /* Bento tile */
+  .tile {
+    @apply relative overflow-hidden rounded-2xl border border-line bg-surface/60 p-6 shadow-tile;
+  }
+  .eyebrow {
+    @apply font-mono text-xs uppercase tracking-[0.22em] text-muted;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-full border border-line bg-surface/70 px-3 py-1 font-mono text-xs text-muted backdrop-blur;
+  }
+  .nav-link { @apply text-sm text-muted transition hover:text-ink; }
+  /* Floating HUD panel for the immersive explorer. */
+  .glass {
+    @apply rounded-2xl border border-line/80 bg-surface/40 backdrop-blur-xl;
+    box-shadow: 0 20px 50px -28px rgb(0 0 0 / 0.8);
+  }
+  .hairline { @apply h-px w-full bg-line; }
+  /* Subtle dotted grid texture for section backgrounds */
+  .dotgrid {
+    background-image: radial-gradient(rgb(var(--c-line) / 0.6) 1px, transparent 1px);
+    background-size: 28px 28px;
+  }
+
+  /* ---- Flowing menu (showcase) — follows the reactbits structure: GSAP owns
+     both the infinite X scroll and the Y reveal on .marquee__inner, so they
+     never fight over `transform`. ---- */
+  .menu { display: flex; flex-direction: column; }
+  .menu__item {
+    position: relative;
+    overflow: hidden;
+    border-top: 1px solid rgb(var(--c-line));
+  }
+  .menu__item:first-child { border-top: none; }
+  .menu__item-link {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1.5rem;
+    height: 7.5rem;
+    padding: 0 0.25rem;
+    position: relative;
+    cursor: pointer;
+    text-decoration: none;
+    white-space: nowrap;
+  }
+  .menu__title {
+    font-family: "Archivo", ui-sans-serif, system-ui, sans-serif;
+    font-weight: 800;
+    letter-spacing: -0.04em;
+    font-size: clamp(2rem, 6vw, 3.75rem);
+    color: rgb(var(--c-ink));
+  }
+  .menu__tag { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 0.8rem; color: rgb(var(--c-muted)); }
+  .menu__arrow { color: rgb(var(--c-muted)); font-size: 1.5rem; }
+  .marquee {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    pointer-events: none;
+    background: rgb(var(--c-accent));
+    transform: translate3d(0, 101%, 0);
+  }
+  .marquee__inner-wrap { height: 100%; width: 100%; }
+  .marquee__inner { display: flex; align-items: center; height: 100%; width: fit-content; will-change: transform; }
+  .marquee__part { display: flex; align-items: center; flex-shrink: 0; color: rgb(var(--c-on-accent)); }
+  .marquee__part span {
+    font-family: "Archivo", ui-sans-serif, system-ui, sans-serif;
+    font-weight: 800;
+    letter-spacing: -0.04em;
+    font-size: clamp(2rem, 6vw, 3.75rem);
+    padding: 0 1.5rem;
+    white-space: nowrap;
+  }
+  .marquee__chip {
+    width: 5rem;
+    height: 2.75rem;
+    border-radius: 999px;
+    background: linear-gradient(90deg, rgb(var(--c-accent2)), rgb(var(--c-on-accent) / 0.25));
+  }
+
+  /* ---- Docs prose ---- */
+  .prose-moss { @apply text-[15px] leading-relaxed text-muted; }
+  .prose-moss h2 { @apply mt-12 mb-3 scroll-mt-24 font-display text-2xl font-bold tracking-tight text-ink; }
+  .prose-moss h3 { @apply mt-8 mb-2 scroll-mt-24 font-display text-lg font-bold text-ink; }
+  .prose-moss p { @apply my-3; }
+  .prose-moss a { @apply text-accent underline-offset-2 hover:underline; }
+  .prose-moss code { @apply rounded bg-surface-2 px-1.5 py-0.5 font-mono text-[13px] text-ink; }
+  .prose-moss pre { @apply my-4 overflow-x-auto rounded-xl border border-line bg-bg/70 p-4 font-mono text-[13px] leading-relaxed text-muted; }
+  .prose-moss pre code { @apply bg-transparent p-0 text-muted; }
+  .prose-moss ul { @apply my-3 list-disc space-y-1.5 pl-5; }
+  .prose-moss li::marker { @apply text-accent; }
+  .doc-toc a { @apply block py-1 text-sm text-muted transition hover:text-ink; }
+  .doc-toc a.active { @apply text-accent; }
+}
