@@ -1,186 +1,147 @@
-<!DOCTYPE html>
-<html lang="en" data-theme="signal">
+<!doctype html>
+<html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>Moss — a peer-to-peer mesh with nothing in the middle</title>
   <meta name="description" content="Moss is an embeddable P2P mesh runtime: serverless discovery, Noise-encrypted transport, and a full peer that runs in the browser over WebRTC." />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-  <script>(function(){var t;try{t=localStorage.getItem("moss-theme")}catch(e){}if(t!=="signal"&&t!=="light")t="signal";document.documentElement.setAttribute("data-theme",t)})();</script>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;800;900&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/src/style.css" />
 </head>
-<body class="min-h-screen overflow-x-hidden">
+<body>
+  <canvas id="webgl"></canvas>
 
-  <header class="fixed inset-x-0 top-0 z-50 border-b border-line/40 bg-bg/60 backdrop-blur-xl">
-    <nav class="mx-auto flex max-w-7xl items-center justify-between px-6 py-3.5">
-      <a href="/" class="flex items-center gap-2.5">
-        <span class="grid h-8 w-8 place-items-center rounded-lg border border-line bg-surface text-accent">❖</span>
-        <span class="font-display text-lg font-extrabold tracking-tightest">moss</span>
-      </a>
-      <div class="hidden items-center gap-8 md:flex">
-        <a href="#what" class="nav-link">what</a>
-        <a href="#how" class="nav-link">protocol</a>
-        <a href="/docs.html" class="nav-link">docs</a>
-        <a href="/explorer.html" class="nav-link">explorer</a>
-        <a href="/showcase.html" class="nav-link">ecosystem</a>
-        <a href="https://github.com/redstone-md/moss" class="nav-link">source</a>
-      </div>
-      <div class="flex items-center gap-2">
-        <button data-theme-toggle class="chip hover:border-accent/50" title="switch theme">
-          <span class="h-2 w-2 rounded-full bg-accent"></span><span data-theme-label>signal</span>
-        </button>
-        <a href="/explorer.html" class="btn-accent hidden sm:inline-flex">live network</a>
-      </div>
+  <!-- SEO / crawler content (canvas sites are invisible otherwise) -->
+  <div class="seo-data" aria-hidden="true">
+    <h1>Moss — a peer-to-peer mesh with nothing in the middle</h1>
+    <h2>Embeddable P2P mesh runtime. Serverless discovery. Noise-encrypted transport. A full peer in the browser.</h2>
+    <p>Peers find each other with no dedicated infrastructure, talk over Noise-encrypted channels, and run anywhere — down to a full peer inside the browser.</p>
+    <a href="/docs.html">Documentation</a>
+    <a href="/explorer.html">Network explorer</a>
+    <a href="/showcase.html">Ecosystem</a>
+  </div>
+
+  <header class="header">
+    <a class="header__logo button" href="#hero" data-step="0"><span class="header__mark">❖</span>moss</a>
+    <nav class="header__nav">
+      <a class="header__link button" href="/docs.html">docs</a>
+      <a class="header__link button" href="/explorer.html">explorer</a>
+      <a class="header__link button" href="/showcase.html">ecosystem</a>
+      <a class="header__link button" href="https://github.com/redstone-md/moss" target="_blank" rel="noopener">source</a>
     </nav>
+    <div class="header__right">
+      <div class="header__nodes"><span class="header__nodes-dot"></span><span id="nodes-online">0</span> nodes online</div>
+      <button class="mute button" id="mute-btn" aria-label="toggle sound">
+        <svg viewBox="0 0 62 40" width="62" height="40">
+          <defs>
+            <linearGradient id="wavegrad" x1="0" x2="1" y1="0" y2="0">
+              <stop offset="0" stop-color="#9dffa5" stop-opacity="0"/>
+              <stop offset="0.25" stop-color="#9dffa5" stop-opacity="1"/>
+              <stop offset="0.75" stop-color="#9dffa5" stop-opacity="1"/>
+              <stop offset="1" stop-color="#9dffa5" stop-opacity="0"/>
+            </linearGradient>
+          </defs>
+          <path id="wave-path" d="M0 20 L62 20" fill="none" stroke="url(#wavegrad)" stroke-width="1.5"/>
+        </svg>
+      </button>
+    </div>
   </header>
 
-  <!-- hero -->
-  <section class="relative flex min-h-screen items-center">
-    <canvas id="shader" class="absolute inset-0 h-full w-full"></canvas>
-    <div class="pointer-events-none absolute inset-0 bg-gradient-to-b from-bg/30 via-bg/55 to-bg"></div>
-    <div class="relative mx-auto w-full max-w-7xl px-6 pt-28">
-      <p data-anim class="eyebrow mb-6">P2P mesh runtime · Go · WASM</p>
-      <h1 data-anim class="max-w-5xl font-display text-[clamp(2.8rem,8vw,6.5rem)] font-black leading-[0.94] tracking-tightest">
-        a peer-to-peer mesh<br />
-        with <span class="bg-gradient-to-r from-accent via-accent2 to-accent bg-clip-text text-transparent">nothing in the middle</span>
-      </h1>
-      <p data-anim class="mt-7 max-w-xl text-lg text-muted">
-        Moss is an embeddable networking core. Peers find each other with no
-        dedicated infrastructure, talk over Noise-encrypted channels, and run
-        anywhere — down to a full peer inside the browser.
-      </p>
-      <div data-anim class="mt-9 flex flex-wrap items-center gap-3">
-        <a href="/explorer.html" class="btn-accent">explore the live network</a>
-        <a href="/docs.html" class="btn-ghost">read the docs</a>
-      </div>
-      <div data-anim class="mt-12 flex flex-wrap gap-2.5">
+  <div class="container">
+    <!-- 0 · HERO -->
+    <section class="section section--hero" data-step="0">
+      <h1 class="section__title" id="hero-title">MOSS</h1>
+      <p class="section__sub">a peer-to-peer mesh with nothing in the middle</p>
+      <p class="section__tag">P2P mesh runtime · Go · WASM</p>
+      <div class="section__chips">
         <span class="chip">Noise XX · ChaCha20-Poly1305</span>
         <span class="chip">GossipSub routing</span>
         <span class="chip">tracker + DHT + WebRTC discovery</span>
         <span class="chip">C / Python / Rust / WASM</span>
       </div>
-    </div>
-    <div class="absolute bottom-6 left-1/2 hidden -translate-x-1/2 text-muted md:block">
-      <span class="font-mono text-xs tracking-widest">scroll</span>
-    </div>
-  </section>
+      <div class="scroll-hint"><span class="scroll-hint__wheel"></span>scroll to enter the mesh</div>
+    </section>
 
-  <!-- bento -->
-  <section id="what" class="dotgrid relative border-t border-line/60">
-    <div class="mx-auto max-w-7xl px-6 py-24">
-      <div class="mb-12 flex flex-wrap items-end justify-between gap-4">
-        <h2 data-anim class="max-w-2xl font-display text-4xl font-extrabold leading-tight tracking-tightest md:text-5xl">
-          everything a mesh needs.<br />nothing it doesn't.
-        </h2>
-        <p data-anim class="max-w-sm text-sm text-muted">No bootstrap servers, no central relay, no account. The network is only its peers — and the math that lets them trust each other.</p>
+    <!-- 1 · DISCOVER -->
+    <section class="section section--left" data-step="1">
+      <span class="section__index">01 — discover</span>
+      <h2 class="section__h">ZERO<br>SERVERS</h2>
+      <p class="section__p">No bootstrap servers, no central relay, no account. Discovery rides public BitTorrent trackers, the Mainline DHT, LAN beacons, and WebRTC signaling rooms. The rendezvous key is a private infohash from <em>HKDF(mesh id, PSK)</em> — meshes can't be enumerated without it.</p>
+    </section>
+
+    <!-- 2 · SELF-HEALING -->
+    <section class="section section--right" data-step="2">
+      <span class="section__index">02 — traverse</span>
+      <h2 class="section__h">SELF-HEALING</h2>
+      <p class="section__p">Break it. Watch it grow back. Autonomous hole-punching crosses full-cone, symmetric, and carrier-grade NAT; when no direct path exists, peer-promoted supernodes relay the traffic. Routes regenerate around failure.</p>
+      <p class="section__hint">⌖ click a node to kill it</p>
+    </section>
+
+    <!-- 3 · ENCRYPTED -->
+    <section class="section section--left" data-step="3">
+      <span class="section__index">03 — handshake</span>
+      <h2 class="section__h">ENCRYPTED &amp;<br>OBFUSCATED</h2>
+      <p class="section__p">Every session is a Noise XX handshake — <em>25519 · ChaCha20-Poly1305 · BLAKE2s</em> — with the peer's identity key bound to the channel. On the wire, UDP is scrambled to look like random noise, resisting DPI fingerprinting.</p>
+    </section>
+
+    <!-- 4 · TELEMETRY -->
+    <section class="section section--right" data-step="4">
+      <span class="section__index">04 — observe</span>
+      <h2 class="section__h">THE MESH<br>MEASURES ITSELF</h2>
+      <p class="section__p">A gossiped, hash-chained CRDT reports the network's size and health without naming a single peer — HyperLogLog counts, differential-privacy noise, k-anonymity. Anyone recomputes and verifies it. <em>There is no collector to trust.</em></p>
+      <a class="btn button" href="/explorer.html">open the live explorer</a>
+    </section>
+
+    <!-- 5 · BROWSER -->
+    <section class="section section--left" data-step="5">
+      <span class="section__index">05 — anywhere</span>
+      <h2 class="section__h">A FULL PEER,<br>IN A TAB</h2>
+      <p class="section__p">Compiled to WebAssembly, Moss runs the same Noise transport and gossip over WebRTC DataChannels. No install, no server in the data path — the browser <em>is</em> a node.</p>
+    </section>
+
+    <!-- 6 · JOIN -->
+    <section class="section section--join" data-step="6">
+      <span class="section__index">06 — join</span>
+      <h2 class="section__h">JOIN THE MESH</h2>
+      <p class="section__p">One command. One more node. The network grows like moss — one spore at a time.</p>
+      <pre class="section__code">./moss-gateway -mesh global -http 127.0.0.1:8787</pre>
+      <div class="section__cta">
+        <a class="btn btn--solid button" href="/explorer.html">explore the live network</a>
+        <a class="btn button" href="/docs.html">read the docs</a>
+        <a class="btn button" href="https://github.com/redstone-md/moss" target="_blank" rel="noopener">GitHub ↗</a>
       </div>
+    </section>
+  </div>
 
-      <div class="grid auto-rows-[minmax(0,1fr)] grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <article data-anim class="tile lg:col-span-2 lg:row-span-2">
-          <div class="mb-4 flex items-center justify-between">
-            <span class="eyebrow">self-verifying telemetry</span>
-            <span class="chip"><span class="h-1.5 w-1.5 rounded-full bg-ember animate-pulse-dot"></span>live</span>
-          </div>
-          <pre class="overflow-x-auto rounded-xl border border-line bg-bg/70 p-4 font-mono text-[13px] leading-relaxed text-muted"><span class="text-muted/60">// any node, no special access</span>
-Moss_GetNetworkStats() <span class="text-accent">→</span>
-<span class="text-ink">{</span>
-  node_count_estimate: <span class="text-accent2">1284</span>,  <span class="text-muted/60">// HyperLogLog</span>
-  bandwidth_in_total:  <span class="text-accent2">90_431_122</span>,
-  nat_histogram: <span class="text-ink">{</span> public: 12, cgnat: 31 <span class="text-ink">}</span>,
-  epoch_digest: <span class="text-accent">"24bf70…d9e1ce"</span>,
-  prev_digest:  <span class="text-accent">"a1f0…0000"</span>   <span class="text-muted/60">// hash-chained</span>
-<span class="text-ink">}</span></pre>
-          <p class="mt-4 text-sm text-muted">A gossiped, hash-chained CRDT reports the network's size and health without naming a single peer. Counts use HyperLogLog; bandwidth carries differential-privacy noise. Anyone recomputes and verifies it — there is no collector to trust. <a href="/docs.html#telemetry" class="text-accent hover:underline">How it works →</a></p>
-        </article>
+  <!-- right-edge progress -->
+  <nav class="progress" id="progress">
+    <button class="progress__dot button" data-step="0" aria-label="Intro"></button>
+    <button class="progress__dot button" data-step="1" aria-label="Discover"></button>
+    <button class="progress__dot button" data-step="2" aria-label="Self-healing"></button>
+    <button class="progress__dot button" data-step="3" aria-label="Encrypted"></button>
+    <button class="progress__dot button" data-step="4" aria-label="Telemetry"></button>
+    <button class="progress__dot button" data-step="5" aria-label="Browser"></button>
+    <button class="progress__dot button" data-step="6" aria-label="Join"></button>
+    <div class="progress__track"><div class="progress__fill" id="progress-fill"></div></div>
+  </nav>
 
-        <article data-anim class="tile">
-          <div class="font-display text-6xl font-black tracking-tightest text-ink">0</div>
-          <div class="mt-1 text-sm font-semibold">dedicated servers</div>
-          <p class="mt-2 text-sm text-muted">Discovery rides public BitTorrent trackers, the DHT, and WebRTC signaling rooms. Connectivity is peer-promoted.</p>
-        </article>
-
-        <article data-anim class="tile">
-          <span class="eyebrow">transport</span>
-          <h3 class="mt-2 font-display text-xl font-bold">Encrypted &amp; obfuscated</h3>
-          <p class="mt-2 text-sm text-muted">Every session is a Noise XX handshake with identity binding. UDP is wrapped to look like noise on the wire, resisting DPI fingerprinting.</p>
-        </article>
-
-        <article data-anim class="tile lg:col-span-2">
-          <div class="flex items-start justify-between gap-4">
-            <div>
-              <span class="eyebrow">browser-native</span>
-              <h3 class="mt-2 font-display text-xl font-bold">A full peer, in a tab</h3>
-              <p class="mt-2 max-w-md text-sm text-muted">Compiled to WebAssembly, Moss runs the encrypted transport and gossip over WebRTC DataChannels — no install, no server in the data path.</p>
-            </div>
-            <a href="/docs.html#browser" class="btn-ghost shrink-0">docs →</a>
-          </div>
-        </article>
-
-        <article data-anim class="tile">
-          <span class="eyebrow">connectivity</span>
-          <h3 class="mt-2 font-display text-xl font-bold">Reaches hard NATs</h3>
-          <p class="mt-2 text-sm text-muted">Autonomous hole-punching with supernode relay fallback crosses full-cone, symmetric, and carrier-grade NAT.</p>
-        </article>
-
-        <article data-anim class="tile">
-          <span class="eyebrow">integration</span>
-          <h3 class="mt-2 font-display text-xl font-bold">Embeddable core</h3>
-          <p class="mt-2 text-sm text-muted">One small C ABI exports the runtime to C, C++, C#, Python, and Rust. Or target <span class="font-mono text-accent">js/wasm</span>.</p>
-        </article>
-      </div>
-    </div>
-  </section>
-
-  <!-- protocol -->
-  <section id="how" class="border-t border-line/60">
-    <div class="mx-auto max-w-7xl px-6 py-24">
-      <h2 data-anim class="mb-3 font-display text-4xl font-extrabold tracking-tightest md:text-5xl">the protocol, end to end</h2>
-      <p data-anim class="mb-12 max-w-xl text-sm text-muted">Four stages take a node from zero knowledge to a verified view of the whole network. <a href="/docs.html" class="text-accent hover:underline">Full documentation →</a></p>
-
-      <ol class="grid grid-cols-1 gap-px overflow-hidden rounded-2xl border border-line bg-line md:grid-cols-2 lg:grid-cols-4">
-        <li data-anim class="bg-surface p-6">
-          <div class="font-mono text-sm text-accent">01 — discover</div>
-          <h3 class="mt-3 font-display text-lg font-bold">find peers</h3>
-          <p class="mt-2 text-sm text-muted">A private infohash from mesh id + PSK announces to trackers, the DHT, or a signaling room. No master node.</p>
-        </li>
-        <li data-anim class="bg-surface p-6">
-          <div class="font-mono text-sm text-accent2">02 — handshake</div>
-          <h3 class="mt-3 font-display text-lg font-bold">authenticate</h3>
-          <p class="mt-2 text-sm text-muted">Noise XX binds each peer's identity key to the session and derives the ChaCha20-Poly1305 channel.</p>
-        </li>
-        <li data-anim class="bg-surface p-6">
-          <div class="font-mono text-sm text-accent">03 — gossip</div>
-          <h3 class="mt-3 font-display text-lg font-bold">route messages</h3>
-          <p class="mt-2 text-sm text-muted">GossipSub-style pub/sub floods topics with peer scoring, lazy IHAVE/IWANT, and relay fallback.</p>
-        </li>
-        <li data-anim class="bg-surface p-6">
-          <div class="font-mono text-sm text-ember">04 — observe</div>
-          <h3 class="mt-3 font-display text-lg font-bold">verify the network</h3>
-          <p class="mt-2 text-sm text-muted">Telemetry gossips as a hash-chained CRDT. The explorer recomputes the chain in your browser — trust nobody.</p>
-        </li>
-      </ol>
-
-      <div data-anim class="mt-10 flex flex-wrap gap-3">
-        <a href="/explorer.html" class="btn-accent">open the explorer</a>
-        <a href="/showcase.html" class="btn-ghost">see who builds on moss</a>
-      </div>
-    </div>
-  </section>
-
-  <footer class="border-t border-line/60">
-    <div class="mx-auto flex max-w-7xl flex-col items-center justify-between gap-4 px-6 py-10 text-sm text-muted md:flex-row">
-      <div class="flex items-center gap-2"><span class="text-accent">❖</span> moss · MIT</div>
-      <div class="flex items-center gap-6">
-        <a href="/docs.html" class="nav-link">docs</a>
-        <a href="/explorer.html" class="nav-link">explorer</a>
-        <a href="/showcase.html" class="nav-link">ecosystem</a>
-        <a href="https://github.com/redstone-md/moss" class="nav-link">github</a>
-      </div>
-    </div>
+  <footer class="footer">
+    <span class="footer__c">❖ moss · MIT</span>
+    <span class="footer__s">a living network</span>
   </footer>
 
-  <script type="module" src="/src/js/landing.js"></script>
+  <!-- loader -->
+  <div class="loader" id="loader">
+    <div class="loader__logo">
+      <span>M</span><span>O</span><span>S</span><span>S</span>
+    </div>
+    <div class="loader__barwrap"><div class="loader__bar" id="loader-bar"></div></div>
+    <div class="loader__label">germinating</div>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
 </body>
 </html>
