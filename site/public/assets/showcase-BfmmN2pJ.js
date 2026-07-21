@@ -1,0 +1,16 @@
+import"./cmdk-BKHWz1Ad.js";import{g as m}from"./index-SFc2wnMY.js";const c="https://github.com/redstone-md/moss",_=[{name:"MOSH",tag:"desktop chat client built on Moss",href:"https://github.com/redstone-md/mosh"},{name:"MossyMod",tag:"Minecraft Fabric mod · mesh world discovery · Java",href:"https://github.com/redstone-md/mossymod"},{name:"GSE Moss",tag:"Steam emu with Moss in the Steam API · P2P multiplayer · C++",href:"https://github.com/redstone-md/gse_moss"},{name:"MossSpore",tag:"headless relay daemon — grow the mesh · Go",href:"https://github.com/redstone-md/MossSpore"},{name:"Python chat",tag:"ctypes integration · examples/python_chat",href:`${c}/tree/main/examples/python_chat`},{name:"Rust FFI",tag:"native binding · examples/rust_example",href:`${c}/tree/main/examples/rust_example`},{name:"C · C++ · C#",tag:"reference integrations · examples",href:`${c}/tree/main/examples`}],u=window.matchMedia("(prefers-reduced-motion: reduce)").matches,S=16,h={duration:.6,ease:"expo"};function y(e){return`<div class="marquee__part"><span>${d(e)}</span><div class="marquee__chip"></div></div>`}function M(e){return`
+    <div class="menu__item">
+      <a class="menu__item-link" href="${e.href}" target="_blank" rel="noopener">
+        <span class="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+          <span class="menu__title">${d(e.name)}</span>
+          <span class="menu__tag">${d(e.tag)}</span>
+        </span>
+        <span class="menu__arrow">↗</span>
+      </a>
+      <div class="marquee">
+        <div class="marquee__inner-wrap">
+          <div class="marquee__inner" aria-hidden="true">${y(e.name).repeat(4)}</div>
+        </div>
+      </div>
+    </div>`}const v=document.getElementById("flow");v.innerHTML=`<nav class="menu">${_.map(M).join("")}</nav>`;const g=(e,n,r,i)=>(e-r)**2+(n-i)**2,f=(e,n,r,i)=>g(e,n,r/2,0)<g(e,n,r/2,i)?"top":"bottom";v.querySelectorAll(".menu__item").forEach((e,n)=>{const r=e.querySelector(".menu__item-link"),i=e.querySelector(".marquee"),s=e.querySelector(".marquee__inner"),w=_[n].name;let l=null;function p(){const o=s.querySelector(".marquee__part");if(!o)return;const t=o.offsetWidth;if(!t)return;const a=Math.max(4,Math.ceil(window.innerWidth/t)+2);s.children.length!==a&&(s.innerHTML=y(w).repeat(a)),l&&l.kill(),m.set(s,{x:0}),u||(l=m.to(s,{x:-t,duration:S,ease:"none",repeat:-1}))}p(),window.addEventListener("resize",p),!u&&(r.addEventListener("mouseenter",o=>{const t=e.getBoundingClientRect(),a=f(o.clientX-t.left,o.clientY-t.top,t.width,t.height);m.timeline({defaults:h}).set(i,{y:a==="top"?"-101%":"101%"},0).set(s,{y:a==="top"?"101%":"-101%"},0).to([i,s],{y:"0%"},0)}),r.addEventListener("mouseleave",o=>{const t=e.getBoundingClientRect(),a=f(o.clientX-t.left,o.clientY-t.top,t.width,t.height);m.timeline({defaults:h}).to(i,{y:a==="top"?"-101%":"101%"},0).to(s,{y:a==="top"?"101%":"-101%"},0)}))});const b=["**Project name:**","**Link:**","**One-line description:**","**How it uses Moss:**","","_(Submitted from the Moss ecosystem page.)_"].join(`
+`);document.getElementById("submit").href=`${c}/issues/new?labels=showcase&title=${encodeURIComponent("Showcase: <project>")}&body=${encodeURIComponent(b)}`;function d(e){return String(e).replace(/[&<>"]/g,n=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"})[n])}
