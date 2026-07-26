@@ -227,7 +227,11 @@ func (n *Node) connectPeerTCPWithHint(ctx context.Context, addr, peerID string) 
 }
 
 func (n *Node) connectPeerOnce(ctx context.Context, addr string, remoteStatic []byte) error {
-	dialer := &net.Dialer{Timeout: n.config.HandshakeTimeout()}
+	// Bound to the same NIC as the UDP listener: an outbound dial left to the
+	// routing table leaves through the VPN, so the peer observes us at the
+	// tunnel's exit and echoes that back as our address — which is how one node
+	// ends up advertising two of them.
+	dialer := transport.DialerWithBind(net.Dialer{Timeout: n.config.HandshakeTimeout()}, n.bindIfIndex)
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return err
