@@ -14,6 +14,7 @@ import (
 
 	"github.com/redstone-md/moss/internal/gossip"
 	"github.com/redstone-md/moss/internal/nat"
+	"github.com/redstone-md/moss/internal/transport"
 )
 
 func (n *Node) probePortMapping(ctx context.Context, listenAddr string, port int) {
@@ -80,11 +81,16 @@ func requiresReachabilityConfirmation(addr string) bool {
 	return parsed.IsGlobalUnicast() && !parsed.IsPrivate() && !isCarrierGradeAddr(parsed)
 }
 
-func probeTCPAddress(addr string, timeout time.Duration) bool {
+// probeTCPAddress answers a peer's "can you reach me here?" by dialling the
+// address it claims. bindIfIndex keeps that dial on the NIC the mesh actually
+// uses: a probe that leaves through a VPN reports on a path our own traffic
+// will never take, so the peer would be told it is reachable when it is not.
+func probeTCPAddress(addr string, timeout time.Duration, bindIfIndex int) bool {
 	if timeout <= 0 {
 		timeout = 250 * time.Millisecond
 	}
-	conn, err := net.DialTimeout("tcp", addr, timeout)
+	dialer := transport.DialerWithBind(net.Dialer{Timeout: timeout}, bindIfIndex)
+	conn, err := dialer.Dial("tcp", addr)
 	if err != nil {
 		return false
 	}

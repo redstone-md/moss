@@ -55,9 +55,10 @@ func ApplyBindToUDP(conn *net.UDPConn, ifIndex int) error {
 	return applyBindInterface(rc, ifIndex)
 }
 
-// applyBindToPacket applies the interface bind to a freshly-created
-// net.PacketConn (used by LAN discovery's net.ListenPacket call sites).
-func applyBindToPacket(conn net.PacketConn, ifIndex int) error {
+// ApplyBindToPacket applies the interface bind to a freshly-created
+// net.PacketConn, for call sites that reach for net.ListenPacket rather than
+// net.ListenUDP (the DHT socket, whose conn is handed to a third-party server).
+func ApplyBindToPacket(conn net.PacketConn, ifIndex int) error {
 	if ifIndex == 0 {
 		return nil
 	}
@@ -72,7 +73,7 @@ func applyBindToPacket(conn net.PacketConn, ifIndex int) error {
 // pinned to the named interface index via the OS-specific helper. A zero
 // ifIndex yields an unmodified Dialer with no Control hook.
 //
-// Use this for net.Dial-flavoured call sites — UDP trackers, NAT-PMP probes,
+// Use this for net.Dial-flavoured call sites — UDP trackers, peer TCP dials,
 // any callers that need outbound traffic to skip the routing table.
 func DialerWithBind(base net.Dialer, ifIndex int) *net.Dialer {
 	if ifIndex == 0 {
