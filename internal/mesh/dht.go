@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/redstone-md/moss/internal/transport"
+
 	dht "github.com/anacrolix/dht/v2"
 )
 
@@ -24,9 +26,20 @@ type dhtSource struct {
 // discoverable and keeps finding peers that come online later. onPeers is
 // called with "ip:port" strings as peers arrive. Best-effort; the mesh does
 // not depend on it.
-func startDHTSource(infoHash [20]byte, dhtPort int, interval time.Duration, announcePort func() int, onPeers func([]string)) (*dhtSource, error) {
+//
+// bindIfIndex pins the socket to one NIC. It must match the mesh listener's:
+// the DHT announces whatever address this socket's traffic appears to come
+// from, so an unbound DHT under a VPN publishes the tunnel's exit while the
+// mesh publishes the physical WAN, and peers get two contradictory answers for
+// one node. A bind failure kills the DHT rather than letting it announce the
+// wrong address — best-effort means optional, not "any address will do".
+func startDHTSource(infoHash [20]byte, dhtPort int, bindIfIndex int, interval time.Duration, announcePort func() int, onPeers func([]string)) (*dhtSource, error) {
 	conn, err := net.ListenPacket("udp", ":"+strconv.Itoa(dhtPort))
 	if err != nil {
+		return nil, err
+	}
+	if err := transport.ApplyBindToPacket(conn, bindIfIndex); err != nil {
+		_ = conn.Close()
 		return nil, err
 	}
 	cfg := dht.NewDefaultServerConfig()

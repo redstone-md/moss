@@ -49,7 +49,7 @@ func (n *Node) handleReachabilityRequest(peer *peerConn, env gossip.Envelope) {
 	if peer == nil || !sameAdvertisedEndpoint(env.AdvertisedAddr, peer.addr) {
 		return
 	}
-	reachable := probeTCPAddress(env.AdvertisedAddr, minDuration(500*time.Millisecond, n.config.HandshakeTimeout()))
+	reachable := probeTCPAddress(env.AdvertisedAddr, minDuration(500*time.Millisecond, n.config.HandshakeTimeout()), n.bindIfIndex)
 	n.sendEnvelope(peer, gossip.Envelope{
 		Type:      gossip.TypeReachabilityResponse,
 		RequestID: env.RequestID,
