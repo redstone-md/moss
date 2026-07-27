@@ -11,6 +11,39 @@ later. Nothing is deleted: the tags stay published because builds that already
 resolved them must keep resolving them.
 
 
+## [0.8.15] - 2026-07-27
+
+### Fixed
+- **`bind_interface` now reaches the sockets that were ignoring it.** It bound
+  the mesh UDP listener, tracker HTTP/UDP and LAN discovery, and left the DHT
+  socket, peer TCP dials and the reachability probe on the routing table. Under
+  a VPN that split a node in two: the bound sockets spoke from the physical WAN
+  while the rest left through the tunnel, so the node advertised two external
+  addresses and its peers disagreed about which was real. Measured on a live
+  session with a bypass configured, `in_prune` reached **12,940 in three
+  minutes**; with the bypass off it was **138**.
+
+  A DHT bind failure now stops the DHT rather than letting it announce the
+  wrong address — best-effort means optional, not "any address will do".
+
+### Notes
+- **The inbound TCP listener is deliberately left unbound**, on `0.0.0.0`.
+  `SO_BINDTODEVICE` on a listening socket refuses connections arriving over the
+  tunnel, and on Windows `IP_UNICAST_IF` on a listener does nothing at all — so
+  binding it is either harmful or pointless. Outbound TCP is covered by the
+  bound dialer instead. The UDP listener is the opposite case and keeps its
+  bind: one socket serves every destination, so it alone picks the source
+  address.
+- **PCP/NAT-PMP is not covered.** It reaches on-link gateways through its own
+  plumbing, which does not carry the bind. A mapping granted by a VPN gateway
+  remains a way to advertise a tunnel-side address.
+- `TestNoUnboundSocketCallSites` walks `internal/` and fails when a socket is
+  constructed somewhere that cannot honour the bind, with a reason recorded per
+  exempt file. The failure mode is invisible at runtime — it surfaces days later
+  as a peer with two addresses — so the invariant is checked where it is written.
+- Also in this range, outside the library: the landing site was rebuilt, and CI
+  now assembles release notes from the changelog plus the commits in the tag.
+
 ## [0.8.11] - [0.8.14] - 2026-07-17
 
 Release hygiene only; no code changes in any of them.
