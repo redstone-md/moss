@@ -11,6 +11,32 @@ later. Nothing is deleted: the tags stay published because builds that already
 resolved them must keep resolving them.
 
 
+## [0.8.18] - 2026-07-29
+
+### Fixed
+- **Application delivery could stall the read loop, and the read loop takes the
+  session with it.** Delivery to the application is a synchronous callback that
+  decrypts and writes to disk. It was fed from a single shared queue drained by
+  one goroutine, and `deliverLocal`'s send into it blocked. So a file transfer's
+  chunks filled the queue, the send blocked, `readPeer` stopped reading, and the
+  transport's 256-packet inbound buffer overflowed — discarding whatever arrived
+  next. Measured on a live pair: `stream_drops = 36`, all on the default stream.
+
+  Two symptoms, one cause: transfers that stick forever at 63% / 32% / 0%, and
+  sessions dying at ~37s on a healthy link — the packets thrown away behind the
+  stall include the pings a peer counts six of before giving up.
+
+  Delivery now runs one queue and one worker per channel. A slow transfer on one
+  channel can no longer delay control traffic on another, which is the only
+  reason ordering needs to be per-channel rather than global, and the enqueue
+  never blocks: a dropped message is a bounded, counted loss
+  (`__local_delivery_dropped__`), a stalled reader is an unbounded and invisible
+  one.
+
+  The `dispatchSem` this replaces for that path was inert — one goroutine
+  acquired and released it within a single iteration, so it never permitted any
+  concurrency.
+
 ## [0.8.17] - 2026-07-28
 
 ### Added
