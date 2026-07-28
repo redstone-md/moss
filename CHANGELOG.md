@@ -11,6 +11,46 @@ later. Nothing is deleted: the tags stay published because builds that already
 resolved them must keep resolving them.
 
 
+## [0.8.16] - 2026-07-28
+
+### Fixed
+- **A closing UDP session could kill the entire host process.** The listener's
+  read loop and a session close run on different goroutines with nothing
+  ordering them, so `enqueue` could pass its `closed` check and then send on a
+  channel `Close` had just closed — `panic: send on closed channel`. Because
+  moss is linked into its host as a shared library, that panic takes the whole
+  application down rather than one session. Hit on an ordinary 120s probe run,
+  no stress involved. `Close` now leaves `incoming` open: `closed` already ends
+  `ReadPacket`, so this removes the window instead of narrowing it.
+
+- **Topic rendezvous asked an empty routing table on 86% of every lookup.**
+  Fleet telemetry over 14 days: with an empty table, 0 subscribers found in
+  5,319 lookups; with 5+ contacts, 155 found in 714 and 90% of those reached
+  the peer. The table was seeded only by the 30s republish pass while a DM goes
+  looking within seconds of startup, so the first lookups always queried
+  nothing. It now grows when a routable peer is learned.
+
+- **A mesh full of strangers suppressed both discovery and grafting.** Grafting
+  marks a peer in-mesh before it has claimed the channel, so a node with no idea
+  who is on a topic filled its mesh with strangers and read as healthy until
+  they answered PRUNE — measured at 16,933 inbound PRUNEs on one live pair.
+  `ConfirmedMeshPeers` now decides in both places that consult the mesh:
+  `maybeDiscoverTopicPeers` and `ensureTopicMeshMinimum`. The second mattered
+  twice over — its slot count was `D - len(meshPeers)`, which is 0 once six
+  strangers are in, so even a peer known to subscribe could never be grafted.
+  Since publishing only reaches known subscribers, both ends published into the
+  substrate and neither heard the other. After the fix on the same pair: PRUNEs
+  16,933 to **0**, rendezvous attempts 3 to 12, avg contacts 0 to **7.78**.
+
+### Added
+- `overlay_publish` reports `seed_considered` / `seed_added` / `seed_rej_*`, so
+  an empty routing table names the gate that emptied it. First reading: 2,189
+  of 2,318 known peers rejected as unreachable — only public nodes are eligible
+  hops, which is what makes the seeding window so narrow.
+- `topic_key` on lookups and `topic_keys` on publishes, so both sides of a
+  rendezvous can be lined up instead of assumed to agree. This retired the
+  leading hypothesis for `found=0`: the two ends derive identical keys.
+
 ## [0.8.15] - 2026-07-27
 
 ### Fixed
