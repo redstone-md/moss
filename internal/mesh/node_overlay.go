@@ -2,10 +2,10 @@ package mesh
 
 import (
 	"context"
-	"sync"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/redstone-md/moss/internal/gossip"
@@ -54,38 +54,77 @@ func (n *Node) localOverlayID() (overlay.NodeID, bool) {
 	return overlay.IDFromHex(n.localPeerID())
 }
 
+// overlaySeedTally counts why a seed pass did or did not grow the routing
+// table. A client whose table stays empty cannot publish records or resolve a
+// rendezvous, and every symptom above that — a topic mesh that never holds the
+// counterpart, a handshake that never arrives — reads the same as "nobody is
+// there". The counts say which gate is closing.
+type overlaySeedTally struct {
+	considered   int
+	added        int
+	notReachable int
+	noAddr       int
+	badID        int
+	noTable      int
+}
+
 // noteOverlayContact records a peer as a routable contact when it is publicly
 // reachable. Only such peers belong in the table — a contact that cannot be
-// dialed is useless as a lookup hop.
-func (n *Node) noteOverlayContact(info knownPeer) {
-	if !info.publicReachable || info.addr == "" {
+// dialed is useless as a lookup hop. It reports which gate rejected the peer so
+// the seed pass can tally; per-call logging would be a firehose, since this
+// walks every known peer twice a minute.
+func (n *Node) noteOverlayContact(info knownPeer, tally *overlaySeedTally) {
+	if tally != nil {
+		tally.considered++
+	}
+	if !info.publicReachable {
+		if tally != nil {
+			tally.notReachable++
+		}
+		return
+	}
+	if info.addr == "" {
+		if tally != nil {
+			tally.noAddr++
+		}
 		return
 	}
 	cid, ok := overlay.IDFromHex(info.id)
 	if !ok {
+		if tally != nil {
+			tally.badID++
+		}
 		return
 	}
 	if n.overlayTable == nil {
+		if tally != nil {
+			tally.noTable++
+		}
 		return
 	}
 	// The table guards itself; taking the node's lock here would put discovery
 	// traffic in the way of everything else the node does.
 	n.overlayTable.Add(overlay.Contact{ID: cid, Addr: info.addr, LastSeen: time.Now()})
+	if tally != nil {
+		tally.added++
+	}
 }
 
 // overlaySeedFromKnownPeers refills the routing table from what the substrate
 // already gossips. The peer-exchange layer learns reachable peers anyway; the
 // overlay only needs them organised by distance.
-func (n *Node) overlaySeedFromKnownPeers() {
+func (n *Node) overlaySeedFromKnownPeers() overlaySeedTally {
 	n.mu.RLock()
 	infos := make([]knownPeer, 0, len(n.knownPeers))
 	for _, info := range n.knownPeers {
 		infos = append(infos, info)
 	}
 	n.mu.RUnlock()
+	var tally overlaySeedTally
 	for _, info := range infos {
-		n.noteOverlayContact(info)
+		n.noteOverlayContact(info, &tally)
 	}
+	return tally
 }
 
 // ---- core side: answering queries ----
@@ -523,8 +562,7 @@ func (n *Node) overlayPublishLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			n.overlaySeedFromKnownPeers()
-			n.republishOverlayRecords(ctx)
+			n.republishOverlayRecords(ctx, n.overlaySeedFromKnownPeers())
 			n.mu.RLock()
 			store := n.overlayStore
 			n.mu.RUnlock()
@@ -538,7 +576,7 @@ func (n *Node) overlayPublishLoop(ctx context.Context) {
 // republishOverlayRecords refreshes our records and reports how many nodes
 // accepted them. The count is the layer's only honest health signal: a lookup
 // cannot tell "nobody is on this channel" from "nothing was ever stored".
-func (n *Node) republishOverlayRecords(ctx context.Context) int {
+func (n *Node) republishOverlayRecords(ctx context.Context, seed overlaySeedTally) int {
 	self, ok := n.localOverlayID()
 	if !ok {
 		return 0
@@ -560,7 +598,7 @@ func (n *Node) republishOverlayRecords(ctx context.Context) int {
 		}
 		stored += n.overlayPublish(pubCtx, overlay.ChannelKey(topic), hint)
 	}
-	n.reportOverlayPublish(stored, len(topics), started)
+	n.reportOverlayPublish(stored, len(topics), started, seed)
 	return stored
 }
 

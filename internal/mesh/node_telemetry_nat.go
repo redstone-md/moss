@@ -223,7 +223,7 @@ func (n *Node) reportRendezvous(found, reached int, started time.Time) {
 // invisible while it made every rendezvous on the network fail. The count of
 // nodes that accepted a STORE is the difference between "the layer works and the
 // room is empty" and "the layer has never once worked".
-func (n *Node) reportOverlayPublish(stored, topics int, started time.Time) {
+func (n *Node) reportOverlayPublish(stored, topics int, started time.Time, seed overlaySeedTally) {
 	if n.axiom.Load() == nil {
 		return
 	}
@@ -235,6 +235,16 @@ func (n *Node) reportOverlayPublish(stored, topics int, started time.Time) {
 	if n.overlayTable != nil {
 		fields["contacts"] = n.overlayTable.Len()
 	}
+	// The seed pass that just ran, broken down by which gate closed. An empty
+	// table is the difference between "the overlay is idle" and "the overlay
+	// was never able to start", and these say which peer property is missing
+	// rather than leaving it to be guessed at from the outside.
+	fields["seed_considered"] = seed.considered
+	fields["seed_added"] = seed.added
+	fields["seed_rej_unreachable"] = seed.notReachable
+	fields["seed_rej_no_addr"] = seed.noAddr
+	fields["seed_rej_bad_id"] = seed.badID
+	fields["seed_rej_no_table"] = seed.noTable
 	level := "info"
 	if stored == 0 {
 		level = "warn"

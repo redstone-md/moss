@@ -75,7 +75,7 @@ func TestLookupReachesPastUnreachableNearestContacts(t *testing.T) {
 	defer cancel()
 
 	// A's record lands on the core it shares with B.
-	if stored := a.republishOverlayRecords(ctx); stored == 0 {
+	if stored := a.republishOverlayRecords(ctx, overlaySeedTally{}); stored == 0 {
 		t.Fatal("A stored its record nowhere: a record nobody holds can never be found")
 	}
 
@@ -141,7 +141,7 @@ func TestPublishReportsWhereItLanded(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	if stored := a.republishOverlayRecords(ctx); stored == 0 {
+	if stored := a.republishOverlayRecords(ctx, overlaySeedTally{}); stored == 0 {
 		t.Fatal("publish stored at zero nodes while a reachable core was attached")
 	}
 }
