@@ -152,10 +152,7 @@ func (c *udpCarrier) WritePacket(packet []byte) error {
 
 func (c *udpCarrier) ReadPacket() ([]byte, error) {
 	select {
-	case packet, ok := <-c.incoming:
-		if !ok {
-			return nil, io.EOF
-		}
+	case packet := <-c.incoming:
 		return packet, nil
 	case <-c.closed:
 		return nil, io.EOF
@@ -166,11 +163,16 @@ func (c *udpCarrier) RemoteAddr() net.Addr {
 	return c.remote
 }
 
+// Close and closeFromListener deliberately leave `incoming` open. The read
+// loop runs on its own goroutine and can be inside enqueue's send at the exact
+// moment a session closes; closing the channel it is sending on turned that
+// race into `panic: send on closed channel`, which takes the whole host process
+// down because moss is linked as a shared library. `closed` alone is enough to
+// end reads — a channel nobody holds is collected either way.
 func (c *udpCarrier) Close() error {
 	c.once.Do(func() {
 		c.listener.removeSession(c.remote.String(), c)
 		close(c.closed)
-		close(c.incoming)
 	})
 	return nil
 }
@@ -178,7 +180,6 @@ func (c *udpCarrier) Close() error {
 func (c *udpCarrier) closeFromListener() {
 	c.once.Do(func() {
 		close(c.closed)
-		close(c.incoming)
 	})
 }
 
