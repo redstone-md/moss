@@ -68,7 +68,13 @@ jobs:
             mingw-w64-ucrt-x86_64-gcc
 
       - name: Build shared library
-        run: go build -buildmode=c-shared -o ${{ matrix.output }} ./cmd/moss-ffi
+        # Stamp the tag so Moss_Version reports it. A host loads this library by
+        # path at runtime, so without the stamp there is no way to tell which
+        # build it actually got.
+        run: >-
+          go build -buildmode=c-shared
+          -ldflags "-X main.buildVersion=${{ github.ref_name }}"
+          -o ${{ matrix.output }} ./cmd/moss-ffi
 
       - name: Package shared artifact
         shell: pwsh
