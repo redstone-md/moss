@@ -592,13 +592,16 @@ func (n *Node) republishOverlayRecords(ctx context.Context, seed overlaySeedTall
 	// two nodes in the same room derive the same key while a core node holding
 	// the record still cannot tell which room or game it belongs to.
 	topics := n.pubsub.SnapshotLocal()
+	topicKeys := make([]string, 0, len(topics))
 	for _, topic := range topics {
 		if pubCtx.Err() != nil {
 			break
 		}
-		stored += n.overlayPublish(pubCtx, overlay.ChannelKey(topic), hint)
+		key := overlay.ChannelKey(topic)
+		topicKeys = append(topicKeys, key.String()[:16])
+		stored += n.overlayPublish(pubCtx, key, hint)
 	}
-	n.reportOverlayPublish(stored, len(topics), started, seed)
+	n.reportOverlayPublish(stored, len(topics), topicKeys, started, seed)
 	return stored
 }
 
@@ -661,11 +664,14 @@ func (n *Node) maybeDiscoverTopicPeers(topic string) {
 // be grafted.
 func (n *Node) discoverTopicPeers(ctx context.Context, topic string) {
 	started := time.Now()
+	// The same derivation the publish side uses, reported alongside the result
+	// so a lookup and a store can be compared rather than assumed to agree.
+	topicKey := overlay.ChannelKey(topic).String()[:16]
 	lookupCtx, cancel := withTimeout(ctx, 20*time.Second)
 	defer cancel()
 	found := n.findChannelPeers(lookupCtx, topic)
 	if len(found) == 0 {
-		n.reportRendezvous(0, 0, started)
+		n.reportRendezvous(0, 0, topicKey, started)
 		return
 	}
 	reached := 0
@@ -685,7 +691,7 @@ func (n *Node) discoverTopicPeers(ctx context.Context, topic string) {
 			n.reportConnectAttempt(outcomeFailed, reasonUnreachablePex, attemptAt, true)
 		}
 	}
-	n.reportRendezvous(len(found), reached, started)
+	n.reportRendezvous(len(found), reached, topicKey, started)
 	if reached > 0 {
 		n.maintainTopicMesh(topic)
 	}
