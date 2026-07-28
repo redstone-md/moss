@@ -3,6 +3,7 @@ package mesh
 import (
 	"net"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -194,7 +195,7 @@ func (n *Node) reportConnectAttempt(outcome, reason string, started time.Time, v
 // resolved and how many became reachable. A lookup that finds peers but reaches
 // none says the rendezvous works and the path does not — the two failures are
 // worth telling apart, and nothing else in the system distinguishes them.
-func (n *Node) reportRendezvous(found, reached int, started time.Time) {
+func (n *Node) reportRendezvous(found, reached int, topicKey string, started time.Time) {
 	if n.axiom.Load() == nil {
 		return
 	}
@@ -202,6 +203,11 @@ func (n *Node) reportRendezvous(found, reached int, started time.Time) {
 	fields["found"] = found
 	fields["reached"] = reached
 	fields["took_ms"] = time.Since(started).Milliseconds()
+	// The key this lookup asked about. found=0 cannot distinguish "nobody is on
+	// the channel" from "we asked about a key nothing was ever stored under",
+	// and the publish side reports the same value, so the two can be compared
+	// instead of assumed equal.
+	fields["topic_key"] = topicKey
 	// The routing table's size is the difference between "nobody is on this
 	// channel" and "we had nobody to ask" — found=0 reads identically either
 	// way, and publishing needs the same table a lookup does, so an empty one
@@ -223,7 +229,7 @@ func (n *Node) reportRendezvous(found, reached int, started time.Time) {
 // invisible while it made every rendezvous on the network fail. The count of
 // nodes that accepted a STORE is the difference between "the layer works and the
 // room is empty" and "the layer has never once worked".
-func (n *Node) reportOverlayPublish(stored, topics int, started time.Time) {
+func (n *Node) reportOverlayPublish(stored, topics int, topicKeys []string, started time.Time, seed overlaySeedTally) {
 	if n.axiom.Load() == nil {
 		return
 	}
@@ -235,6 +241,21 @@ func (n *Node) reportOverlayPublish(stored, topics int, started time.Time) {
 	if n.overlayTable != nil {
 		fields["contacts"] = n.overlayTable.Len()
 	}
+	// The seed pass that just ran, broken down by which gate closed. An empty
+	// table is the difference between "the overlay is idle" and "the overlay
+	// was never able to start", and these say which peer property is missing
+	// rather than leaving it to be guessed at from the outside.
+	fields["seed_considered"] = seed.considered
+	fields["seed_added"] = seed.added
+	fields["seed_rej_unreachable"] = seed.notReachable
+	fields["seed_rej_no_addr"] = seed.noAddr
+	fields["seed_rej_bad_id"] = seed.badID
+	fields["seed_rej_no_table"] = seed.noTable
+	// The keys these records were stored under. A rendezvous reports the key it
+	// asked about, so the two sides can be lined up: a lookup that finds nothing
+	// under a key nobody stored is a different bug from one that finds nothing
+	// under the right key.
+	fields["topic_keys"] = strings.Join(topicKeys, ",")
 	level := "info"
 	if stored == 0 {
 		level = "warn"

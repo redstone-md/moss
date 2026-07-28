@@ -280,6 +280,7 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 	}
 	trustCapabilities := verifySupernodeStatusEnvelope(env)
 	changed := false
+	var learned knownPeer
 	n.mu.Lock()
 	current, ok := n.knownPeers[env.AdvertisedPeerID]
 	addr := preferredKnownPeerAddr(current, env.AdvertisedAddr)
@@ -323,7 +324,7 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 		if peer != nil && peer.outbound && env.AdvertisedPeerID == peer.id && peer.bootstrap {
 			bootstrap = true
 		}
-		n.knownPeers[env.AdvertisedPeerID] = knownPeer{
+		learned = knownPeer{
 			id:                     env.AdvertisedPeerID,
 			addr:                   addr,
 			direct:                 direct,
@@ -341,9 +342,20 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 			signature:              signature,
 			thirdPartyDialable:     thirdPartyDialable,
 		}
+		n.knownPeers[env.AdvertisedPeerID] = learned
 		changed = true
 	}
 	n.mu.Unlock()
+	// Offer the peer to the overlay the moment we learn it is routable, rather
+	// than waiting for the 30s republish pass that used to be the only thing
+	// that filled the table. A DM subscribes and looks for its counterpart
+	// within seconds of the node starting, so every lookup in that first window
+	// queried an empty table and could only return nothing — while the peers it
+	// needed were already known. The table guards itself, so this stays outside
+	// the node lock.
+	if changed {
+		n.noteOverlayContact(learned, nil)
+	}
 	// Re-flood a peer announcement only on a MEANINGFUL change — a new peer, or
 	// a change in capability / reachability / NAT type / identity / IP. A bare
 	// port flip (symmetric-NAT and ephemeral-egress peers churn their source
