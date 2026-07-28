@@ -101,6 +101,6 @@ func TestReportingIsANoopWithoutASink(t *testing.T) {
 	}
 	// Must not panic or block.
 	n.reportConnectAttempt(outcomeDirect, reasonNone, time.Now(), false)
-	n.reportRendezvous(1, 0, time.Now())
+	n.reportRendezvous(1, 0, "deadbeefdeadbeef", time.Now())
 	n.reportSessionLifetime(false, time.Now(), 0, originDialTCP, "tcp", 0, "abc123")
 }

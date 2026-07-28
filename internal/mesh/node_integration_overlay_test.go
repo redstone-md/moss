@@ -94,8 +94,8 @@ func TestOverlayLeavesFindEachOtherThroughCore(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	a.republishOverlayRecords(ctx)
-	b.republishOverlayRecords(ctx)
+	a.republishOverlayRecords(ctx, overlaySeedTally{})
+	b.republishOverlayRecords(ctx, overlaySeedTally{})
 
 	topic := a.roomTopic("sparse-channel")
 	var found map[string]reachabilityHint
@@ -163,8 +163,8 @@ func TestOverlayDeliversBetweenLeavesWithNoDirectPath(t *testing.T) {
 	// the test does not wait on it. Everything after this is the mesh's own doing.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	a.republishOverlayRecords(ctx)
-	b.republishOverlayRecords(ctx)
+	a.republishOverlayRecords(ctx, overlaySeedTally{})
+	b.republishOverlayRecords(ctx, overlaySeedTally{})
 
 	deadline := time.Now().Add(25 * time.Second)
 	for time.Now().Before(deadline) {
@@ -207,7 +207,7 @@ func TestOverlayStoreAttributesToSender(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	leaf.republishOverlayRecords(ctx)
+	leaf.republishOverlayRecords(ctx, overlaySeedTally{})
 
 	self, ok := leaf.localOverlayID()
 	if !ok {
