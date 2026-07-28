@@ -303,11 +303,22 @@ func (n *Node) maintainTopicMesh(channel string) {
 }
 
 func (n *Node) ensureTopicMeshMinimum(channel string) {
-	meshPeers := n.pubsub.MeshPeers(channel)
-	if len(meshPeers) >= n.config.GossipSub.DLo {
+	// Confirmed members decide whether the mesh still needs filling. Grafting
+	// marks a peer in-mesh before it has said anything about the channel, so
+	// counting those makes a mesh of six strangers look complete and stops us
+	// grafting the one peer that is actually on the topic. They answer PRUNE,
+	// the mesh empties, and the next pass grafts six more strangers — while the
+	// counterpart, already connected, is never grafted at all. Publishing only
+	// reaches peers known to subscribe, so both ends then publish into the
+	// substrate and neither ever hears the other.
+	confirmed := n.pubsub.ConfirmedMeshPeers(channel)
+	if confirmed >= n.config.GossipSub.DLo {
 		return
 	}
-	candidates := n.selectMeshCandidates(channel, n.config.GossipSub.D-len(meshPeers))
+	// The room to graft into is measured the same way. Sizing it by the total
+	// mesh gave `D - 6 = 0` slots whenever six strangers were already grafted,
+	// so even a peer known to subscribe could never be selected.
+	candidates := n.selectMeshCandidates(channel, n.config.GossipSub.D-confirmed)
 	for _, peerID := range candidates {
 		n.mu.RLock()
 		peer := n.peers[peerID]
