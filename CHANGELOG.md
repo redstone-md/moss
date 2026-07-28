@@ -11,6 +11,24 @@ later. Nothing is deleted: the tags stay published because builds that already
 resolved them must keep resolving them.
 
 
+## [0.8.17] - 2026-07-28
+
+### Added
+- **`Moss_Version` — a host can now ask which moss it loaded.** Every host
+  resolves this library by path at runtime (mosh from `moss-runtime/`,
+  mosh-org from `--moss-lib`/`MOSH_ORG_MOSS_LIB`, the probe from beside the
+  binary), so an old copy sitting next to a new host loads silently and shows
+  up later as transport misbehaviour nobody attributes to the library. Nothing
+  exposed the version before this: not the FFI surface, not `GetMeshInfo`.
+
+  Release builds carry their tag, stamped by the release workflow via
+  `-ldflags "-X main.buildVersion=<tag>"`; a library built any other way
+  reports `"dev"` rather than claiming a version it cannot know. Callers should
+  treat a missing symbol as "older than v0.8.17".
+
+  New symbol only — no existing signature changed, so every current host keeps
+  working untouched.
+
 ## [0.8.16] - 2026-07-28
 
 ### Fixed
