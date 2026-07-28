@@ -620,7 +620,15 @@ const overlayTopicDiscoveryEvery = 15 * time.Second
 //
 // It never blocks the caller: maintainTopicMesh runs on the maintenance tick.
 func (n *Node) maybeDiscoverTopicPeers(topic string) {
-	if len(n.pubsub.MeshPeers(topic)) >= n.config.GossipSub.DLo {
+	// Confirmed members only. ensureTopicMeshMinimum runs earlier in the same
+	// maintenance pass and, with nobody known to be on the topic, grafts up to D
+	// peers picked at random and marks them in-mesh before any of them answers.
+	// Counting those made the mesh look full on every pass, so this returned
+	// every time and the rendezvous that would find the actual subscriber never
+	// ran. They then answer PRUNE — they are not on the topic — the mesh empties,
+	// and the next pass repeats it. A two-party channel could sit in that loop
+	// forever with a healthy connection and nothing ever delivered.
+	if n.pubsub.ConfirmedMeshPeers(topic) >= n.config.GossipSub.DLo {
 		return
 	}
 	if len(n.pubsub.NonMeshSubscribers(topic)) > 0 {

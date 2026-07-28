@@ -141,6 +141,27 @@ func (m *Manager) NonMeshSubscribers(channel string) []string {
 	return out
 }
 
+// ConfirmedMeshPeers counts mesh members that have themselves claimed the
+// channel, as opposed to ones grafted on spec and not yet answered.
+//
+// The distinction decides whether a topic still needs to be discovered. A graft
+// marks its target as a mesh peer before the target has said anything, so a
+// node with no idea who is on a channel can fill its mesh with strangers and
+// look healthy for as long as it takes them to answer PRUNE — every time, on
+// every maintenance pass. Counting only confirmed members keeps "the mesh is
+// full" from meaning "we asked six people at random".
+func (m *Manager) ConfirmedMeshPeers(channel string) int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	count := 0
+	for peerID := range m.meshPeers[channel] {
+		if _, ok := m.peerSubscriptions[peerID][channel]; ok {
+			count++
+		}
+	}
+	return count
+}
+
 func (m *Manager) InMesh(channel, peerID string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
