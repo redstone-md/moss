@@ -136,6 +136,22 @@ type Node struct {
 	eventCB          EventCallback
 	relayCB          RelayCallback
 	dispatchCh       chan any
+
+	// Per-channel delivery queues, each drained by its own worker.
+	//
+	// Delivery to the application is a synchronous FFI callback that decrypts
+	// and writes to disk. Feeding it from the read loop meant one slow channel
+	// stalled everything: a blob's chunks filled the shared dispatch queue,
+	// deliverLocal blocked, readPeer stopped reading, and the transport's
+	// 256-packet buffer overflowed — silently discarding whatever was behind,
+	// pings included. That is both the file transfers that stick at 63% and the
+	// sessions that die at 37s on a healthy link.
+	//
+	// One queue per channel keeps ordering where it matters (within a channel)
+	// while a slow blob transfer can no longer stall control traffic, and the
+	// read loop never blocks on delivery at all.
+	localMu     sync.Mutex
+	localQueues map[string]chan dispatchMessage
 }
 
 type peerConn struct {

@@ -114,6 +114,7 @@ func NewNodeWithIdentity(meshID string, psk []byte, cfg Config, identity *mcrypt
 		holePunchWait:    make(map[string]holePunchRequest),
 		dispatchSem:      make(chan struct{}, 500),
 		dispatchCh:       make(chan any, 1024),
+		localQueues:      make(map[string]chan dispatchMessage),
 	}
 	node.natProfile.Store(nat.Profile{Type: nat.TypeUnknown})
 	if cfg.Telemetry.Enabled {

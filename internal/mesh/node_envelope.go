@@ -144,11 +144,74 @@ func (n *Node) deliverLocal(env gossip.Envelope) {
 	}
 	var sender [32]byte
 	copy(sender[:], env.SenderID)
-	n.dispatchCh <- dispatchMessage{
+	n.enqueueLocal(dispatchMessage{
 		// Hand the application its bare channel, not the opaque room topic.
 		channel: n.localChannel(env.Channel),
 		sender:  sender,
 		data:    plaintext,
+	})
+}
+
+// localDeliveryQueueDepth is per channel. Deep enough to absorb a file
+// transfer's chunks while the application decrypts and writes them, because the
+// alternative is not "wait a moment" but "lose packets in the transport buffer
+// and take the pings with them".
+const localDeliveryQueueDepth = 4096
+
+// enqueueLocal hands a message to its channel's delivery worker and never
+// blocks the caller.
+//
+// The read loop calls this. Blocking here stops that loop, and a stopped read
+// loop overflows the transport's inbound buffer, which discards whatever
+// arrives next — including the pings a session dies without. A dropped message
+// on one channel is a bounded, counted loss; a stalled reader is an unbounded,
+// invisible one. The first is strictly better, so the send is non-blocking and
+// the overflow is recorded.
+func (n *Node) enqueueLocal(msg dispatchMessage) {
+	n.localMu.Lock()
+	queue, ok := n.localQueues[msg.channel]
+	if !ok {
+		queue = make(chan dispatchMessage, localDeliveryQueueDepth)
+		if n.localQueues == nil {
+			n.localQueues = make(map[string]chan dispatchMessage)
+		}
+		n.localQueues[msg.channel] = queue
+		n.wg.Add(1)
+		go n.localDeliveryWorker(queue)
+	}
+	n.localMu.Unlock()
+
+	select {
+	case queue <- msg:
+	default:
+		n.countInbound("__local_delivery_dropped__")
+	}
+}
+
+// localDeliveryWorker drains one channel's queue in order. One worker per
+// channel: ordering is preserved where it is meaningful, and a slow transfer on
+// one channel cannot delay control traffic on another.
+func (n *Node) localDeliveryWorker(queue chan dispatchMessage) {
+	defer n.wg.Done()
+	for {
+		n.mu.RLock()
+		root := n.rootCtx
+		n.mu.RUnlock()
+		var done <-chan struct{}
+		if root != nil {
+			done = root.Done()
+		}
+		select {
+		case <-done:
+			return
+		case msg := <-queue:
+			n.mu.RLock()
+			cb := n.messageCB
+			n.mu.RUnlock()
+			if cb != nil {
+				cb(msg.channel, msg.sender, msg.data)
+			}
+		}
 	}
 }
 
