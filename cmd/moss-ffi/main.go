@@ -80,6 +80,11 @@ import (
 
 const relayFFITimeout = 5 * time.Second
 
+// buildVersion is stamped at link time by the release workflow
+// (-ldflags "-X main.buildVersion=v0.8.17"). A library built any other way says
+// so rather than claiming a version it cannot know.
+var buildVersion = "dev"
+
 var (
 	handleCounter atomic.Int64
 	registryMu    sync.RWMutex
@@ -371,6 +376,20 @@ func Moss_GetNATType(handle C.MossHandle) *C.char {
 // allocated C string (free with Moss_Free), or NULL if the handle is unknown.
 // Call it before Moss_Stop, which removes the handle from the registry.
 //
+// Moss_Version returns the version this library was built at, as a newly
+// allocated C string (free with Moss_Free). Release builds carry their tag;
+// anything else reports "dev".
+//
+// A host loads moss by path at runtime, so nothing stops an old library from
+// sitting next to a new host — and the symptoms of that are transport bugs the
+// host cannot diagnose. This lets a host say which library it got instead of
+// guessing. Callers must treat a missing symbol as "older than v0.8.17".
+//
+//export Moss_Version
+func Moss_Version() *C.char {
+	return C.CString(buildVersion)
+}
+
 //export Moss_LastError
 func Moss_LastError(handle C.MossHandle) *C.char {
 	node, code := getNode(int64(handle))
