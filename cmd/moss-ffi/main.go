@@ -194,6 +194,76 @@ func Moss_Subscribe(handle C.MossHandle, channel *C.char) C.int32_t {
 	return C.int32_t(node.Subscribe(C.GoString(channel)))
 }
 
+// Moss_JoinRoom, Moss_SubscribeRoom, Moss_PublishRoom and Moss_UnsubscribeRoom
+// let ONE node serve several rooms. A host that gave each conversation its own
+// room had to start a node per conversation, and node identity is per process,
+// so every one of those nodes presented the same peer id from a different port
+// — remote peers keep one session per identity and closed the rest on arrival.
+//
+// The room-less calls above are unchanged and still mean "this node's own
+// room", so a host that does not care never sees any of this. Callers older
+// than this build simply lack the symbols; treat a missing one as "this moss
+// cannot share a node".
+
+//export Moss_JoinRoom
+func Moss_JoinRoom(handle C.MossHandle, meshID *C.char, psk *C.uint8_t, pskLength C.uint32_t) C.int32_t {
+	node, code := getNode(int64(handle))
+	if code != mesh.MOSS_OK {
+		return C.int32_t(code)
+	}
+	if meshID == nil {
+		return C.int32_t(mesh.MOSS_ERR_CONFIG_INVALID)
+	}
+	var secret []byte
+	if psk != nil && pskLength > 0 {
+		secret = bytesFromPointer(psk, int(pskLength))
+	}
+	return C.int32_t(node.JoinRoom(C.GoString(meshID), secret))
+}
+
+//export Moss_LeaveRoom
+func Moss_LeaveRoom(handle C.MossHandle, meshID *C.char) C.int32_t {
+	node, code := getNode(int64(handle))
+	if code != mesh.MOSS_OK {
+		return C.int32_t(code)
+	}
+	if meshID == nil {
+		return C.int32_t(mesh.MOSS_ERR_CONFIG_INVALID)
+	}
+	return C.int32_t(node.LeaveRoom(C.GoString(meshID)))
+}
+
+//export Moss_SubscribeRoom
+func Moss_SubscribeRoom(handle C.MossHandle, meshID *C.char, channel *C.char) C.int32_t {
+	node, code := getNode(int64(handle))
+	if code != mesh.MOSS_OK {
+		return C.int32_t(code)
+	}
+	return C.int32_t(node.SubscribeRoom(C.GoString(meshID), C.GoString(channel)))
+}
+
+//export Moss_UnsubscribeRoom
+func Moss_UnsubscribeRoom(handle C.MossHandle, meshID *C.char, channel *C.char) C.int32_t {
+	node, code := getNode(int64(handle))
+	if code != mesh.MOSS_OK {
+		return C.int32_t(code)
+	}
+	return C.int32_t(node.UnsubscribeRoom(C.GoString(meshID), C.GoString(channel)))
+}
+
+//export Moss_PublishRoom
+func Moss_PublishRoom(handle C.MossHandle, meshID *C.char, channel *C.char, data *C.uint8_t, length C.uint32_t) C.int32_t {
+	node, code := getNode(int64(handle))
+	if code != mesh.MOSS_OK {
+		return C.int32_t(code)
+	}
+	if code := validatePublishPayloadPointer(unsafe.Pointer(data), uint32(length), node.MaxMessageSizeBytes()); code != mesh.MOSS_OK {
+		return C.int32_t(code)
+	}
+	payload := bytesFromPointer(data, int(length))
+	return C.int32_t(node.PublishRoom(C.GoString(meshID), C.GoString(channel), payload))
+}
+
 //export Moss_Connect
 func Moss_Connect(handle C.MossHandle, addr *C.char) C.int32_t {
 	node, code := getNode(int64(handle))

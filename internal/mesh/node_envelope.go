@@ -136,9 +136,16 @@ func (n *Node) deliverLocal(env gossip.Envelope) {
 	if !n.pubsub.IsLocalSubscriber(env.Channel) {
 		return
 	}
+	// Which room this topic belongs to is not guessable from the wire — the
+	// topic is an HMAC — so it comes from what this node subscribed under. A
+	// topic with no subscription cannot be opened by any key we hold.
+	sub, subscribed := n.subscriptionFor(env.Channel)
+	if !subscribed {
+		return
+	}
 	// Open the room seal; a payload we cannot authenticate (wrong room / PSK) is
 	// dropped rather than handed up.
-	plaintext, ok := n.openRoom(env.Payload)
+	plaintext, ok := n.openRoom(sub.room, env.Payload)
 	if !ok {
 		return
 	}
@@ -146,7 +153,7 @@ func (n *Node) deliverLocal(env gossip.Envelope) {
 	copy(sender[:], env.SenderID)
 	n.enqueueLocal(dispatchMessage{
 		// Hand the application its bare channel, not the opaque room topic.
-		channel: n.localChannel(env.Channel),
+		channel: sub.channel,
 		sender:  sender,
 		data:    plaintext,
 	})

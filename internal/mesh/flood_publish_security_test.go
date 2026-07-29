@@ -57,7 +57,7 @@ func TestLocalPublishDoesNotLeakToUnsubscribedDirectPeer(t *testing.T) {
 			if !ok {
 				continue
 			}
-			if plaintext, opened := spy.openRoom(env.Payload); opened && string(plaintext) == string(payload) {
+			if plaintext, opened := spy.openRoom("", env.Payload); opened && string(plaintext) == string(payload) {
 				t.Fatalf("unsubscribed direct peer cached publish envelope: channel=%q payload=%q", env.Channel, string(plaintext))
 			}
 		}

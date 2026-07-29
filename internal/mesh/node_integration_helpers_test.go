@@ -431,7 +431,7 @@ func nodeHasCachedPayload(node *Node, channel, payload string) bool {
 			continue
 		}
 		// Cached payloads are room-sealed; open before comparing to plaintext.
-		if plaintext, opened := node.openRoom(env.Payload); opened && string(plaintext) == payload {
+		if plaintext, opened := node.openRoom("", env.Payload); opened && string(plaintext) == payload {
 			return true
 		}
 	}
