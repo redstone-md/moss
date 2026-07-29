@@ -11,6 +11,38 @@ later. Nothing is deleted: the tags stay published because builds that already
 resolved them must keep resolving them.
 
 
+## [0.8.19] - 2026-07-29
+
+### Added
+- **One node can now hold several rooms.** A host that gives each conversation
+  its own room had to start a node per conversation. Node identity is per
+  process, so all of those nodes present the SAME peer id from different ports —
+  a remote peer keeps one session per identity, closes the rest on arrival, and
+  declines to dial the others at all because it already holds that id.
+
+  Measured across three clients over three days: 33,715 sessions, 32,330 of them
+  dead inside one second (95%), sustained at 205 / 131 / 113 discarded Noise
+  handshakes an hour against only 6–8 distinct peers each. One identity appeared
+  on 27 different ports within a single hour.
+
+  New: `Moss_JoinRoom`, `Moss_LeaveRoom`, `Moss_SubscribeRoom`,
+  `Moss_UnsubscribeRoom`, `Moss_PublishRoom`. A node is still born in one room
+  and every room-less call still means that one, so nothing existing moves; a
+  host that never joins a second room sees no difference. Treat a missing symbol
+  as "older than v0.8.19".
+
+  The crypto is untouched — same derivation, same HMAC topic, same AEAD seal.
+  What changed is which key is selected, and that never needs guessing: a wire
+  topic is an HMAC, so delivery reads the room off the subscription that created
+  it rather than trying keys. Rooms stay isolated on one node, and **a joined
+  room is byte-identical to the same room owned outright**, which is what keeps
+  a consolidated client talking to every already-released one.
+
+  A room that was never joined is refused (`MOSS_ERR_NOT_IN_ROOM`, -14) rather
+  than quietly falling back to the node's own room — that fallback would publish
+  where the intended peers are not listening and surface as lost messages hours
+  later.
+
 ## [0.8.18] - 2026-07-29
 
 ### Fixed
