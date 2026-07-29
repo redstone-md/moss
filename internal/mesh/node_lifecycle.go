@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"sort"
 	"time"
 
@@ -74,7 +75,8 @@ func NewNodeWithIdentity(meshID string, psk []byte, cfg Config, identity *mcrypt
 		meshID:           meshID,
 		psk:              append([]byte(nil), psk...),
 		roomKey:          deriveRoomKey(meshID, psk),
-		subChannels:      make(map[string]string),
+		subChannels:      make(map[string]subscription),
+		rooms:            make(map[string][]byte),
 		config:           cfg,
 		infoHash:         infoHash,
 		peerID:           peerID,
@@ -296,14 +298,47 @@ func (n *Node) Stop() int32 {
 	return MOSS_OK
 }
 
+// JoinRoom adds a room this node can subscribe and publish in, alongside the
+// one it was constructed with. Idempotent.
+func (n *Node) JoinRoom(meshID string, psk []byte) int32 {
+	if meshID == "" || meshID == n.meshID {
+		return MOSS_ERR_CONFIG_INVALID
+	}
+	if !n.joinRoom(meshID, psk) {
+		return MOSS_ERR_CONFIG_INVALID
+	}
+	return MOSS_OK
+}
+
+// LeaveRoom drops a joined room's key. Subscriptions made in it stop resolving,
+// so anything still arriving for it is dropped rather than delivered. Callers
+// should Unsubscribe first if they want the mesh told; this only forgets the
+// key. The node's own room cannot be left.
+func (n *Node) LeaveRoom(meshID string) int32 {
+	if !n.leaveRoom(meshID) {
+		return MOSS_ERR_NOT_IN_ROOM
+	}
+	return MOSS_OK
+}
+
 func (n *Node) Subscribe(channel string) int32 {
+	return n.SubscribeRoom("", channel)
+}
+
+// SubscribeRoom subscribes inside a named room; an empty room means this node's
+// own. Every room a caller names must have been joined first, or the topic
+// cannot be computed at all.
+func (n *Node) SubscribeRoom(meshID, channel string) int32 {
 	if !validChannel(channel) {
 		return MOSS_ERR_INVALID_CHANNEL
 	}
 	// Everything below the API operates on the opaque room topic; the
 	// application only ever sees the bare channel (see localChannel on delivery).
-	topic := n.roomTopic(channel)
-	n.rememberSubscription(topic, channel)
+	topic := n.roomTopicIn(meshID, channel)
+	if topic == "" {
+		return MOSS_ERR_NOT_IN_ROOM
+	}
+	n.rememberSubscription(topic, meshID, channel)
 	n.pubsub.Subscribe(topic)
 	n.announceLocalSubscription(topic)
 	n.maintainTopicMesh(topic)
@@ -311,10 +346,17 @@ func (n *Node) Subscribe(channel string) int32 {
 }
 
 func (n *Node) Unsubscribe(channel string) int32 {
+	return n.UnsubscribeRoom("", channel)
+}
+
+func (n *Node) UnsubscribeRoom(meshID, channel string) int32 {
 	if !validChannel(channel) {
 		return MOSS_ERR_INVALID_CHANNEL
 	}
-	topic := n.roomTopic(channel)
+	topic := n.roomTopicIn(meshID, channel)
+	if topic == "" {
+		return MOSS_ERR_NOT_IN_ROOM
+	}
 	for _, peerID := range n.pubsub.MeshPeers(topic) {
 		n.mu.RLock()
 		peer := n.peers[peerID]
@@ -330,6 +372,12 @@ func (n *Node) Unsubscribe(channel string) int32 {
 }
 
 func (n *Node) Publish(channel string, data []byte) int32 {
+	return n.PublishRoom("", channel, data)
+}
+
+// PublishRoom publishes inside a named room; an empty room means this node's
+// own.
+func (n *Node) PublishRoom(meshID, channel string, data []byte) int32 {
 	if !validChannel(channel) {
 		return MOSS_ERR_INVALID_CHANNEL
 	}
@@ -344,11 +392,17 @@ func (n *Node) Publish(channel string, data []byte) int32 {
 	}
 	// Seal the payload under the room key so only room members can read it;
 	// substrate peers relay opaque ciphertext under an opaque topic.
-	sealed, err := n.sealRoom(data)
+	sealed, err := n.sealRoomIn(meshID, data)
 	if err != nil {
+		if errors.Is(err, errNotInRoom) {
+			return MOSS_ERR_NOT_IN_ROOM
+		}
 		return MOSS_ERR_INTERNAL
 	}
-	topic := n.roomTopic(channel)
+	topic := n.roomTopicIn(meshID, channel)
+	if topic == "" {
+		return MOSS_ERR_NOT_IN_ROOM
+	}
 	env := n.makePublishEnvelope(topic, sealed)
 	n.cache.Store(env)
 	n.deliverLocal(env)

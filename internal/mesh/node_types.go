@@ -24,12 +24,19 @@ type Node struct {
 	networkID string
 	meshID    string
 	psk       []byte
-	// roomKey is the per-room symmetric key (empty for a substrate-only node);
-	// it seals pub/sub payloads and derives the opaque wire topics that keep the
-	// substrate room-blind. subChannels maps those opaque topics back to the
-	// bare channel this node subscribed under, for delivery.
+	// roomKey is the key of the node's OWN room, meshID (empty for a
+	// substrate-only node); it seals pub/sub payloads and derives the opaque
+	// wire topics that keep the substrate room-blind.
+	//
+	// rooms holds the keys of any FURTHER rooms joined at runtime, so one node
+	// can serve several conversations instead of one node per room — see
+	// node_room.go for why that mattered. Guarded by mu.
+	//
+	// subChannels maps an opaque topic back to the room and bare channel this
+	// node subscribed under, which is how delivery knows which key opens it.
 	roomKey     []byte
-	subChannels map[string]string
+	rooms       map[string][]byte
+	subChannels map[string]subscription
 	config      Config
 	infoHash    [20]byte
 	peerID      [20]byte
