@@ -17,6 +17,8 @@ import { RecordSource } from "./core/sources/RecordSource.js";
 import { DebugSocketSource } from "./core/sources/DebugSocketSource.js";
 import { canDiscover, discover, rememberToken, tokenFor } from "./core/discovery.js";
 import { createLiveDashboard } from "./views/liveDashboard.js";
+import { createNetworkDashboard } from "./views/networkDashboard.js";
+import { Cap } from "./core/capabilities.js";
 import { onboardingFor } from "./views/onboarding.js";
 import { Tour } from "./core/Tour.js";
 import { LANGS, applyStatic, lang, pick, setLang, t } from "./core/i18n.js";
@@ -43,7 +45,11 @@ function ensureView(name) {
   let controller;
   switch (name) {
     case "live":
-      controller = createLiveDashboard().mount(host, client);
+      // Two dashboards, chosen by what the source can answer. Showing the node
+      // board through a public scope produced a screen of dimmed panels
+      // explaining what they could not show — honest, and useless as a front
+      // door. A public scope has its own data and gets its own board.
+      controller = (nodeLens() ? createLiveDashboard() : createNetworkDashboard()).mount(host, client);
       break;
     case "trace":
       controller = new TraceView(host, client).mount();
@@ -54,7 +60,7 @@ function ensureView(name) {
       host.innerHTML = placeholderFor(name);
   }
 
-  const view = { name, host, controller };
+  const view = { name, host, controller, kind: name === "live" ? nodeLens() : undefined };
   views.set(name, view);
   return view;
 }
@@ -131,6 +137,20 @@ const lens = new LensController({
 
 lens.onSwitch((source) => {
   if (source.id?.startsWith("debug")) revealNodeLens();
+
+  // A lens change can change WHICH board belongs on screen, not just what it can
+  // show. Rebinding a node board to a network source would be the wall of dimmed
+  // panels again, so the live view is rebuilt when the kind of source changes.
+  const live = views.get("live");
+  if (live && live.kind !== undefined && live.kind !== nodeLens()) {
+    live.controller.destroy?.();
+    live.host.remove();
+    views.delete("live");
+    const wasActive = activeView === live;
+    activeView = wasActive ? null : activeView;
+    if (wasActive) showView("live");
+  }
+
   for (const { controller } of views.values()) {
     controller.applyCapabilities?.(source);
     controller.rebind?.(client);
@@ -138,6 +158,11 @@ lens.onSwitch((source) => {
   }
   renderStatus(source);
 });
+
+/** Whether the current source can answer for a single node. */
+function nodeLens() {
+  return client.source?.capabilities?.has(Cap.METRICS_EXACT) ?? false;
+}
 
 /* -------------------------------------------------------- connection bar */
 
