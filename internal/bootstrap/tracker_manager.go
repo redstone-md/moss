@@ -260,3 +260,63 @@ func (m *Manager) recordTrackerResult(tracker string, err error) {
 	state.lastSuccess = time.Now()
 	m.state[tracker] = state
 }
+
+// TrackerHealth is one tracker's standing with this node: what it last did and
+// how long ago. A tracker that has quietly stopped answering looks exactly like
+// a quiet network from the outside, which is why this is worth publishing.
+type TrackerHealth struct {
+	Tracker             string `json:"tracker"`
+	Proto               string `json:"proto"`
+	ConsecutiveFailures int    `json:"consecutive_failures"`
+	LastSuccessAgoSec   int64  `json:"last_success_ago_sec"`
+	LastFailureAgoSec   int64  `json:"last_failure_ago_sec"`
+	Healthy             bool   `json:"healthy"`
+}
+
+// Health snapshots what the manager has learned about each tracker it has
+// actually talked to. Trackers never contacted are absent rather than shown as
+// failing: "not tried" and "does not answer" are different facts.
+func (m *Manager) Health() []TrackerHealth {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	now := time.Now()
+	out := make([]TrackerHealth, 0, len(m.state))
+	for tracker, state := range m.state {
+		h := TrackerHealth{
+			Tracker:             tracker,
+			Proto:               trackerProto(tracker),
+			ConsecutiveFailures: state.consecutiveFailures,
+			Healthy:             state.consecutiveFailures == 0 && !state.lastSuccess.IsZero(),
+		}
+		if !state.lastSuccess.IsZero() {
+			h.LastSuccessAgoSec = int64(now.Sub(state.lastSuccess).Seconds())
+		} else {
+			h.LastSuccessAgoSec = -1
+		}
+		if !state.lastFailure.IsZero() {
+			h.LastFailureAgoSec = int64(now.Sub(state.lastFailure).Seconds())
+		} else {
+			h.LastFailureAgoSec = -1
+		}
+		out = append(out, h)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Healthy != out[j].Healthy {
+			return out[i].Healthy // healthy first; the failures are the tail worth reading
+		}
+		return out[i].Tracker < out[j].Tracker
+	})
+	return out
+}
+
+func trackerProto(tracker string) string {
+	switch {
+	case strings.HasPrefix(tracker, "udp://"):
+		return "UDP"
+	case strings.HasPrefix(tracker, "http://"), strings.HasPrefix(tracker, "https://"):
+		return "HTTP"
+	default:
+		return "?"
+	}
+}
