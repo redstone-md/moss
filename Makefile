@@ -1,6 +1,6 @@
 GO ?= go
 
-.PHONY: test build-linux build-windows build-darwin site gateway signal clean
+.PHONY: test build-linux build-windows build-darwin site scope gateway signal clean
 
 test:
 	$(GO) test ./...
@@ -14,7 +14,17 @@ site:
 	cp "$$($(GO) env GOROOT)/lib/wasm/wasm_exec.js" site/public/wasm_exec.js
 	npm run build
 
+# Build MossScope: the site bundle goes INTO the binary, so deployment is one
+# file. Order matters — go:embed reads internal/webui/dist at compile time, so
+# the Vite output has to be staged there first.
+scope: site
+	find internal/webui/dist -mindepth 1 -maxdepth 1 ! -name '.gitignore' ! -name '.gitkeep' -exec rm -rf {} +
+	cp -r site/dist/. internal/webui/dist/
+	$(GO) build -o bin/moss-scope ./cmd/moss-scope
+
 # Build the read-only telemetry gateway binary.
+# DEPRECATED: superseded by `moss-scope serve`, which does the same relaying and
+# telemetry and also serves the interface. Kept until deployments move over.
 gateway:
 	$(GO) build -o bin/moss-gateway ./cmd/moss-gateway
 
