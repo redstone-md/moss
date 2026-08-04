@@ -14,7 +14,10 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: resolve(root, "index.html"),
+        // explorer.html is a redirect stub kept for old links; scope.html is
+        // the page it points at.
         explorer: resolve(root, "explorer.html"),
+        scope: resolve(root, "scope.html"),
         showcase: resolve(root, "showcase.html"),
         docs: resolve(root, "docs.html"),
       },

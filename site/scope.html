@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MossScope</title>
+  <meta name="description" content="Debugger and explorer for the Moss mesh: live node panels, causal message traces, recording replay." />
+  <link rel="icon" href="/favicon.svg" />
+</head>
+<body class="scope">
+
+  <div class="sp-app">
+    <header class="sp-top">
+      <div class="sp-brand"><b>MossScope</b><span>v0.1</span></div>
+
+      <div class="sp-lens" id="scope-lens" role="group" aria-label="Объектив">
+        <button type="button" data-lens="node" aria-pressed="false" hidden><span class="dot"></span><span data-i18n="lens.node">Node view</span></button>
+        <button type="button" data-lens="network" aria-pressed="false"><span class="dot"></span><span data-i18n="lens.network">Network view</span></button>
+      </div>
+
+      <div class="sp-origin" id="scope-origin">—</div>
+
+      <span class="grow"></span>
+
+      <button type="button" class="sp-chip" id="scope-guide"><span data-i18n="top.guide">guide</span> <kbd>?</kbd></button>
+      <button type="button" class="sp-chip" id="scope-refresh" data-i18n="top.refresh">refresh</button>
+      <button type="button" class="sp-chip" id="scope-lang" title="EN / RU">EN</button>
+    </header>
+
+    <div class="sp-main">
+      <nav class="sp-rail" id="scope-rail" aria-label="Режим">
+        <button type="button" data-view="live" aria-pressed="true">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-7 4 14 3-7h4" /></svg><span data-i18n="view.live">Live</span>
+        </button>
+        <button type="button" data-view="trace" aria-pressed="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2.4" /><circle cx="18" cy="12" r="2.4" /><circle cx="8" cy="19" r="2.4" /><path d="M8 7.4 16 11M16.6 14 9.6 17.6" /></svg><span data-i18n="view.trace">Trace</span>
+        </button>
+        <button type="button" data-view="replay" aria-pressed="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.4-5.7" /><path d="M4 4v4h4" /></svg><span data-i18n="view.replay">Replay</span>
+        </button>
+        <span class="sp-rail-sep"></span>
+        <button type="button" data-view="swarm" aria-pressed="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="2" /><circle cx="5" cy="6" r="1.6" /><circle cx="19" cy="7" r="1.6" /><circle cx="6" cy="18" r="1.6" /><circle cx="18" cy="17" r="1.6" /><path d="M10.3 10.6 6.3 7.3M13.7 10.8 17.4 8.2M10.5 13.5 7.3 16.6M13.6 13.4 16.7 15.9" /></svg><span data-i18n="view.swarm">Swarm</span>
+        </button>
+        <button type="button" data-view="chaos" aria-pressed="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 5 13h6l-2 9 9-12h-6z" /></svg><span data-i18n="view.chaos">Chaos</span>
+        </button>
+      </nav>
+
+      <main class="sp-canvas" id="scope-canvas"></main>
+    </div>
+
+    <footer class="sp-status" id="scope-status"></footer>
+  </div>
+
+  <script type="module" src="/src/scope/app.js"></script>
+</body>
+</html>
