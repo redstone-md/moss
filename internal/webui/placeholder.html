@@ -1,0 +1,26 @@
+<!doctype html>
+<!-- moss-scope-placeholder: committed so `go build ./...` works without Node.
+     Replaced by the real Vite output when you run `make scope`. -->
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <title>MossScope — интерфейс не собран</title>
+  <style>
+    body { margin: 0; display: grid; place-content: center; min-height: 100vh;
+           background: #0b1012; color: #d5e1e3;
+           font: 13px/1.6 ui-monospace, "Cascadia Code", Consolas, monospace; }
+    div { max-width: 60ch; padding: 24px; }
+    h1 { margin: 0 0 10px; font-size: 16px; }
+    code { color: #35c08a; }
+    p { color: #7b8e93; }
+  </style>
+</head>
+<body>
+  <div>
+    <h1>Интерфейс не собран</h1>
+    <p>Этот бинарь содержит заглушку вместо бандла MossScope. Собери фронт и пересобери бинарь:</p>
+    <p><code>make scope</code></p>
+    <p>API узла при этом работает: <code>/api/manifest</code>, <code>/api/epochs</code>, <code>/debug/hello</code>.</p>
+  </div>
+</body>
+</html>

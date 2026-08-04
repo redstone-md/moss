@@ -1,0 +1,5 @@
+# Vite output staged here by `make scope` and compiled in with go:embed.
+# The directory itself must exist for go:embed to compile, hence .gitkeep.
+*
+!.gitignore
+!.gitkeep
