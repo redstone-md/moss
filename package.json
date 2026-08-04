@@ -15,6 +15,7 @@
     "vite": "^5.4.11"
   },
   "dependencies": {
+    "@tanstack/query-core": "^5.66.0",
     "gsap": "^3.12.5",
     "lenis": "^1.1.18",
     "three": "^0.172.0"

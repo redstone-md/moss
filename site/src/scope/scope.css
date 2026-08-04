@@ -1,0 +1,570 @@
+/* MossScope chrome. An instrument console, not a marketing page: dense grid,
+   hairline rules, monospace as the primary voice. Deliberately single-theme —
+   this is read at 3am next to a terminal. */
+
+.scope {
+  --sc-bg: #0b1012;
+  --sc-panel: #0f1619;
+  --sc-raised: #162126;
+  --sc-line: #1d2c31;
+  --sc-line-soft: #162226;
+  --sc-text: #d5e1e3;
+  --sc-muted: #7b8e93;
+  --sc-dim: #516367;
+  --sc-grid: #1d2c31;
+
+  --sc-s1: #35c08a;
+  --sc-s2: #5aa6f0;
+  --sc-s3: #b98bf0;
+  --sc-s4: #e9b25c;
+  --sc-s5: #ec7a72;
+  --sc-s6: #4ccfc9;
+  --sc-ok: #35c08a;
+  --sc-warn: #e9b25c;
+  --sc-crit: #ec7a72;
+
+  --sc-mono: "JetBrains Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
+  --sc-sans: "Space Grotesk", "Segoe UI", system-ui, sans-serif;
+  --sc-r: 3px;
+
+  margin: 0;
+  background: var(--sc-bg);
+  color: var(--sc-text);
+  font-family: var(--sc-mono);
+  font-size: 12px;
+  line-height: 1.45;
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+
+.scope h1, .scope h2, .scope h3 { margin: 0; font-family: var(--sc-sans); font-weight: 600; text-wrap: balance; }
+.scope button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; }
+.scope :focus-visible { outline: 1px solid var(--sc-ok); outline-offset: 1px; }
+.scope .grow { flex: 1; }
+.scope .dim { color: var(--sc-dim); }
+.scope .is-ok { color: var(--sc-ok); }
+.scope .is-warn { color: var(--sc-warn); }
+.scope .is-crit { color: var(--sc-crit); }
+.scope .is-err { color: var(--sc-crit); }
+
+/* ---------------------------------------------------------------- chrome */
+.sp-app { display: grid; grid-template-rows: auto 1fr auto; height: 100vh; min-height: 0; }
+
+.sp-top {
+  display: flex; align-items: center; gap: 14px; height: 38px; padding: 0 12px;
+  background: #0d1417; border-bottom: 1px solid var(--sc-line);
+}
+.sp-brand { display: flex; align-items: baseline; gap: 7px; font-family: var(--sc-sans); font-weight: 700; }
+.sp-brand b { font-size: 13px; }
+.sp-brand span { font-size: 10px; color: var(--sc-dim); font-weight: 400; }
+
+.sp-lens { display: flex; border: 1px solid var(--sc-line); border-radius: var(--sc-r); overflow: hidden; }
+.sp-lens button { display: flex; align-items: center; gap: 7px; padding: 3px 10px; font-size: 11px; color: var(--sc-muted); }
+.sp-lens button + button { border-left: 1px solid var(--sc-line); }
+.sp-lens button[aria-pressed="true"] { background: var(--sc-raised); color: var(--sc-text); }
+.sp-lens button[aria-pressed="true"] .dot { background: var(--sc-ok); box-shadow: 0 0 6px rgb(53 192 138 / 0.7); }
+.dot { width: 5px; height: 5px; border-radius: 50%; background: var(--sc-dim); }
+.dot.is-ok { background: var(--sc-ok); }
+
+.sp-origin { font-size: 11px; color: var(--sc-dim); }
+.sp-origin b { font-weight: 400; color: var(--sc-muted); }
+
+.sp-chip {
+  display: flex; align-items: center; gap: 6px; padding: 2px 8px; font-size: 11px;
+  color: var(--sc-muted); border: 1px solid var(--sc-line); border-radius: var(--sc-r);
+}
+.sp-chip.is-dim { color: var(--sc-dim); }
+.scope kbd {
+  font-family: var(--sc-mono); font-size: 10px; padding: 0 4px; color: var(--sc-muted);
+  background: var(--sc-panel); border: 1px solid var(--sc-line); border-bottom-width: 2px; border-radius: 2px;
+}
+
+.sp-main { display: grid; grid-template-columns: auto 1fr; min-height: 0; }
+
+.sp-rail {
+  display: flex; flex-direction: column; gap: 2px; width: 54px; padding-top: 8px;
+  background: #0d1417; border-right: 1px solid var(--sc-line);
+}
+.sp-rail button {
+  display: grid; justify-items: center; gap: 4px; padding: 9px 0 8px;
+  font-size: 9.5px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--sc-dim); border-left: 2px solid transparent;
+}
+.sp-rail button svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.4; }
+.sp-rail button:hover { color: var(--sc-muted); background: var(--sc-panel); }
+.sp-rail button[aria-pressed="true"] { color: var(--sc-text); background: var(--sc-panel); border-left-color: var(--sc-ok); }
+.sp-rail-sep { height: 1px; margin: 6px 10px; background: var(--sc-line); }
+
+.sp-canvas { min-width: 0; padding: 8px; overflow: auto; }
+.sp-view[hidden] { display: none; }
+
+.sp-status {
+  display: flex; align-items: center; gap: 16px; height: 22px; padding: 0 10px;
+  font-size: 10.5px; color: var(--sc-dim);
+  background: #0d1417; border-top: 1px solid var(--sc-line);
+}
+.sp-status b { font-weight: 400; color: var(--sc-muted); }
+
+/* ---------------------------------------------------------------- panels */
+/*
+ * Self-arranging bento grid.
+ *
+ * There is no fixed column count. `auto-fill` with a `min(100%, 320px)` track
+ * means the grid works out how many columns fit at the current width — three on
+ * a laptop, one on a phone — and `min(100%, …)` is what stops a 320px minimum
+ * from overflowing a 360px screen. Panels declare a weight (sm/md/lg/full), and
+ * a container query clamps that weight when there are not enough columns to
+ * honour it, so a wide panel never invents a column that pushes the board
+ * sideways.
+ *
+ * `dense` lets a small panel backfill a hole a wide one left, and `align-items:
+ * start` keeps every panel at its natural height — which is what gives the
+ * staggered, masonry-ish rhythm instead of a grid of stretched boxes.
+ */
+.sp-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
+  /* 1px rows + no row gap: Masonry.js converts each panel's measured height into
+     a row span, which is what lets panels pack against each other instead of
+     every row inheriting the height of its tallest member. The visual gap is the
+     item margin below. */
+  grid-auto-rows: 1px;
+  column-gap: 10px;
+  row-gap: 0;
+  align-items: start;
+  container-type: inline-size;
+}
+
+
+/*
+ * Spans and row placement are written by Masonry.js, which clamps a panel's
+ * weight to the number of columns that actually exist. These declarations are
+ * only the pre-layout fallback for the first frame and for a JS-less render.
+ */
+.sp[data-size="md"] { grid-column: span 2; }
+.sp[data-size="lg"] { grid-column: span 3; }
+@container (max-width: 1060px) { .sp[data-size="lg"] { grid-column: span 2; } }
+@container (max-width: 700px) { .sp[data-size="md"], .sp[data-size="lg"] { grid-column: span 1; } }
+
+.sp {
+  position: relative; display: flex; flex-direction: column; min-width: 0;
+  background: var(--sc-panel); border: 1px solid var(--sc-line-soft); border-radius: var(--sc-r);
+}
+.sp > header {
+  display: flex; align-items: baseline; gap: 8px; min-width: 0;
+  padding: 7px 10px 6px; border-bottom: 1px solid var(--sc-line-soft);
+}
+/* Titles ellipse rather than wrap: a heading broken one word per line is what
+   made the whole board unreadable. */
+.sp > header h3 {
+  flex: none; max-width: 60%; overflow: hidden;
+  font-size: 11.5px; color: #b9c8cb; text-overflow: ellipsis; white-space: nowrap;
+}
+.sp > header .q {
+  flex: 1 1 auto; min-width: 0; overflow: hidden;
+  font-size: 10px; color: var(--sc-dim); text-overflow: ellipsis; white-space: nowrap;
+}
+.sp > header .badge { flex: none; }
+.sp-body { flex: 1; min-width: 0; padding: 10px; }
+.sp-legend { padding: 0 10px 9px; font-size: 10.5px; line-height: 1.5; color: var(--sc-dim); }
+
+.badge {
+  padding: 1px 5px; font-size: 9px; letter-spacing: 0.05em; text-transform: uppercase; white-space: nowrap;
+  color: var(--sc-dim); border: 1px solid var(--sc-line); border-radius: 2px;
+}
+.badge-exact { color: var(--sc-ok); border-color: rgb(53 192 138 / 0.35); }
+.badge-agg { color: var(--sc-s4); border-color: rgb(233 178 92 / 0.35); }
+.badge-sim { color: var(--sc-s3); border-color: rgb(185 139 240 / 0.35); }
+
+.sp-veil {
+  position: absolute; inset: 28px 1px 1px; display: grid; gap: 5px; place-content: center;
+  padding: 14px; text-align: center;
+  background: linear-gradient(180deg, rgb(15 22 25 / 0.72), rgb(15 22 25 / 0.94));
+}
+.sp-veil strong { font-family: var(--sc-sans); font-size: 11.5px; color: #9fb1b5; }
+.sp-veil span { max-width: 34ch; font-size: 10.5px; line-height: 1.5; color: var(--sc-dim); }
+
+.sp-msg { display: grid; gap: 4px; min-height: 120px; align-content: center; padding: 18px 10px; text-align: center; color: var(--sc-dim); }
+.sp-msg strong { font-family: var(--sc-sans); color: #9fb1b5; }
+.sp-msg-err strong { color: var(--sc-crit); }
+
+.sp-chart { position: relative; }
+.sp-chart svg { display: block; width: 100%; overflow: visible; }
+
+/* ---------------------------------------------------------- chart hover */
+.sp-hover {
+  position: absolute; inset: 0; cursor: crosshair;
+}
+.sp-hover-line {
+  position: absolute; top: 0; bottom: 0; width: 1px; background: var(--sc-muted);
+  opacity: 0.55; pointer-events: none; display: none;
+}
+.sp-tip {
+  position: absolute; z-index: 30; display: none; min-width: 120px; max-width: 260px;
+  padding: 6px 8px; pointer-events: none;
+  background: var(--sc-raised); border: 1px solid var(--sc-line); border-radius: var(--sc-r);
+  box-shadow: 0 10px 26px rgb(0 0 0 / 0.5);
+}
+.sp-tip-hd { margin-bottom: 4px; font-size: 9.5px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--sc-dim); }
+.sp-tip-row { display: flex; align-items: center; gap: 6px; font-size: 11px; white-space: nowrap; }
+.sp-tip-row i { width: 8px; height: 2px; flex: none; }
+.sp-tip-row span { color: var(--sc-muted); }
+.sp-tip-row b { margin-left: auto; font-weight: 400; color: var(--sc-text); font-variant-numeric: tabular-nums; }
+.sp-keys { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 7px; font-size: 10.5px; color: var(--sc-muted); }
+.sp-keys i { display: inline-block; width: 8px; height: 2px; margin-right: 5px; vertical-align: middle; }
+.sp-keys b { margin-left: 5px; font-weight: 400; color: var(--sc-text); }
+.sp-topo { display: block; width: 100%; }
+
+/* ------------------------------------------------------------ stat strip */
+/*
+ * The strip is a full row of the bento grid, stated in CSS rather than left to
+ * an inline style: an inline `grid-column` is one refactor away from being lost,
+ * and when it is, the strip silently collapses into a single column and the
+ * board looks broken for no visible reason.
+ *
+ * Tiles are `auto-fit` + `1fr`, so they share the row evenly instead of leaving
+ * a ragged tail of empty space. Width still only changes when the window does —
+ * which was the actual complaint: tiles that resized on every poll.
+ */
+.sp-strip {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 168px), 1fr));
+  gap: 10px;
+}
+.stat {
+  min-width: 0; min-height: 64px; padding: 8px 11px 9px;
+  background: var(--sc-panel); border: 1px solid var(--sc-line-soft); border-radius: var(--sc-r);
+  overflow: hidden;
+}
+.stat.is-skeleton { opacity: 0.5; }
+/* Digits must not shift the layout as they change. */
+.stat-vl { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.stat-lb { font-size: 9.5px; letter-spacing: 0.07em; text-transform: uppercase; color: var(--sc-dim); }
+.stat-vl { margin-top: 3px; font-size: 20px; line-height: 1.15; letter-spacing: -0.02em; }
+.stat-vl small { font-size: 11px; color: var(--sc-muted); letter-spacing: 0; }
+.stat-sub { margin-top: 1px; font-size: 10px; color: var(--sc-dim); }
+.stat.is-good .stat-vl { color: var(--sc-ok); }
+.stat.is-warn .stat-vl { color: var(--sc-warn); }
+.stat.is-crit .stat-vl { color: var(--sc-crit); }
+
+/* ---------------------------------------------------------------- tables */
+/* Tables share a height with the charts beside them, so a row reads as one
+   band instead of a staircase. */
+.sp-scroll { max-height: 232px; overflow: auto; }
+.sp-table { width: 100%; font-size: 11px; white-space: nowrap; border-collapse: collapse; }
+.sp-table thead th {
+  position: sticky; top: 0; z-index: 1; padding: 6px 9px; text-align: left; font-weight: 500;
+  font-size: 9.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--sc-dim);
+  background: var(--sc-panel); border-bottom: 1px solid var(--sc-line);
+}
+.sp-table td { padding: 5px 9px; color: #bccacd; border-bottom: 1px solid var(--sc-line-soft); }
+.sp-table tbody tr:hover { background: #121b1f; }
+.sp-table .num, .sp-table th.num { text-align: right; }
+.pid { color: var(--sc-text); }
+.tag { padding: 0 5px; font-size: 10px; color: var(--sc-muted); border: 1px solid var(--sc-line); border-radius: 2px; }
+.tag-direct { color: var(--sc-s1); border-color: rgb(53 192 138 / 0.3); }
+.tag-relay { color: var(--sc-s3); border-color: rgb(185 139 240 / 0.3); }
+
+.score { position: relative; }
+.score.has-pop { cursor: help; border-bottom: 1px dotted var(--sc-dim); }
+.score .pop {
+  display: none; position: absolute; top: 16px; right: 0; z-index: 20; width: 210px; padding: 7px 8px;
+  text-align: left; white-space: normal;
+  background: var(--sc-raised); border: 1px solid var(--sc-line); border-radius: var(--sc-r);
+  box-shadow: 0 8px 22px rgb(0 0 0 / 0.55);
+}
+.score:hover .pop, .score:focus-within .pop { display: block; }
+.pop-hd { margin-bottom: 5px; font-size: 9.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--sc-dim); }
+.pop dl { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; margin: 0; font-size: 10.5px; }
+.pop dt { color: var(--sc-muted); }
+.pop dd { margin: 0; text-align: right; color: var(--sc-crit); }
+
+/* ---------------------------------------------------------------- meters */
+.sp-meters { display: grid; gap: 3px; }
+.meter { display: grid; grid-template-columns: 96px 1fr 54px; gap: 6px; align-items: center; font-size: 9.5px; color: var(--sc-dim); }
+.meter-tight { grid-template-columns: 30px 1fr 22px; }
+.meter-lb { color: var(--sc-muted); }
+.meter-bar { height: 7px; overflow: hidden; background: #121b1f; border-radius: 1px; }
+.meter-bar i { display: block; height: 100%; background: var(--sc-s2); opacity: 0.85; }
+.meter-bar i.is-ok { background: var(--sc-s1); }
+.meter-bar i.is-warn { background: var(--sc-s4); }
+.meter-bar i.is-crit { background: var(--sc-s5); }
+.meter-vl { text-align: right; }
+.meter-vl.is-warn { color: var(--sc-warn); }
+.meter-vl.is-crit { color: var(--sc-crit); }
+
+/* ------------------------------------------------------------ invariants */
+.sp-inv { display: flex; flex-direction: column; }
+.inv { display: grid; grid-template-columns: auto 1fr auto; gap: 9px; align-items: center; padding: 7px 0; border-bottom: 1px solid var(--sc-line-soft); }
+.inv:last-child { border-bottom: none; }
+.inv-st { width: 6px; height: 6px; border-radius: 50%; background: var(--sc-ok); }
+.inv-st.is-firing { background: var(--sc-crit); box-shadow: 0 0 7px rgb(236 122 114 / 0.75); }
+.inv-st.is-warning { background: var(--sc-warn); }
+.inv code { font-size: 10.5px; color: #b4c4c7; }
+.inv-detail { margin-top: 1px; font-size: 10px; color: var(--sc-dim); }
+.inv-age { font-size: 10px; color: var(--sc-dim); }
+
+/* ---------------------------------------------------------------- matrix */
+.sp-mx { display: grid; gap: 2px; font-size: 10px; }
+.mx-h { padding-bottom: 2px; font-size: 9px; color: var(--sc-dim); text-align: center; }
+.mx-rh { align-self: center; padding-right: 6px; font-size: 9px; color: var(--sc-dim); text-align: right; }
+.mx-c { display: grid; height: 22px; place-content: center; font-weight: 600; border-radius: 2px; }
+.mx-c.is-na { color: var(--sc-dim); font-weight: 400; background: #121b1f; }
+
+/* ----------------------------------------------------------------- trace */
+.sp-trace { display: grid; grid-template-columns: 1fr 300px; gap: 8px; align-items: start; }
+.sp-trace-bar { grid-column: 1 / -1; display: flex; gap: 8px; align-items: center; }
+.sp-trace-bar label { font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--sc-dim); }
+.sp-trace-bar input {
+  flex: 1; padding: 5px 8px; font: inherit; color: var(--sc-text);
+  background: var(--sc-panel); border: 1px solid var(--sc-line); border-radius: var(--sc-r);
+}
+.sp-trace-bar button { padding: 5px 12px; color: var(--sc-text); background: var(--sc-raised); border: 1px solid var(--sc-line); border-radius: var(--sc-r); }
+.sp-trace-body { display: contents; }
+.sp-trace-side { display: grid; gap: 8px; align-content: start; }
+
+.sp-tree { padding: 4px 0; font-size: 11px; }
+.tn { display: grid; grid-template-columns: 56px 1fr; gap: 10px; padding: 3px 9px; border-left: 2px solid transparent; }
+.tn:hover { background: #121b1f; }
+.tn-t { font-size: 10.5px; color: var(--sc-dim); text-align: right; }
+.tn-b { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
+.tn-ind { display: inline-block; color: var(--sc-line); letter-spacing: 2px; }
+.tn-ev { color: #c3d1d4; }
+.tn-pr { color: var(--sc-muted); }
+.tn-note { font-size: 10.5px; color: var(--sc-dim); }
+.tn.is-ok { border-left-color: rgb(53 192 138 / 0.5); }
+.tn.is-drop { border-left-color: rgb(233 178 92 / 0.5); }
+.tn.is-dead { border-left-color: rgb(236 122 114 / 0.55); }
+
+.outcome { display: flex; gap: 8px; align-items: baseline; margin-bottom: 6px; }
+.out { padding: 0 5px; font-size: 9.5px; letter-spacing: 0.05em; text-transform: uppercase; border-radius: 2px; }
+.out.is-ok { color: var(--sc-ok); border: 1px solid rgb(53 192 138 / 0.3); }
+.out.is-drop { color: var(--sc-warn); border: 1px solid rgb(233 178 92 / 0.35); }
+.out.is-dead { color: var(--sc-crit); border: 1px solid rgb(236 122 114 / 0.35); }
+.sp-cause { line-height: 1.6; color: var(--sc-muted); }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; margin-top: 9px; padding-top: 9px; font-size: 10.5px; border-top: 1px solid var(--sc-line-soft); }
+.kv-wide { grid-template-columns: 1fr auto; margin: 0; padding: 0; border-top: none; font-size: 11px; }
+.kv-wide dd { text-align: right; }
+.kv dt { color: var(--sc-dim); }
+.kv dd { margin: 0; color: #bccacd; word-break: break-all; }
+
+/* ----------------------------------------------------------------- toast */
+.sp-toast {
+  position: fixed; right: 14px; bottom: 34px; z-index: 60; width: 320px; padding: 12px 13px;
+  background: var(--sc-raised); border: 1px solid var(--sc-line); border-radius: var(--sc-r);
+  box-shadow: 0 18px 40px rgb(0 0 0 / 0.55);
+}
+.sp-toast-title { font-family: var(--sc-sans); font-size: 12.5px; font-weight: 600; color: var(--sc-text); }
+.sp-toast-body { margin-top: 5px; font-size: 11px; line-height: 1.55; color: var(--sc-muted); }
+.sp-toast-body code { color: var(--sc-ok); }
+.sp-toast-token {
+  width: 100%; margin-top: 9px; padding: 5px 8px; font: inherit; color: var(--sc-text);
+  background: var(--sc-panel); border: 1px solid var(--sc-line); border-radius: var(--sc-r);
+}
+.sp-toast-actions { display: flex; gap: 8px; margin-top: 10px; }
+.sp-toast-actions button {
+  padding: 5px 11px; font-size: 11px; color: var(--sc-text);
+  background: var(--sc-panel); border: 1px solid var(--sc-line); border-radius: var(--sc-r);
+}
+.sp-toast-actions button[data-act="ok"] { color: #0b1012; background: var(--sc-ok); border-color: var(--sc-ok); }
+
+/* ----------------------------------------------------------- placeholder */
+.sp-placeholder { max-width: 62ch; padding: 28px 12px; }
+.sp-placeholder h2 { margin-bottom: 8px; font-size: 18px; }
+.sp-placeholder p { color: var(--sc-muted); line-height: 1.7; }
+.sp-placeholder code { color: var(--sc-text); }
+
+@media (prefers-reduced-motion: reduce) {
+  .scope *, .scope *::before, .scope *::after { animation: none !important; transition: none !important; }
+}
+/* ------------------------------------------------------------ small screens */
+@media (max-width: 900px) {
+  .sp-trace { grid-template-columns: 1fr; }
+  .sp-canvas { padding: 6px; }
+  .sp-grid { column-gap: 8px; }
+
+  /* The rail becomes a scrollable strip: a 54px column of icons costs a sixth
+     of a phone's width for navigation that is used once a session. */
+  .sp-main { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+  .sp-rail {
+    flex-direction: row; width: auto; padding: 0; overflow-x: auto;
+    border-right: none; border-bottom: 1px solid var(--sc-line);
+  }
+  .sp-rail button { flex: 1 0 auto; padding: 7px 14px; border-left: none; border-bottom: 2px solid transparent; }
+  .sp-rail button[aria-pressed="true"] { border-left-color: transparent; border-bottom-color: var(--sc-ok); }
+  .sp-rail-sep { display: none; }
+
+  /* The top bar wraps instead of squeezing the lens switch off screen. */
+  .sp-top { flex-wrap: wrap; height: auto; padding: 6px 10px; row-gap: 6px; }
+  .sp-origin { order: 10; flex-basis: 100%; }
+  .sp-chip { display: none; }
+  .sp-chip#scope-refresh { display: flex; }
+
+  .sp-strip { grid-template-columns: repeat(auto-fit, minmax(min(100%, 132px), 1fr)); }
+
+  .sp-toast { right: 8px; left: 8px; bottom: 28px; width: auto; }
+}
+
+/* ------------------------------------------------------------- onboarding */
+/* An empty view is a teaching opportunity: what this is for, why it is empty,
+   and the exact command that fills it. */
+.ob { max-width: 78ch; padding: 22px 16px 26px; }
+.ob-head h2 { margin-bottom: 8px; font-size: 19px; letter-spacing: -0.01em; }
+.ob-head p { margin: 0; font-family: var(--sc-sans); font-size: 12.5px; line-height: 1.65; color: var(--sc-muted); }
+.ob code { color: var(--sc-ok); }
+.ob b { color: var(--sc-text); font-weight: 600; }
+
+.ob-steps { display: grid; gap: 14px; margin: 20px 0 0; padding: 0; list-style: none; counter-reset: ob; }
+.ob-steps li { position: relative; padding-left: 30px; counter-increment: ob; }
+.ob-steps li::before {
+  content: counter(ob);
+  position: absolute; left: 0; top: 0; display: grid; width: 20px; height: 20px; place-content: center;
+  font-size: 10px; color: var(--sc-ok);
+  border: 1px solid rgb(53 192 138 / 0.4); border-radius: 50%;
+}
+.ob-step-title { font-family: var(--sc-sans); font-size: 12.5px; font-weight: 600; color: #c3d1d4; }
+.ob-step-body { margin-top: 3px; font-size: 11.5px; line-height: 1.6; color: var(--sc-muted); }
+.ob-cmd {
+  margin: 8px 0 0; padding: 7px 9px; overflow-x: auto;
+  font-size: 11.5px; color: var(--sc-text);
+  background: var(--sc-panel); border: 1px solid var(--sc-line); border-radius: var(--sc-r);
+}
+.ob-note { margin: 18px 0 0; font-size: 11.5px; line-height: 1.6; color: var(--sc-dim); }
+
+.ob-picks { display: grid; gap: 5px; margin-top: 20px; }
+.ob-picks-hd, .ob-preview-hd {
+  margin-bottom: 4px; font-size: 9.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--sc-dim);
+}
+.ob-pick {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 10px; align-items: baseline;
+  padding: 7px 10px; text-align: left;
+  background: var(--sc-panel); border: 1px solid var(--sc-line-soft); border-radius: var(--sc-r);
+}
+.ob-pick:hover { border-color: rgb(53 192 138 / 0.45); background: var(--sc-raised); }
+.ob-pick-id { color: var(--sc-text); }
+.ob-pick-topic, .ob-pick-count { overflow: hidden; font-size: 11px; color: var(--sc-dim); text-overflow: ellipsis; white-space: nowrap; }
+
+.ob-preview { margin-top: 22px; }
+/* Dimmed and non-interactive: this is the shape of an answer, not an answer. */
+.ob-skeleton { opacity: 0.42; pointer-events: none; border: 1px dashed var(--sc-line); border-radius: var(--sc-r); }
+
+/* ------------------------------------------------------------------ guide */
+.sp-guide {
+  position: fixed; inset: 0; z-index: 80; display: grid; place-items: center;
+  padding: 20px; background: rgb(4 8 9 / 0.72);
+}
+.sp-guide-card {
+  display: flex; flex-direction: column; width: min(680px, 100%); max-height: min(80vh, 720px);
+  background: var(--sc-panel); border: 1px solid var(--sc-line); border-radius: 6px;
+  box-shadow: 0 30px 80px rgb(0 0 0 / 0.6);
+}
+.sp-guide-card > header {
+  display: flex; align-items: center; gap: 12px; padding: 14px 16px 12px;
+  border-bottom: 1px solid var(--sc-line-soft);
+}
+.sp-guide-card h2 { flex: 1; font-size: 15px; }
+.sp-guide-card > header button { padding: 2px 8px; font-size: 13px; color: var(--sc-dim); }
+.sp-guide-card > header button:hover { color: var(--sc-text); }
+.sp-guide-body { display: grid; gap: 16px; padding: 16px; overflow-y: auto; }
+.sp-guide-body h3 { font-size: 12.5px; color: #c3d1d4; }
+.sp-guide-body p { margin: 4px 0 0; font-family: var(--sc-sans); font-size: 12px; line-height: 1.65; color: var(--sc-muted); }
+.sp-guide-body code { font-family: var(--sc-mono); color: var(--sc-ok); }
+.sp-guide-body b { color: var(--sc-text); }
+.sp-guide-card > footer {
+  padding: 10px 16px; font-size: 10.5px; color: var(--sc-dim); border-top: 1px solid var(--sc-line-soft);
+}
+
+/* ------------------------------------------------------------------- tour */
+/* Spotlight walkthrough. The dimming is a single huge box-shadow around the
+   highlighted rect rather than an SVG mask: one element, animatable, and it
+   keeps the target genuinely visible instead of drawing a lighter copy of it. */
+.tour { position: fixed; inset: 0; z-index: 90; }
+.tour-veil { position: absolute; inset: 0; }
+.tour-spot {
+  position: fixed; left: 0; top: 0; width: 0; height: 0;
+  border-radius: 5px; pointer-events: none;
+  box-shadow: 0 0 0 9999px rgb(4 8 9 / 0.74), 0 0 0 1px rgb(53 192 138 / 0.75);
+  transition: opacity 0.2s ease;
+}
+/* No target: dim everything, spotlight nothing. */
+.tour-spot[style*="opacity: 0"] { box-shadow: 0 0 0 9999px rgb(4 8 9 / 0.74); }
+
+.tour-card {
+  position: fixed; width: min(380px, calc(100vw - 16px)); padding: 14px 15px 12px;
+  background: var(--sc-panel); border: 1px solid var(--sc-line); border-radius: 6px;
+  box-shadow: 0 24px 60px rgb(0 0 0 / 0.65);
+}
+.tour-card[data-centred="true"] {
+  left: 50%; top: 50%; transform: translate(-50%, -50%);
+}
+.tour-step { font-size: 10px; letter-spacing: 0.08em; color: var(--sc-dim); }
+.tour-card h3 { margin-top: 5px; font-size: 14.5px; }
+.tour-card p {
+  margin: 7px 0 0; font-family: var(--sc-sans); font-size: 12px; line-height: 1.6; color: var(--sc-muted);
+}
+.tour-card code { font-family: var(--sc-mono); color: var(--sc-ok); }
+.tour-card b { color: var(--sc-text); }
+.tour-actions { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
+.tour-actions button {
+  padding: 5px 12px; font-size: 11.5px; color: var(--sc-text);
+  background: var(--sc-raised); border: 1px solid var(--sc-line); border-radius: var(--sc-r);
+}
+.tour-actions button:disabled { opacity: 0.4; cursor: default; }
+.tour-skip { color: var(--sc-dim) !important; background: none !important; border-color: transparent !important; }
+.tour-next { color: #0b1012 !important; background: var(--sc-ok) !important; border-color: var(--sc-ok) !important; }
+.sp-guide-card > footer { display: flex; align-items: center; gap: 10px; }
+.sp-guide-card > footer .tour-next { padding: 5px 12px; font-size: 11.5px; border-radius: var(--sc-r); }
+
+@media (prefers-reduced-motion: reduce) {
+  .tour-spot, .tour-card { transition: none; }
+}
+
+/* ----------------------------------------------------------------- gauges */
+.sp-gauges { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 132px), 1fr)); gap: 4px; }
+.sp-gauge { position: relative; min-width: 0; }
+
+/* ------------------------------------------------------- connection bar */
+/* One notice at the top rather than an error in every panel: the panels keep
+   their last readings and say so themselves. */
+.sp-connbar {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 10px; padding: 9px 12px;
+  background: rgb(236 122 114 / 0.08);
+  border: 1px solid rgb(236 122 114 / 0.35); border-radius: var(--sc-r);
+}
+.sp-connbar-dot {
+  width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--sc-crit);
+  animation: sp-pulse 1.8s ease-in-out infinite;
+}
+@keyframes sp-pulse { 0%, 100% { opacity: 1 } 50% { opacity: 0.25 } }
+.sp-connbar b { display: block; font-family: var(--sc-sans); font-size: 12px; color: var(--sc-text); }
+.sp-connbar span { font-size: 11px; color: var(--sc-muted); }
+.sp-connbar button {
+  padding: 5px 11px; font-size: 11.5px; color: var(--sc-text);
+  background: var(--sc-panel); border: 1px solid var(--sc-line); border-radius: var(--sc-r);
+}
+
+/* Frozen panel: readable, visibly not live. */
+.sp.is-stale { border-color: rgb(233 178 92 / 0.35); }
+.sp.is-stale .sp-body { opacity: 0.72; }
+.sp-stale {
+  position: absolute; right: 8px; bottom: 6px;
+  padding: 1px 6px; font-size: 9px; letter-spacing: 0.05em; text-transform: uppercase;
+  color: var(--sc-warn); background: var(--sc-panel);
+  border: 1px solid rgb(233 178 92 / 0.4); border-radius: 2px;
+}
+
+/* A panel given the slack at the bottom of its column: the body grows, and the
+   parts that can use height — tables, lists, meters — take it. */
+.sp.is-stretched .sp-body { display: flex; flex-direction: column; }
+.sp.is-stretched .sp-scroll { flex: 1; max-height: none; }
+.sp.is-stretched .sp-inv,
+.sp.is-stretched .sp-meters { flex: 1; }
+/* A chart cannot use extra height without lying about its scale, so it stays
+   its size and sits centred in the room it was given. */
+.sp.is-stretched .sp-chart { margin-block: auto; }
+.sp-connbar-text { min-width: 0; }
+.sp-connbar-token {
+  width: 210px; padding: 5px 8px; font: inherit; font-size: 11.5px; color: var(--sc-text);
+  background: var(--sc-panel); border: 1px solid var(--sc-line); border-radius: var(--sc-r);
+}
