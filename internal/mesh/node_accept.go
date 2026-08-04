@@ -107,11 +107,14 @@ func (n *Node) announceAndConnect(ctx context.Context, event bootstrap.Event) {
 	}
 	timeoutCtx, cancel := withTimeout(ctx, time.Duration(n.config.BootstrapTimeoutSec)*time.Second)
 	defer cancel()
+	announceStarted := time.Now()
 	peers, err := n.tracker.AnnounceAll(timeoutCtx, n.config.Trackers, req)
 	if err != nil {
+		n.emitTracker("все трекеры", 0, time.Since(announceStarted), err)
 		n.enqueueEvent(EventTrackerFailure, map[string]string{"error": err.Error()})
 		return
 	}
+	n.emitTracker("раунд анонса", len(peers), time.Since(announceStarted), nil)
 	n.rememberTrackerSeeds(peers)
 	n.kickBootstrapPeers(ctx, peers)
 	n.enqueueEvent(EventTrackerAnnounce, map[string]int{
@@ -231,9 +234,11 @@ func (n *Node) connectPeerOnce(ctx context.Context, addr string, remoteStatic []
 	// routing table leaves through the VPN, so the peer observes us at the
 	// tunnel's exit and echoes that back as our address — which is how one node
 	// ends up advertising two of them.
+	started := time.Now()
 	dialer := transport.DialerWithBind(net.Dialer{Timeout: n.config.HandshakeTimeout()}, n.bindIfIndex)
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
+		n.emitDial(addr, "", "dial", err, time.Since(started))
 		return err
 	}
 	hsCtx, cancel := withTimeout(ctx, n.config.HandshakeTimeout())
@@ -246,9 +251,11 @@ func (n *Node) connectPeerOnce(ctx context.Context, addr string, remoteStatic []
 		Buffers:      transportBufferConfig(n.config.Transport),
 	})
 	if err != nil {
+		n.emitDial(addr, "", "handshake", err, time.Since(started))
 		_ = conn.Close()
 		return err
 	}
+	n.emitDial(addr, "", "handshake", nil, time.Since(started))
 	n.registerPeerFrom(session, true, originDialTCP)
 	return nil
 }
@@ -335,6 +342,7 @@ func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origi
 		knownAddr = current.addr
 	}
 	n.peers[peerID] = peer
+	n.emitSessionOpen(peer)
 	n.knownPeers[peerID] = knownPeer{
 		id:                     peerID,
 		addr:                   knownAddr,

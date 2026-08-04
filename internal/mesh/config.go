@@ -3,6 +3,8 @@ package mesh
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/redstone-md/moss/internal/inspect"
 )
 
 // DefaultMeshID is the standard public room. In the two-layer model a mesh id
@@ -94,6 +96,12 @@ type Config struct {
 	PeerCachePath   string          `json:"peer_cache_path"`
 	Telemetry       TelemetryConfig `json:"telemetry"`
 	Veil            VeilConfig      `json:"veil"`
+	// Debug opens the loopback debug plane MossScope attaches to: a structured
+	// event bus, a ring buffer of recent history, and a WebSocket. It is OFF by
+	// default and refuses any non-loopback bind address, because a debug session
+	// carries exactly what the telemetry layer works to hide — peer identities,
+	// addresses, message ids. See internal/inspect.
+	Debug inspect.Config `json:"debug"`
 }
 
 // VeilConfig controls the Veil "Reality" DPI-resistant transport bearer.

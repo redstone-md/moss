@@ -9,6 +9,7 @@ import (
 	"github.com/redstone-md/moss/internal/bootstrap"
 	mcrypto "github.com/redstone-md/moss/internal/crypto"
 	"github.com/redstone-md/moss/internal/gossip"
+	"github.com/redstone-md/moss/internal/inspect"
 	"github.com/redstone-md/moss/internal/nat"
 	"github.com/redstone-md/moss/internal/overlay"
 	"github.com/redstone-md/moss/internal/stat"
@@ -56,6 +57,11 @@ type Node struct {
 	veilListener  interface{ Close() error }
 	relaySessions *nat.SessionManager
 	listenPort    int
+	// debugBus is always present so Emit call sites need no nil check; debugSrv
+	// is non-nil only while Config.Debug.Enabled has opened the loopback plane.
+	debugBus *inspect.Bus
+	debugSrv *inspect.Server
+	debugRec *inspect.Recorder
 	bindIfIndex   int
 	startedAt     time.Time
 	dispatchSem   chan struct{}
