@@ -71,7 +71,8 @@ export class Panel {
 
   /** @param {import("./ScopeClient.js").ScopeClient} client */
   bind(client) {
-    if (!this.query) return this;
+    this._client = client;
+    if (!this.query || this._degraded) return this;
     this._sub = client.observe(this.query, (r) => {
       if (this._degraded) return;
       if (r.error) {
@@ -147,6 +148,12 @@ export class Panel {
    */
   degrade({ short, why }) {
     this._degraded = true;
+    // Unsubscribe, do not merely stop rendering. A dark panel that keeps polling
+    // costs the source a request every interval for data it will never show —
+    // twenty dimmed panels turned one lens switch into twenty identical hits on
+    // a public server.
+    this._sub?.unsubscribe();
+    this._sub = null;
     this.el.classList.add("is-off");
     const veil = document.createElement("div");
     veil.className = "sp-veil";
@@ -159,6 +166,7 @@ export class Panel {
   restore() {
     if (!this._degraded) return;
     this._degraded = false;
+    if (!this._sub && this._client) this.bind(this._client);
     this.el.classList.remove("is-off");
     this.el.querySelector(".sp-veil")?.remove();
     gsap.to(this.body, { opacity: 1, filter: "grayscale(0)", duration: 0.4, ease: "sine.inOut" });

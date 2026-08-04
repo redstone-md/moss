@@ -72,12 +72,16 @@ export class NetworkSource extends DataSource {
         return this.#epochs(spec.params?.limit ?? 288, signal);
       case "network.summary":
         return this.#summary(signal);
+      case "network.stats":
+        return this.#summary(signal);
       case "topology":
         return this.#topology(signal);
       default:
-        // Aggregate metrics all derive from the same epoch series, so the cache
-        // holds one copy and panels slice it rather than refetching per panel.
-        return this.#epochs(spec.params?.limit ?? 288, signal);
+        // Answering an unknown metric with the epoch chain looked harmless and
+        // was not: every panel has its own query key, so twenty panels asking
+        // for twenty different things all became twenty requests for the SAME
+        // chain. A source that does not have a dataset says so.
+        throw new Error(`network scope does not serve ${spec.metric}`);
     }
   }
 

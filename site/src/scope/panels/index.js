@@ -19,10 +19,15 @@ export class ChartPanel extends Panel {
     this.ChartClass = opts.chart ?? LineChart;
     this.chartOpts = opts.chartOpts ?? {};
     this.legendOf = opts.legendOf ?? null;
+    // Some metrics arrive in the shape the node keeps them in — a histogram as
+    // an object, say — and the chart wants ordered categories. Reshaping here
+    // keeps the node's format honest and the chart generic.
+    this.transform = opts.transform ?? ((d) => d);
     this._chart = null;
   }
 
-  render(data) {
+  render(raw) {
+    const data = raw == null ? null : this.transform(raw);
     if (data == null || (Array.isArray(data) && !data.length)) return this.renderEmpty();
     if (!this._chart) {
       this.body.replaceChildren();
