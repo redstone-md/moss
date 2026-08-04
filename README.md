@@ -124,8 +124,10 @@ See [docs/API.md](docs/API.md) for signatures, config fields, event IDs, and err
 
 ## Web frontend & telemetry
 
-`site/` is the static site (landing page, network explorer, and `mosh-web`),
-built with Tailwind and deployed to GitHub Pages (see `.github/workflows/pages.yml`).
+`site/` is the static site (landing page, MossScope, and `mosh-web`), built with
+Tailwind and deployed to GitHub Pages (see `.github/workflows/pages.yml`). The
+same bundle is embedded into `moss-scope`, so the interface is served both from
+the site and by any node that opens its debug plane.
 
 ```bash
 make site      # build Tailwind CSS + both wasm bundles into ./site
@@ -135,8 +137,12 @@ python -m http.server 8095 --directory site
 
 Supporting commands:
 
-- `cmd/moss-gateway` — node with telemetry on, serving a read-only HTTP/SSE API
-  the explorer reads and verifies (`make gateway`).
+- `cmd/moss-scope` — **MossScope**: the network explorer and the node debugger in
+  one binary with the web interface embedded (`make scope`). `serve` publishes
+  aggregate telemetry and the interface; `attach` and `run` open a loopback-only
+  debug session over a token-guarded WebSocket. Deployed at `scope.moss.surf`.
+- `cmd/moss-gateway` — the API-only predecessor of `moss-scope serve`, kept for
+  existing deployments (`make gateway`).
 - `cmd/moss-signal` — WebRTC signaling relay for browser peers (`make signal`).
 - `cmd/moss-wasm` — browser telemetry verifier; `cmd/moss-node-wasm` — full peer in wasm.
 

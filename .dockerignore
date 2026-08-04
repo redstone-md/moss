@@ -1,14 +1,32 @@
-# Keep the build context small and the image clean — only the Go module is
-# needed to build the service binaries.
-.git
+# Keep the build context to what the image actually needs.
+#
+# The important entry is internal/webui/dist: a developer's local `make scope`
+# leaves a built bundle there, and copying it in would put a SECOND, stale set of
+# hashed assets next to the one the image builds. Both would be embedded, the
+# stale scope.html could win, and the deployed page would load assets that no
+# longer exist. Excluding it makes the image's UI come from the image's build,
+# always.
+internal/webui/dist/*
+!internal/webui/dist/.gitkeep
+
 node_modules
-site
+site/dist
+site/public/moss.wasm
+site/public/wasm_exec.js
+
 bin
-obj
+*.exe
 *.dll
 *.so
 *.dylib
-*.exe
-.gocache
-.gotmp
-examples/rust_example/target
+*.h
+
+# Debug recordings can be hundreds of megabytes and belong to a machine, not an image.
+*.mossrec
+
+.git
+.github
+.continuum
+docs
+examples
+*.md
