@@ -1,12 +1,12 @@
 # Deploying Moss services
 
-Self-host a Moss **gateway** (telemetry, read by the explorer) or a **signaling
-relay** (for browser peers). Both are static, CGO-free Go binaries in a tiny
-distroless image — run them anywhere that takes a container. Configs here target
+Self-host a **MossScope** (telemetry + web interface) or a **signaling relay**
+(for browser peers). Both are static, CGO-free Go binaries in a tiny distroless
+image — run them anywhere that takes a container. Configs here target
 [Fly.io](https://fly.io), which gives each app free TLS on `*.fly.dev`, so the
-gateway is reachable over `https` and the relay over `wss` with no extra setup.
+scope is reachable over `https` and the relay over `wss` with no extra setup.
 
-Running more independent gateways is good for the network: the explorer
+Running more independent scopes is good for the network: the interface
 cross-checks them, so no single one has to be trusted.
 
 > Run all commands **from the repo root** — the Docker build context must include
@@ -16,26 +16,48 @@ cross-checks them, so no single one has to be trusted.
 > `fly launch`, also pass `--dockerfile` (it may otherwise re-detect Nixpacks),
 > and never deploy with `--image` pointing at a previously built Nixpacks image.
 
-## Gateway
+## MossScope
 
-The gateway config lives at the repo **root** (`fly.toml`) so Fly's GitHub
-"Deploy app" button and a bare `fly deploy` both find it. It builds
-`deploy/Dockerfile.gateway`.
+The scope config lives at the repo **root** (`fly.toml`) so Fly's GitHub "Deploy
+app" button and a bare `fly deploy` both find it. It builds
+`deploy/Dockerfile.scope`.
 
-- **GitHub deploy:** connect the repo to your Fly app — the root `fly.toml` is
-  picked up automatically. Set `app` in `fly.toml` to your app name first.
-- **CLI:**
+One binary does three jobs: it is an ordinary node on the shared substrate, it
+relays for the network, and it serves the MossScope interface compiled into it.
+Nothing is mounted — the bundle is embedded, so a deploy is one file.
 
-  ```bash
-  fly deploy -a <your-app>      # uses ./fly.toml + deploy/Dockerfile.gateway
-  ```
+### First deploy, in order
 
-Then open the explorer and add `https://<your-app>.fly.dev` in the gateways box,
-or share a deep link: `https://moss.surf/explorer.html?gateways=https://<your-app>.fly.dev`.
+```bash
+fly ips allocate-v4 --app <your-app>   # once: the raw peer port needs its own IP
+fly deploy                             # uses ./fly.toml + deploy/Dockerfile.scope
+fly certs add scope.example.org        # once, then point DNS at Fly's anycast address
+curl -s https://<your-app>.fly.dev/api/health
+```
 
-The gateway joins the standard public mesh **`global`** by default (override with
-`-mesh`) and serves `/api/stats`, `/api/chain`, and `/api/events`. It needs only
-outbound connectivity to read telemetry; Fly's default networking is enough.
+`/api/health` answers with the build version and whether the UI was compiled in.
+It is what the platform health check watches — deliberately NOT `/api/stats`,
+which reflects the mesh and is legitimately empty when the network is quiet.
+
+### What it serves
+
+| Path | What |
+|---|---|
+| `/` | the interface (Network view by default) |
+| `/api/manifest` | epoch length, ε, k, capabilities, sibling scopes |
+| `/api/epochs` | the epoch hash chain — immutable, cached for a year |
+| `/api/stats`, `/api/chain`, `/api/events` | kept so pre-scope consumers keep working |
+| `/explorer.html` | redirect to `/`, so old links survive |
+
+`serve` is the PUBLIC mode and carries **no inspection routes at all** — they are
+not registered, not merely denied (`cmd/moss-scope/mux_test.go` asserts it).
+Debugging a node is loopback-only and lives behind `moss-scope attach`.
+
+### Relaying
+
+The scope can only be promoted to a relaying SuperNode if its peer port (4001,
+pinned in the Dockerfile) is reachable inbound, which is what the dedicated IPv4
+above is for. Fly's anycast address only proxies `[http_service]`.
 
 ## Signaling relay
 
@@ -54,6 +76,12 @@ TCP/UDP ports reachable from the internet. On Fly that means a dedicated IP and
 UDP services (`fly ips allocate-v4`, plus `[[services]]` for the UDP/TCP mesh
 port) — heavier than the gateway above. Most operators want the gateway; reach
 for a relay only when you specifically want to donate connectivity capacity.
+
+## The deprecated gateway
+
+`moss-gateway` still builds (`make gateway`, `deploy/Dockerfile.gateway`) and is
+kept only so existing deployments keep running. It does what `moss-scope serve`
+does minus the interface; new deployments should use the scope.
 
 ## Recovering a crash-looping app
 

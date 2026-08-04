@@ -27,3 +27,11 @@ site/public/wasm_exec.js
 # Local multi-repo dev workspace (hardcodes ../veil path; not for CI)
 go.work
 go.work.sum
+
+# Debug recordings. A .mossrec is a capture of one machine at one moment —
+# often hundreds of megabytes, always specific to a session. Attach one to an
+# issue when it matters; it is not repository content.
+*.mossrec
+
+# Vite output staged into the binary by `make scope`; the embedded copy is
+# built, never committed (internal/webui/dist has its own .gitignore).

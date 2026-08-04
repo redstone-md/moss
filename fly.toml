@@ -1,15 +1,29 @@
 # Root Fly.io config so Fly's GitHub deploy (and a bare `fly deploy`) find it
-# here. This deploys a Moss **gateway**: one node on the shared substrate that
-# both RELAYS for the whole network (SuperNode) and serves the read-only
-# telemetry HTTP/SSE API the explorer reads and verifies. Fly terminates TLS on
-# *.fly.dev, so the API is reachable over https with no mixed content.
+# here. This deploys **MossScope**: one node on the shared substrate that RELAYS
+# for the whole network (SuperNode), serves the read-only telemetry HTTP/SSE API
+# the explorer reads and verifies, AND serves the MossScope interface compiled
+# into the same binary. Fly terminates TLS on *.fly.dev, so the API is reachable
+# over https with no mixed content.
+#
+# FIRST DEPLOY, in order:
+#
+#   fly ips allocate-v4 --app moss-tty8dw     # once: the raw peer port needs its own IP
+#   fly deploy
+#   fly certs add scope.moss.surf             # once, then point DNS at Fly's anycast address
+#   curl -s https://scope.moss.surf/api/health
+#
+# The dedicated IPv4 stays bound to the peer port; the custom domain rides the
+# anycast address through [http_service].
+#
+# This replaces moss-gateway. `serve` is the PUBLIC mode and carries no
+# inspection routes; debugging a node is loopback-only (`moss-scope attach`).
 #
 # [build].dockerfile forces Fly to build THIS image rather than guessing with
 # Nixpacks (whose "run-app" placeholder crash-loops). The build context is the
 # repo root, so the Dockerfile's `COPY . .` sees the Go module.
 #
-# RELAY REACHABILITY — the important part. The gateway can only be promoted to a
-# relaying SuperNode if its peer port (4001, pinned in deploy/Dockerfile.gateway)
+# RELAY REACHABILITY — the important part. The node can only be promoted to a
+# relaying SuperNode if its peer port (4001, pinned in deploy/Dockerfile.scope)
 # is reachable from the internet, inbound. Fly's shared/anycast address only
 # proxies the [http_service] block, so the raw peer port needs its own
 # dedicated IPv4, allocated ONCE per app:
@@ -27,16 +41,32 @@ app = "moss-tty8dw"
 primary_region = "iad"
 
 [build]
-  dockerfile = "deploy/Dockerfile.gateway"
+  dockerfile = "deploy/Dockerfile.scope"
+  # Stamped into the binary and reported by `moss-scope version`, /api/health and
+  # /api/manifest. Bump it with the release so "which build is live" is a
+  # question with an answer.
+  [build.args]
+    VERSION = "0.1.0"
 
-# Read-only telemetry API. Not auto-stopped: a relay must stay up to be useful,
-# and suspending on HTTP idle would drop its live relay sessions.
+# Read-only telemetry API + web interface. Not auto-stopped: a relay must stay
+# up to be useful, and suspending on HTTP idle would drop its live relay
+# sessions.
 [http_service]
   internal_port = 8787
   force_https = true
   auto_stop_machines = "off"
   auto_start_machines = true
   min_machines_running = 1
+
+  # /api/health, not /api/stats. Stats reflect the MESH, which is legitimately
+  # empty when the network is quiet, and a check that fails on a quiet network
+  # would restart a node that is doing exactly what it should.
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "3s"
+    grace_period = "20s"
+    method = "GET"
+    path = "/api/health"
 
 # Raw peer port for relaying — TCP and UDP on the dedicated IPv4 (see header).
 [[services]]

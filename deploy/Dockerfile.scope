@@ -1,0 +1,61 @@
+# MossScope as a single static, CGO-free distroless image: one binary that runs
+# a relaying substrate node, publishes aggregate telemetry, and serves the web
+# interface it is compiled with.
+#
+# Build context must be the repo root (so the Go module is available):
+#   docker build -f deploy/Dockerfile.scope -t moss-scope .
+#
+# Three build stages, because the interface is EMBEDDED rather than mounted and
+# the two toolchains each need something from the other:
+#
+#   wasm  — Go builds the verifier the explorer lens uses to recompute the epoch
+#           hash chain in the browser instead of trusting any single scope;
+#   web   — Node bundles the site, with that verifier already staged into it;
+#   build — Go compiles the binary with the bundle read by go:embed.
+#
+# The alternative — copying a Go toolchain into the Node image — mixes a
+# glibc-built toolchain into a musl base and works only by luck. Passing files
+# between stages is what stages are for.
+
+FROM golang:1.25 AS wasm
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN GOOS=js GOARCH=wasm go build -o /out/moss.wasm ./cmd/moss-wasm \
+    && cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" /out/wasm_exec.js
+
+FROM node:22-alpine AS web
+WORKDIR /src
+# Manifests first so the dependency install is cached across source-only changes.
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY . .
+COPY --from=wasm /out/moss.wasm site/public/moss.wasm
+COPY --from=wasm /out/wasm_exec.js site/public/wasm_exec.js
+RUN npm run build
+
+FROM golang:1.25 AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+# go:embed reads this directory at COMPILE time, so the bundle has to be in
+# place before the build, not mounted at runtime.
+COPY --from=web /src/site/dist/. internal/webui/dist/
+ARG VERSION=dev
+RUN CGO_ENABLED=0 go build -trimpath \
+    -ldflags="-s -w -X main.version=${VERSION}" \
+    -o /out/moss-scope ./cmd/moss-scope
+
+FROM gcr.io/distroless/static-debian12
+COPY --from=build /out/moss-scope /usr/local/bin/moss-scope
+# Exec-form entrypoint so Fly/Docker run the binary directly (no shell needed).
+# Roomless substrate relay + network-wide telemetry + UI, with a PINNED peer port
+# (4001) so the platform can expose it and the node is inbound-reachable — a
+# prerequisite for being promoted to a relaying SuperNode.
+#
+# `serve` is the public mode. It has no inspection routes at all: debugging is
+# loopback-only and lives behind `moss-scope attach`.
+ENTRYPOINT ["/usr/local/bin/moss-scope"]
+CMD ["serve", "-http", "0.0.0.0:8787", "-listen-port", "4001"]
