@@ -22,7 +22,7 @@
       <div class="hidden items-center gap-8 md:flex">
         <a href="/" class="nav-link">home</a>
         <a href="/docs.html" class="nav-link text-ink">docs</a>
-        <a href="/explorer.html" class="nav-link">explorer</a>
+        <a href="/scope.html" class="nav-link">explorer</a>
         <a href="/showcase.html" class="nav-link">ecosystem</a>
         <a href="https://github.com/redstone-md/moss" class="nav-link">source</a>
       </div>
@@ -116,7 +116,7 @@ go build -o moss-gateway ./cmd/moss-gateway
       <p>Read it via <code>Moss_GetNetworkStats</code> or a gateway's <code>/api/stats</code> and <code>/api/chain</code>.</p>
 
       <h2 id="explorer">Explorer</h2>
-      <p>The <a href="/explorer.html">explorer</a> is a static client that reads telemetry from one or more <strong>gateways</strong> and verifies it in your browser via the wasm verifier: it checks hash-chain continuity and cross-checks that independent gateways agree. The topology view is a <em>simulation</em> seeded by the epoch digest — it reflects aggregate shape (counts, NAT/degree distributions), never real edges or addresses, so it discloses nothing.</p>
+      <p>The <a href="/scope.html">explorer</a> is a static client that reads telemetry from one or more <strong>gateways</strong> and verifies it in your browser via the wasm verifier: it checks hash-chain continuity and cross-checks that independent gateways agree. The topology view is a <em>simulation</em> seeded by the epoch digest — it reflects aggregate shape (counts, NAT/degree distributions), never real edges or addresses, so it discloses nothing.</p>
       <p>A gateway is any node with telemetry on serving the read-only API: <code>moss-gateway -http 127.0.0.1:8787</code>. <code>http://localhost</code> works even from the https site; remote gateways must be <code>https</code>.</p>
       <p>Switch which mesh you're viewing with the explorer's <strong>mesh selector</strong> (it appends <code>?meshid=…</code> to each request, or open a deep link like <code>?meshid=global</code>). The mesh list lives on the client; a gateway joins a requested mesh on demand, so you can point the explorer at any mesh the gateway can reach. The API also takes <code>?meshid=</code> on <code>/api/stats</code>, <code>/api/chain</code>, and <code>/api/events</code>.</p>
 

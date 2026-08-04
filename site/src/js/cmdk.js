@@ -5,7 +5,7 @@
 const NAV = [
   { label: "Home", hint: "landing", href: "/" },
   { label: "Documentation", hint: "how it works", href: "/docs.html" },
-  { label: "Explorer", hint: "live network", href: "/explorer.html" },
+  { label: "Scope", hint: "live network + node debugger", href: "/scope.html" },
   { label: "Ecosystem", hint: "built on moss", href: "/showcase.html" },
   { label: "Docs · Telemetry", hint: "privacy-preserving metrics", href: "/docs.html#telemetry" },
   { label: "Docs · Transport & crypto", hint: "Noise, ChaCha20", href: "/docs.html#transport" },

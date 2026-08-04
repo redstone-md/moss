@@ -1,101 +1,46 @@
-<!DOCTYPE html>
-<html lang="en" data-theme="signal">
+<!doctype html>
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Mossscan — network observatory</title>
-  <meta name="description" content="A live, verified view of the Moss mesh — node count, bandwidth, and an animated topology, recomputed in your browser." />
-  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-  <script>(function(){var t;try{t=localStorage.getItem("moss-theme")}catch(e){}if(t!=="signal"&&t!=="light")t="signal";document.documentElement.setAttribute("data-theme",t)})();</script>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;800;900&family=Space+Grotesk:wght@300;500;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+  <title>Moss explorer → MossScope</title>
+  <!--
+    The explorer is now MossScope, served at /scope.html and at scope.moss.surf.
+
+    This page stays as a redirect rather than being deleted: the old URL is in
+    the docs, in the README and in whatever people bookmarked, and a 404 for a
+    link that used to work costs more than one small file. The query string is
+    carried over so ?gateways=… keeps meaning what it meant.
+
+    canonical + refresh handle crawlers and no-JS; the script handles everyone
+    else instantly and uses replace() so Back does not bounce them here again.
+  -->
+  <!-- Absolute on purpose: a relative href here is treated as an asset by the
+       bundler and rewritten to a hashed filename, which points crawlers at a
+       copy instead of at the page. -->
+  <link rel="canonical" href="https://scope.moss.surf/" />
+  <meta http-equiv="refresh" content="0; url=/scope.html" />
+  <link rel="icon" href="/favicon.svg" />
+  <style>
+    body {
+      margin: 0; display: grid; place-content: center; min-height: 100vh; gap: 10px;
+      background: #0b1012; color: #d5e1e3; text-align: center;
+      font: 13px/1.6 ui-monospace, "Cascadia Code", Consolas, monospace;
+    }
+    a { color: #35c08a; }
+    p { color: #7b8e93; max-width: 46ch; margin: 0 auto; }
+  </style>
 </head>
-<body class="relative h-screen overflow-hidden bg-bg text-ink">
-
-  <!-- full-bleed network canvas -->
-  <canvas id="tree" class="fixed inset-0 h-full w-full"></canvas>
-  <!-- legibility vignette -->
-  <div class="pointer-events-none fixed inset-0" style="background:radial-gradient(120% 90% at 50% 50%, transparent 45%, rgb(var(--c-bg)/0.55) 100%)"></div>
-
-  <!-- top bar -->
-  <div class="fixed inset-x-0 top-0 z-30 flex items-center justify-between px-5 py-4">
-    <a href="/" class="flex items-center gap-2.5">
-      <span class="grid h-8 w-8 place-items-center rounded-lg border border-line bg-surface/70 text-accent backdrop-blur">❖</span>
-      <span class="font-display text-lg font-extrabold tracking-tightest">moss<span class="text-muted">scan</span></span>
-    </a>
-    <div id="verdict" class="glass inline-flex items-center gap-2 px-4 py-2 text-sm text-muted">
-      <span id="verdict-dot" class="h-2.5 w-2.5 rounded-full bg-muted"></span>
-      <span id="verdict-text">not connected</span>
-    </div>
-    <div class="flex items-center gap-2">
-      <button id="gw-toggle" class="chip hover:border-accent/50">gateways</button>
-      <button data-cmdk-open class="chip hover:border-accent/50" title="command palette">⌘K</button>
-      <button data-theme-toggle class="chip hover:border-accent/50"><span class="h-2 w-2 rounded-full bg-accent"></span><span data-theme-label>signal</span></button>
-      <a href="/" class="chip hover:border-accent/50">exit</a>
-    </div>
-  </div>
-
-  <!-- gateways popover -->
-  <div id="gw-panel" class="glass fixed right-5 top-16 z-30 hidden w-[min(92vw,30rem)] p-4">
-    <label for="gateways" class="eyebrow">gateways</label>
-    <div class="mt-2 flex gap-2">
-      <input id="gateways" spellcheck="false"
-             class="flex-1 rounded-lg border border-line bg-bg/70 px-3 py-2 font-mono text-sm text-ink outline-none focus:border-accent/60"
-             placeholder="http://localhost:8787, https://gateway.example…" />
-      <button id="connect" class="btn-accent">connect</button>
-    </div>
-    <p class="mt-3 text-xs text-muted">A gateway is a node with telemetry on, serving a read-only API for the whole shared network. Run one: <code class="font-mono text-accent">moss-gateway -http 127.0.0.1:8787</code>. <code class="font-mono">http://localhost</code> works here; remote must be <code class="font-mono">https</code>. <a href="/docs.html#explorer" class="text-accent hover:underline">More →</a></p>
-  </div>
-
-  <!-- HUD: node count + sparkline (top-left) -->
-  <div class="glass fixed left-5 top-20 z-20 w-56 p-5">
-    <p class="eyebrow">estimated nodes</p>
-    <div id="node-count" class="mt-1 font-display text-6xl font-black tracking-tightest text-accent">—</div>
-    <canvas id="spark" class="mt-1 h-9 w-full"></canvas>
-    <p class="mt-1 text-[11px] text-muted">HyperLogLog — peers never enumerated</p>
-  </div>
-
-  <!-- HUD: legend (left, below) -->
-  <div class="fixed bottom-5 left-5 z-20 flex flex-col gap-1.5 font-mono text-[11px] text-muted">
-    <span class="flex items-center gap-2"><i class="h-2.5 w-2.5 rounded-full bg-accent"></i> supernode</span>
-    <span class="flex items-center gap-2"><i class="h-2.5 w-2.5 rounded-full bg-accent2"></i> relay</span>
-    <span class="flex items-center gap-2"><i class="h-2.5 w-2.5 rounded-full bg-muted"></i> leaf</span>
-  </div>
-
-  <!-- HUD: readouts (bottom-right) -->
-  <div class="glass fixed bottom-5 right-5 z-20 w-[min(92vw,22rem)] p-5">
-    <div class="grid grid-cols-3 gap-4">
-      <div>
-        <p class="eyebrow">bw in</p>
-        <div id="bw-in" class="mt-1 font-display text-lg font-bold text-accent2">—</div>
-      </div>
-      <div>
-        <p class="eyebrow">bw out</p>
-        <div id="bw-out" class="mt-1 font-display text-lg font-bold text-accent2">—</div>
-      </div>
-      <div>
-        <p class="eyebrow">peers</p>
-        <div id="contributors" class="mt-1 font-display text-lg font-bold text-ink">—</div>
-      </div>
-    </div>
-    <div class="mt-4 grid gap-4 sm:grid-cols-2">
-      <div>
-        <p class="eyebrow mb-2">NAT</p>
-        <div id="nat-hist" class="space-y-1.5"></div>
-      </div>
-      <div>
-        <p class="eyebrow mb-2">degree</p>
-        <div id="degree-hist" class="space-y-1.5"></div>
-      </div>
-    </div>
-    <div class="mt-4 flex items-center justify-between border-t border-line pt-3 font-mono text-[10px] text-muted">
-      <span id="epoch">epoch —</span>
-      <span id="digest" class="truncate pl-3">digest —</span>
-    </div>
-  </div>
-
-  <script src="/wasm_exec.js"></script>
-  <script type="module" src="/src/js/explorer.js"></script>
+<body>
+  <p>The explorer moved to <a href="/scope.html">MossScope</a>.</p>
+  <p>Same network view, plus a debugger for your own node when one is running.</p>
+  <script>
+    const to = new URL("/scope.html", location.origin);
+    for (const [k, v] of new URLSearchParams(location.search)) {
+      // `gateways` was the explorer's name for what MossScope calls `scopes`.
+      to.searchParams.set(k === "gateways" ? "scopes" : k, v);
+    }
+    location.replace(to.toString());
+  </script>
 </body>
 </html>
