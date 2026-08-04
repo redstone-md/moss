@@ -38,6 +38,11 @@ var boundElsewhere = map[string]string{
 	// not carry bindIfIndex yet. Tracked separately; a mapping obtained from a
 	// VPN gateway is the remaining way to advertise a tunnel-side address.
 	filepath.Join("nat", "pmp.go"): "on-link gateway, separate plumbing",
+	// The debug plane refuses any non-loopback address at construction
+	// (inspect.requireLoopback), so its listener never touches a NIC and cannot
+	// leak around a VPN. That refusal is what keeps this exemption true — see
+	// TestRefusesNonLoopbackBind.
+	filepath.Join("inspect", "server.go"): "loopback only, enforced at construction",
 }
 
 // TestNoUnboundSocketCallSites fails when a new socket appears somewhere that
