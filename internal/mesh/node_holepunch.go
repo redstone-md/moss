@@ -63,10 +63,13 @@ func (n *Node) attemptHolePunchPolicy(targetPeerID string, timeout time.Duration
 		RelayTarget:    targetPeerID,
 		AdvertisedAddr: sourceAddr,
 	})
+	n.emitPunchAttempt(targetPeerID, targetInfo.natType, viaPeerID)
+	punchStarted := time.Now()
 	deadline := time.Now().Add(timeout)
 	triedAddr := targetInfo.addr
 	for time.Now().Before(deadline) {
 		if n.directPeerConnected(targetPeerID) {
+			n.emitPunchResult(targetPeerID, targetInfo.natType, true, time.Since(punchStarted))
 			return true
 		}
 		n.mu.RLock()
@@ -78,7 +81,12 @@ func (n *Node) attemptHolePunchPolicy(targetPeerID string, timeout time.Duration
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	return n.directPeerConnected(targetPeerID)
+	// A punch that ran out of time is the single most useful negative result in
+	// the whole NAT layer: it is what fills in which pairs of NAT types never
+	// work, and that cannot be inferred from successes alone.
+	ok = n.directPeerConnected(targetPeerID)
+	n.emitPunchResult(targetPeerID, targetInfo.natType, ok, time.Since(punchStarted))
+	return ok
 }
 
 func (n *Node) tryHolePunchDial(targetPeerID, addr string) {

@@ -40,6 +40,7 @@ func (n *Node) removePeer(peerID string, session *transport.Session) {
 			endedTransport = remote.Network()
 		}
 	}
+	n.emitSessionClose(peerID, time.Since(endedAt), endedMisses, endedOrigin, endedInbound, endedRelayed)
 	delete(n.peers, peerID)
 	delete(n.suppress, peerID)
 	delete(n.relayBuckets, peerID)

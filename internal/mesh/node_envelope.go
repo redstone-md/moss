@@ -2,6 +2,7 @@ package mesh
 
 import (
 	"github.com/redstone-md/moss/internal/gossip"
+	"github.com/redstone-md/moss/internal/inspect"
 )
 
 // A peer may only cost us so much announcement traffic.
@@ -48,6 +49,7 @@ func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 		n.countInbound("__announce_throttled__")
 		return
 	}
+	n.emitInbound(peer, env)
 	switch env.Type {
 	case gossip.TypeOverlayFindNode:
 		n.handleOverlayFindNode(peer, env)
@@ -106,14 +108,19 @@ func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 		}
 		if env.Channel == "" || env.MessageID == "" {
 			n.scoring.PenalizeInvalid(peer.id)
+			n.emitPenalty(peer.id, "publish without channel or message id")
 			return
 		}
 		if len(env.Payload) > n.config.Security.MaxMessageSizeBytes {
 			n.scoring.PenalizeInvalid(peer.id)
+			n.emitPenalty(peer.id, "publish over the message size limit")
 			return
 		}
 		n.observeMeshDelivery(env.Channel, env.MessageID, peer.id)
 		if !n.cache.StoreIfNew(env) {
+			// Already seen: the message reached us by a second path. Not an error,
+			// but the reason a peer looks silent when it is in fact always second.
+			n.emitDrop(inspect.KindDedup, peer, env, "already seen this message")
 			return
 		}
 		n.scoring.RewardFirstDelivery(peer.id)
@@ -225,11 +232,16 @@ func (n *Node) localDeliveryWorker(queue chan dispatchMessage) {
 func (n *Node) broadcastEnvelope(env gossip.Envelope, excludePeerID string) bool {
 	targets := n.pubsub.MeshPeers(env.Channel)
 	if len(targets) == 0 {
+		// An empty mesh for a topic is the single most common reason a message
+		// goes nowhere, and it is invisible in a delivery counter.
+		n.emitDrop(inspect.KindForward, nil, env, "no peers in the topic mesh")
 		return false
 	}
-	return n.sendToPeers(filterPeerIDs(targets, func(peerID string) bool {
+	eligible := filterPeerIDs(targets, func(peerID string) bool {
 		return peerID != excludePeerID && n.canGossipWithPeer(peerID)
-	}), env)
+	})
+	n.emitForward(env, len(eligible), len(targets))
+	return n.sendToPeers(eligible, env)
 }
 
 func (n *Node) broadcastFloodPublish(env gossip.Envelope, excludePeerID string) bool {
@@ -248,8 +260,12 @@ func (n *Node) broadcastFloodPublish(env gossip.Envelope, excludePeerID string) 
 		targets = append(targets, peerID)
 	}
 	if len(targets) == 0 {
+		// Flood publish is the path Publish() itself takes, so this is where a
+		// message from THIS node dies when it has nobody to give it to.
+		n.emitDrop(inspect.KindForward, nil, env, "no subscribers and no mesh peers")
 		return false
 	}
+	n.emitForward(env, len(targets), len(meshPeers)+len(nonMeshSubscribers))
 	return n.sendToPeers(targets, env)
 }
 

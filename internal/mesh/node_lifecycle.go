@@ -11,6 +11,7 @@ import (
 	"github.com/redstone-md/moss/internal/bootstrap"
 	mcrypto "github.com/redstone-md/moss/internal/crypto"
 	"github.com/redstone-md/moss/internal/gossip"
+	"github.com/redstone-md/moss/internal/inspect"
 	"github.com/redstone-md/moss/internal/nat"
 	"github.com/redstone-md/moss/internal/overlay"
 	"github.com/redstone-md/moss/internal/stat"
@@ -119,6 +120,10 @@ func NewNodeWithIdentity(meshID string, psk []byte, cfg Config, identity *mcrypt
 		localQueues:      make(map[string]chan dispatchMessage),
 	}
 	node.natProfile.Store(nat.Profile{Type: nat.TypeUnknown})
+	// The bus exists whether or not the debug plane is enabled: Emit is a single
+	// atomic load while nothing is attached, so call sites need no nil check and
+	// no build tag.
+	node.debugBus = inspect.NewBus(cfg.Debug.RingSize)
 	if cfg.Telemetry.Enabled {
 		agg, err := stat.NewAggregator(stat.Config{
 			EpochSec:     int64(cfg.Telemetry.epochSec()),
@@ -200,6 +205,7 @@ func (n *Node) Start() int32 {
 	n.wg.Add(1)
 	go n.overlayPublishLoop(ctx)
 	go n.probePortMapping(ctx, listenAddrStr, port)
+	n.startDebugPlane()
 	go func() {
 		if addrs := loadPeerCache(n.config.PeerCachePath, n.config.peerCacheTTL()); len(addrs) > 0 {
 			n.rememberTrackerSeeds(addrs)
@@ -254,6 +260,7 @@ func (n *Node) LastError() string {
 }
 
 func (n *Node) Stop() int32 {
+	n.stopDebugPlane()
 	n.savePeerCacheSnapshot()
 	n.mu.Lock()
 	if !n.started {
@@ -404,6 +411,14 @@ func (n *Node) PublishRoom(meshID, channel string, data []byte) int32 {
 		return MOSS_ERR_NOT_IN_ROOM
 	}
 	env := n.makePublishEnvelope(topic, sealed)
+	n.debugBus.Emit(func() inspect.Event {
+		return inspect.Event{
+			Kind:   inspect.KindPublish,
+			Topic:  topic,
+			Trace:  env.MessageID,
+			Fields: map[string]any{"bytes": len(data), "sealed_bytes": len(sealed)},
+		}
+	})
 	n.cache.Store(env)
 	n.deliverLocal(env)
 	sent := n.broadcastFloodPublish(env, "")
