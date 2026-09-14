@@ -78,8 +78,12 @@ func (n *Node) AttachDataChannel(dc js.Value, initiator bool, label string) {
 		hsCtx, cancel := withTimeout(context.Background(), n.config.HandshakeTimeout())
 		defer cancel()
 		cfg := transport.HandshakeConfig{
-			MeshID:   n.networkID,
-			PSK:      nil,
+			MeshID: n.networkID,
+			// Same PSK gate as the direct bearers: nil unless the node opted
+			// in via Security.PSKHandshake, so knob-off WebRTC stays wire-
+			// compatible while a knob-on node refuses mismatched data
+			// channels.
+			PSK:      n.transportHandshakePSK(),
 			Identity: n.identity,
 			Buffers:  transportBufferConfig(n.config.Transport),
 		}

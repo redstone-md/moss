@@ -13,14 +13,15 @@ const relayMigrationGracePeriod = time.Second
 
 // maxRelayPayloadBytes bounds one relayed application payload. The wire form
 // is a JSON envelope whose Payload field carries the base64 of the bytes
-// (x4/3), plus envelope fields and the relay AEAD's expansion, all sealed
-// inside a stream frame that the 256 KiB data-frame cap (transport
-// maxDataFrameSize) hard-rejects on arrival — killing the middle→target
-// session. 190 KiB leaves ~2.4 KiB of slack inside that cap after the
-// worst-case envelope overhead, so a payload at the limit rides the wire
-// while anything larger is refused by the sender, not by the receiver's
-// teardown. The gate lives in RelaySend (origin) and handleRelayData
-// (middle), never in the target's delivery path.
+// (x4/3), plus envelope fields and the DM AEAD's expansion (12-byte nonce +
+// 16-byte tag — the origin pays it before the frame, the middle node
+// forwards opaque bytes), all sealed inside a stream frame that the 256 KiB
+// data-frame cap (transport maxDataFrameSize) hard-rejects on arrival —
+// killing the middle→target session. 190 KiB leaves ~2.4 KiB of slack
+// inside that cap after the worst-case envelope overhead, so a payload at
+// the limit rides the wire while anything larger is refused by the sender,
+// not by the receiver's teardown. The gate lives in RelaySend (origin) and
+// handleRelayData (middle), never in the target's delivery path.
 const maxRelayPayloadBytes = 190 * 1024
 
 func (n *Node) handleRelayRequest(peer *peerConn, env gossip.Envelope) {
@@ -45,9 +46,10 @@ func (n *Node) handleRelayRequest(peer *peerConn, env gossip.Envelope) {
 		}
 		n.mu.Unlock()
 		if capped {
-			// No slot for another relayed peer: refuse with a close, not an
-			// accept that would leave the opener holding a half-open
-			// session. The opener's handleRelayClose tears it down.
+			// No slot or no policy admission for another relayed peer:
+			// refuse with a close, not an accept that would leave the
+			// opener holding a half-open session. The opener's
+			// handleRelayClose tears it down.
 			n.sendEnvelope(peer, gossip.Envelope{
 				Type:         gossip.TypeRelayClose,
 				RelaySession: env.RelaySession,
@@ -111,10 +113,11 @@ func (n *Node) handleRelayAccept(peer *peerConn, env gossip.Envelope) {
 		n.mu.Unlock()
 		if capped {
 			// The via-peer already registered a forwarding route on our
-			// behalf, so a capped target must tear the whole session down or
-			// that route outlives its endpoint. session.wait stays open on
-			// purpose: OpenRelaySession's select times out honestly instead
-			// of reporting success with no peer behind it.
+			// behalf, so a refused target — at relayed fan-out cap or not
+			// admitted by the allowlist — must tear the whole session down
+			// or that route outlives its endpoint. session.wait stays open
+			// on purpose: OpenRelaySession's select times out honestly
+			// instead of reporting success with no peer behind it.
 			n.closeRelaySession(session)
 			return
 		}
@@ -144,12 +147,19 @@ func (n *Node) handleRelayData(peer *peerConn, env gossip.Envelope) {
 			n.handleEnvelope(n.relayPeerForSession(session), inner)
 			return
 		}
-		var sender [32]byte
-		raw, err := hex.DecodeString(env.RelaySource)
-		if err == nil {
-			copy(sender[:], raw)
+		// Not session-sealed gossip: an application DM, end-to-end sealed to
+		// us by the source. There is no plaintext path — a payload we
+		// cannot open is counted and dropped, never handed to the
+		// application unread.
+		if plaintext, err := n.openDMPayload(env.RelaySource, env.Payload); err == nil {
+			var sender [32]byte
+			if raw, err := hex.DecodeString(env.RelaySource); err == nil {
+				copy(sender[:], raw)
+			}
+			n.dispatchCh <- dispatchRelay{sender: sender, data: plaintext}
+			return
 		}
-		n.dispatchCh <- dispatchRelay{sender: sender, data: append([]byte(nil), env.Payload...)}
+		n.countInbound("__relay_payload_unopenable__")
 		return
 	}
 	n.mu.RLock()
@@ -171,13 +181,17 @@ func (n *Node) handleRelayData(peer *peerConn, env gossip.Envelope) {
 	// A misbehaving origin gets its traffic counted and dropped at the first
 	// hop, never a session belonging to us. The origin's own RelaySend gate is
 	// the primary bound (see maxRelayPayloadBytes); this guards against a
-	// hostile or version-skewed origin.
+	// hostile or version-skewed origin. The gate stays on WIRE bytes — it
+	// protects the transport frame cap, which sees the wire form — while
+	// the bandwidth bucket charges application bytes
+	// (relayChargeableBytes): the relay bills what the app sent, not the
+	// origin's cryptography.
 	if len(env.Payload) > maxRelayPayloadBytes {
 		n.countInbound("__relay_oversize__")
 		return
 	}
 	bucket := n.relayBucketFor(peer.id)
-	if !bucket.Allow(len(env.Payload)) {
+	if !bucket.Allow(relayChargeableBytes(len(env.Payload))) {
 		n.markRelayOverloaded(time.Now())
 		return
 	}
@@ -412,9 +426,10 @@ func (n *Node) relayedPeerCountLocked() int {
 }
 
 // registerRelayedPeerLocked adds a relayed peer to n.peers. The bool return
-// reports CAPACITY: the caller must tear the relay session down rather than
-// treat the nil peer as a silent no-op, or a capped node would half-ack the
-// opener and leave it holding a session nobody answers.
+// reports a refusal the caller must act on rather than treat the nil peer as
+// a silent no-op — CAPACITY (relayed fan-out at cap) or POLICY (allowlist):
+// either way the relay session must be torn down, or a refused node would
+// half-ack the opener and leave it holding a session nobody answers.
 func (n *Node) registerRelayedPeerLocked(session relayLocalSession) (*peerConn, bool) {
 	if session.remotePeerID == "" || session.viaPeerID == "" || session.sessionID == "" {
 		return nil, false
@@ -425,6 +440,20 @@ func (n *Node) registerRelayedPeerLocked(session relayLocalSession) (*peerConn, 
 	existing := n.peers[session.remotePeerID]
 	if existing != nil && !existing.relayed {
 		return nil, false
+	}
+	// Allowlist gate — the same admission policy as the direct path
+	// (registerPeerFrom), so a strict node refuses an unlisted remote over
+	// relay exactly as over a direct dial, and the refusal is counted, never
+	// silently dropped. Only genuinely NEW remotes are gated: a session
+	// migration (existing remote, new sessionID) replaces the entry,
+	// mirroring the cap exemption below. Inlined rather than IsPeerAllowed
+	// because this runs under n.mu. Policy is checked before capacity so the
+	// counter reflects the operator's intent, not the node's load.
+	if existing == nil && n.allowlist != nil {
+		if _, ok := n.allowlist[session.remotePeerID]; !ok {
+			n.countInbound("__allowlist_rejected__")
+			return nil, true
+		}
 	}
 	// A session migration (same remote, new sessionID) replaces the old
 	// entry and nets no growth; only a genuinely new remote consumes cap.

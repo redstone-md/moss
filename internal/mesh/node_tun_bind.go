@@ -15,9 +15,11 @@ import (
 // routing — internal/tun does — this file is the glue: goroutine lifetime,
 // packet-callback chaining, and the virtual-IP registry per node.
 //
-// v1, fixated: NO FRAGMENTATION. Packets over the MTU are dropped and
-// counted on both directions (see tun.Router). Frame cap of the underlying
-// streams is untouched.
+// v2: packets over the MTU are fragmented into TFRG frames carried as
+// ordinary directed payloads and reassembled at the far edge (see
+// tun.Router); destinations outside the assigned-IP pool route through a
+// prefix table (tun.Routes) that picks the lowest-RTT candidate. Frame cap
+// of the underlying streams is untouched.
 
 // tunSendTimeout bounds the relay-path fallback inside SendToPeer when an
 // outbound packet targets a peer with no live session. Direct-session sends
@@ -39,13 +41,14 @@ var (
 	tunBindsMu sync.Mutex
 )
 
-// tunBinding is one node's attached intranet. Immutable after construction
-// except the router's atomic counters.
 type tunBinding struct {
 	node   *Node
 	iface  tun.PacketIface
 	table  *tun.Table
 	router *tun.Router
+	// routes is the beyond-the-pool prefix table the router consults
+	// after the assigned-IP table misses (v2).
+	routes *tun.Routes
 	// prev is the packet callback registered before attachment; DetachTun
 	// restores it verbatim.
 	prev PacketCallback
@@ -101,7 +104,6 @@ func AttachTun(n *Node, iface tun.PacketIface, cidr string) error {
 	if stopped {
 		return errors.New("node is stopped; attach before Stop or after a fresh Start")
 	}
-
 	b := &tunBinding{
 		node:  n,
 		iface: iface,
@@ -113,12 +115,37 @@ func AttachTun(n *Node, iface tun.PacketIface, cidr string) error {
 		done: make(chan struct{}),
 	}
 
+	// The beyond-the-pool routes (v2): candidates are the node's current
+	// peers, liveness is peer-map presence, RTT is the maintenance
+	// loop's probe. Wired before routing starts, so there is no window
+	// where the router consults a half-built table.
+	b.routes = tun.NewRoutes(
+		func(peerID string) bool {
+			n.mu.RLock()
+			defer n.mu.RUnlock()
+			_, ok := n.peers[peerID]
+			return ok
+		},
+		n.PeerRTT,
+	)
+	b.router.SetRoutes(b.routes)
+	// Fragment-drop telemetry rides the existing per-type inbound
+	// counters (in___tun_frag_*__ fields on the node's stats).
+	b.router.SetDropCounter(n.countInbound)
+
 	// The control-plane lock makes the splice and the registry insert one
 	// atomic step: there is no window where a second attach could observe
 	// no binding yet overwrite the winner's callback with its own.
 	n.mu.Lock()
 	b.prev = n.packetCB
 	n.packetCB = func(senderID [32]byte, data []byte) {
+		// Fragment frames are reassembled before any IP classification:
+		// their TFRG magic would otherwise fall through to the app
+		// callback (it is not an IP packet) on nodes that only relay.
+		if tun.IsFragFrame(data) {
+			b.router.RouteInbound(data)
+			return
+		}
 		if tun.IsIPv4(data) {
 			b.router.RouteInbound(data)
 			return
@@ -191,6 +218,42 @@ func PeerAddr(n *Node, peerID string) (net.IP, error) {
 	}
 	a4 := addr.As4()
 	return net.IP(append([]byte(nil), a4[:]...)), nil
+}
+
+// AddTunRoute registers peerID as a routing candidate for prefix (e.g.
+// "192.168.50.0/24") on node's attached intranet: packets whose destination
+// falls inside prefix — and is not an assigned virtual IP — are routed to
+// one of the prefix's registered candidates, the lowest-RTT live peer. The
+// pair is idempotent; candidates are application-managed (there is no
+// automatic route between nodes).
+func AddTunRoute(n *Node, prefix, peerID string) error {
+	if n == nil {
+		return errors.New("node is required")
+	}
+	if peerID == "" {
+		return errors.New("peer ID is required")
+	}
+	v, ok := tunBinds.Load(n)
+	if !ok {
+		return errors.New("no tun interface is attached to this node")
+	}
+	return v.(*tunBinding).routes.Add(prefix, peerID)
+}
+
+// RemoveTunRoute drops the (prefix, peerID) pair from node's intranet
+// routing. Removing an absent pair is a no-op.
+func RemoveTunRoute(n *Node, prefix, peerID string) error {
+	if n == nil {
+		return errors.New("node is required")
+	}
+	if peerID == "" {
+		return errors.New("peer ID is required")
+	}
+	v, ok := tunBinds.Load(n)
+	if !ok {
+		return errors.New("no tun interface is attached to this node")
+	}
+	return v.(*tunBinding).routes.Remove(prefix, peerID)
 }
 
 // run is the binding's goroutine: a pump that reads packets off the

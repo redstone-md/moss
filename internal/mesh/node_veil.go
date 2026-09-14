@@ -84,8 +84,12 @@ func (n *Node) handleVeilInbound(ctx context.Context, conn vtransport.Conn) {
 	hsCtx, cancel := withTimeout(ctx, n.config.HandshakeTimeout())
 	defer cancel()
 	session, err := transport.ServerHandshake(hsCtx, netConn, transport.HandshakeConfig{
-		MeshID:   n.networkID,
-		PSK:      nil,
+		MeshID: n.networkID,
+		// Same PSK gate as the direct bearers: nil unless the node opted in
+		// via Security.PSKHandshake, so a knob-off veil bearer stays wire-
+		// compatible with knob-off peers while a knob-on node refuses an
+		// unauthenticated or mismatched one behind the relay.
+		PSK:      n.transportHandshakePSK(),
 		Identity: n.identity,
 		Buffers:  transportBufferConfig(n.config.Transport),
 	})
@@ -206,8 +210,10 @@ func (n *Node) veilDial(ctx context.Context, addr, coverSNI string, remoteStatic
 	hsCtx, cancel := withTimeout(ctx, n.config.HandshakeTimeout())
 	defer cancel()
 	session, err := transport.ClientHandshake(hsCtx, netConn, transport.HandshakeConfig{
-		MeshID:       n.networkID,
-		PSK:          nil,
+		MeshID: n.networkID,
+		// Same PSK gate as the direct bearers (handleInbound): nil unless
+		// Security.PSKHandshake is set, so redialers inherit the policy too.
+		PSK:          n.transportHandshakePSK(),
 		Identity:     n.identity,
 		RemoteStatic: remoteStatic,
 		Buffers:      transportBufferConfig(n.config.Transport),

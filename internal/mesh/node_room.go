@@ -7,6 +7,8 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"sync"
@@ -14,6 +16,7 @@ import (
 	"golang.org/x/crypto/chacha20poly1305"
 
 	mcrypto "github.com/redstone-md/moss/internal/crypto"
+	"github.com/redstone-md/moss/internal/gossip"
 )
 
 // A mesh id is a room: an application pub/sub namespace layered on the shared
@@ -27,9 +30,15 @@ import (
 //   - a private room (created with a PSK) derives its key from the PSK, so
 //     outsiders cannot compute its topics or open its messages at all.
 //
-// A room without a PSK is public: its key derives from the room id alone, which
-// any member already knows — isolation without secrecy. A substrate-only node
-// (empty room, e.g. a spore) has no room key and never touches pub/sub.
+// A room without a PSK derived its key from the room id alone — a LEGACY
+// path, kept for wire compatibility with existing meshes: anyone who knows
+// the room id can compute the key, so it isolates but does not hide, and
+// must not be relied on for secrecy. Invitation rooms are the secure
+// alternative for members-only spaces: the creator generates a random key
+// and hands it to each invitee via CreateRoomInvite/AcceptRoomInvite, sealed
+// end-to-end, so no key can be computed from any public name. A
+// substrate-only node (empty room, e.g. a spore) has no room key and never
+// touches pub/sub.
 //
 // A node may hold several rooms at once. It is born in the room it was
 // constructed with (its meshID, the default for every room-less call) and can
@@ -115,6 +124,13 @@ func (n *Node) dropRoomAEAD(meshID string) {
 }
 
 // deriveRoomKey returns the 32-byte room key, computed once at construction.
+// With a PSK this is the private-room path and stays exactly as it was. With
+// an empty PSK it derives from the room id alone — the LEGACY public-room
+// path: the "secret" is a name, so anyone who knows the mesh id computes the
+// same key. Kept because every node in an existing no-PSK mesh derives it
+// and must keep interchanging rooms with old clients; for a members-only
+// room use the invitation path (CreateRoomInvite/AcceptRoomInvite), whose
+// random key is never derived from anything guessable.
 func deriveRoomKey(meshID string, psk []byte) []byte {
 	if meshID == "" {
 		return nil
@@ -172,6 +188,31 @@ func (n *Node) joinRoom(meshID string, psk []byte) bool {
 	// AEAD so the next seal/open constructs it from the new key. The
 	// cache's stored-key guard would catch it anyway; this keeps the map
 	// from holding a dead room's entry.
+	if changed {
+		n.dropRoomAEAD(meshID)
+	}
+	return true
+}
+
+// joinRoomWithKey stores an externally-supplied room key — the invitation
+// path. Unlike joinRoom it never derives: the key arrived sealed to us from
+// the room's creator, and deriving from the room id would hand the room to
+// anyone who knows the id. Mirrors joinRoom's re-join semantics: a re-join
+// with a different key is a rotation, not an error.
+func (n *Node) joinRoomWithKey(meshID string, key []byte) bool {
+	if meshID == "" || len(key) != 32 {
+		return false
+	}
+	n.mu.Lock()
+	if n.rooms == nil {
+		n.rooms = make(map[string][]byte)
+	}
+	held := n.rooms[meshID]
+	changed := !bytes.Equal(held, key)
+	if changed {
+		n.rooms[meshID] = append([]byte(nil), key...)
+	}
+	n.mu.Unlock()
 	if changed {
 		n.dropRoomAEAD(meshID)
 	}
@@ -344,4 +385,110 @@ func (n *Node) openRoom(meshID string, payload []byte) ([]byte, bool) {
 		return nil, false
 	}
 	return plaintext, true
+}
+
+// roomInvitePayload is the sealed body of a TypeRoomInvite envelope: which
+// room, the room key sealed to the invitee, and who the invite is for. The
+// key bytes never travel in the clear — Key is the nonce||ciphertext form
+// produced by the DM AEAD.
+type roomInvitePayload struct {
+	MeshID    string `json:"mesh_id"`
+	Key       []byte `json:"key"`
+	InviteeID string `json:"invitee_id"`
+}
+
+// roomInviteSignaturePayload is the byte string an invite's Signature
+// covers: domain, mesh id, invitee id, and the sealed key blob. The invitee
+// verifies it against the creator's Ed25519 key (env.SenderID) so a forged
+// invite cannot hand over a key the forger does not control — a forged key
+// that does not open the room's traffic is useless, but a forged INVITE
+// could still put an attacker-chosen "room key" into the invitee's rooms
+// map, and the signature closes that.
+func roomInviteSignaturePayload(env gossip.Envelope) []byte {
+	payload := make([]byte, 0, 160)
+	payload = append(payload, []byte("moss-room-invite-v1")...)
+	payload = append(payload, 0)
+	payload = append(payload, []byte(env.Channel)...)
+	payload = append(payload, 0)
+	payload = append(payload, env.SenderID...)
+	payload = append(payload, 0)
+	payload = append(payload, env.Payload...)
+	return payload
+}
+
+// CreateRoomInvite makes the creator-side invitation for one peer to join
+// an invitation-only room. It generates a fresh random room key, joins the
+// room under it (creating it on this node if not held), seals the key to
+// the invitee's noise static with the DM AEAD — so the substrate carrying
+// the envelope learns nothing — signs the whole thing with this node's
+// Ed25519 key, and returns the marshaled envelope. The host sends the
+// returned bytes to the invitee over SendToPeer or a relayed DM; either way
+// the inner key stays sealed.
+func (n *Node) CreateRoomInvite(meshID, inviteePeerID string) ([]byte, error) {
+	if meshID == "" || inviteePeerID == "" {
+		return nil, errors.New("room invite needs a room and an invitee")
+	}
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return nil, err
+	}
+	if !n.joinRoomWithKey(meshID, key) {
+		return nil, errors.New("room invite failed to hold the room")
+	}
+	sealedKey, err := n.sealDMPayload(inviteePeerID, key)
+	if err != nil {
+		return nil, err
+	}
+	body, err := json.Marshal(roomInvitePayload{
+		MeshID:    meshID,
+		Key:       sealedKey,
+		InviteeID: inviteePeerID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	env := gossip.Envelope{
+		Type:     gossip.TypeRoomInvite,
+		Channel:  meshID,
+		SenderID: n.identity.PublicKeyBytes(),
+		Payload:  body,
+	}
+	env.Signature = n.identity.Sign(roomInviteSignaturePayload(env))
+	return json.Marshal(env)
+}
+
+// AcceptRoomInvite opens a TypeRoomInvite addressed to this node, checks
+// the creator's signature, unseals the room key with the DM AEAD, and joins
+// the room under it. It fails closed on every check: a wrong invitee, an
+// unopenable key, a missing creator static, or a bad signature is an
+// error, never a silent join under a weaker key.
+func (n *Node) AcceptRoomInvite(inviteBytes []byte) error {
+	var env gossip.Envelope
+	if err := json.Unmarshal(inviteBytes, &env); err != nil {
+		return err
+	}
+	if env.Type != gossip.TypeRoomInvite {
+		return errors.New("not a room invite")
+	}
+	var body roomInvitePayload
+	if err := json.Unmarshal(env.Payload, &body); err != nil {
+		return err
+	}
+	if body.InviteeID != n.localPeerID() {
+		return errors.New("room invite is addressed to another peer")
+	}
+	if body.MeshID == "" || len(body.Key) == 0 {
+		return errors.New("room invite is missing its room or key")
+	}
+	if len(env.Signature) == 0 || !mcrypto.Verify(env.SenderID, roomInviteSignaturePayload(env), env.Signature) {
+		return errors.New("room invite signature is invalid")
+	}
+	key, err := n.openDMPayload(hex.EncodeToString(env.SenderID), body.Key)
+	if err != nil {
+		return errors.New("room invite key is unopenable — creator's noise static is unknown")
+	}
+	if !n.joinRoomWithKey(body.MeshID, key) {
+		return errors.New("room invite key is malformed")
+	}
+	return nil
 }

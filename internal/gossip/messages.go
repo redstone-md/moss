@@ -35,6 +35,14 @@ const (
 	// the send and the receive side.
 	TypeDirect EnvelopeType = "direct"
 
+	// TypeRoomInvite carries a room-membership invitation: the creator of an
+	// invitation-only room hands the invitee the room key, sealed to the
+	// invitee's noise static so nobody else — the relaying substrate included
+	// — can read it. The envelope is signed by the creator's Ed25519 key
+	// (Signature) and names the invitee, who is the only node able to open
+	// the payload. Sent peer-to-peer like TypeDirect, never flooded.
+	TypeRoomInvite EnvelopeType = "room_invite"
+
 	// Overlay (Kademlia) lookup. Only publicly reachable nodes answer these —
 	// a query cannot be delivered to a node nobody can dial — but any node,
 	// NAT'd included, may ask, since outbound dials always work.
@@ -81,7 +89,14 @@ type Envelope struct {
 	AdvertisedNoiseStatic  []byte       `json:"advertised_noise_static,omitempty"`
 	AdvertisedSignature    []byte       `json:"advertised_signature,omitempty"`
 	Reachable              bool         `json:"reachable,omitempty"`
-	Payload                []byte       `json:"payload,omitempty"`
+	// Signature is the sender's Ed25519 signature over the envelope's
+	// meaning: TypePublish signs the publish sender payload (see
+	// publishSenderSignaturePayload), TypeRoomInvite signs the invite
+	// payload. Additive and verify-on-present: a legacy sender never sets
+	// it, a legacy receiver ignores it, and a present-but-invalid
+	// signature is a drop, never a pass.
+	Signature []byte `json:"signature,omitempty"`
+	Payload   []byte `json:"payload,omitempty"`
 
 	// Overlay lookup fields.
 	OverlayKey       []byte            `json:"ov_key,omitempty"`

@@ -63,6 +63,33 @@ func (n *Node) dispatchLoop(ctx context.Context) {
 	}
 }
 
+// publishSenderSignaturePayload is the byte string a publish envelope's
+// Signature covers: the domain tag, the envelope type, the claimed sender,
+// and the message's content — everything a spoofer would want to swap.
+// SenderID is included so a signature made by one key cannot be replayed as
+// another sender's proof: the verifier checks the signature against the
+// sender the envelope claims, and the signer's key IS that sender.
+func publishSenderSignaturePayload(env gossip.Envelope) []byte {
+	payload := make([]byte, 0, 160)
+	payload = append(payload, []byte("moss-publish-sender-v1")...)
+	payload = append(payload, 0)
+	payload = append(payload, []byte(string(env.Type))...)
+	payload = append(payload, 0)
+	payload = append(payload, env.SenderID...)
+	payload = append(payload, 0)
+	payload = append(payload, []byte(env.Channel)...)
+	payload = append(payload, 0)
+	payload = append(payload, []byte(env.MessageID)...)
+	payload = append(payload, 0)
+	payload = append(payload, env.Payload...)
+	return payload
+}
+
+func (n *Node) signPublishEnvelope(env gossip.Envelope) gossip.Envelope {
+	env.Signature = n.identity.Sign(publishSenderSignaturePayload(env))
+	return env
+}
+
 func (n *Node) makePublishEnvelope(channel string, data []byte) gossip.Envelope {
 	seq := atomic.AddUint64(&n.seq, 1)
 	sender := n.identity.PublicKeyBytes()
@@ -71,7 +98,7 @@ func (n *Node) makePublishEnvelope(channel string, data []byte) gossip.Envelope 
 	hash.Write([]byte(channel))
 	hash.Write(data)
 	hash.Write([]byte(strconv.FormatUint(seq, 10)))
-	return gossip.Envelope{
+	env := gossip.Envelope{
 		Type:      gossip.TypePublish,
 		Channel:   channel,
 		MessageID: hex.EncodeToString(hash.Sum(nil)),
@@ -79,6 +106,7 @@ func (n *Node) makePublishEnvelope(channel string, data []byte) gossip.Envelope 
 		SenderID:  sender,
 		Payload:   append([]byte(nil), data...),
 	}
+	return n.signPublishEnvelope(env)
 }
 
 func (n *Node) supernodeReady(profile nat.Profile) bool {

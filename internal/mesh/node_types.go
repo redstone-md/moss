@@ -93,10 +93,13 @@ type Node struct {
 	cancel          context.CancelFunc
 	wg              sync.WaitGroup
 	peers           map[string]*peerConn
-	// allowlist gates direct peer registration (registerPeerFrom). nil (the
-	// default) keeps the open-substrate model; a CREATED map is strict — an
-	// empty-but-present allowlist rejects everyone. Guarded by mu; populated
-	// by AllowPeer/DisallowPeer before or during Start.
+	// allowlist gates peer registration on every bearer: direct handshakes
+	// (registerPeerFrom) and relayed sessions (registerRelayedPeerLocked).
+	// nil (the default) keeps the open-substrate model; a CREATED map is
+	// strict — an empty-but-present allowlist rejects everyone. AllowPeer is
+	// admission control for future registrations only; DisallowPeer revokes
+	// and tears down live direct and relayed sessions. Guarded by mu;
+	// populated by AllowPeer/DisallowPeer before or during Start.
 	allowlist    map[string]struct{}
 	suppress     map[string]map[string]time.Time
 	relayRoutes  map[string]relayRoute

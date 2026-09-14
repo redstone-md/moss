@@ -383,7 +383,10 @@ func (n *Node) LeaveRoom(meshID string) int32 {
 // call creates the list and switches the node from the open-substrate default
 // (accept everyone) to strict (accept only listed peers), so configure the
 // full set before or alongside Start rather than after the mesh has formed.
-// Idempotent; valid on a stopped node so it can precede Start.
+// Idempotent; valid on a stopped node so it can precede Start. This is
+// admission control for FUTURE registrations only: enabling strict mode does
+// not kick peers already connected — revoking a live peer is DisallowPeer's
+// job, and it tears down established sessions.
 func (n *Node) AllowPeer(peerID string) int32 {
 	if len(peerID) != 64 || peerID == n.localPeerID() {
 		return MOSS_ERR_CONFIG_INVALID
@@ -397,18 +400,57 @@ func (n *Node) AllowPeer(peerID string) int32 {
 	return MOSS_OK
 }
 
-// DisallowPeer removes peerID from the allowlist. Removing the LAST entry
-// does NOT re-enable open-substrate mode: an empty-but-present list rejects
-// everyone, matching the strict semantics an operator configuring an
-// allowlist has asked for. Connections already established are not kicked —
-// the gate is enforced at registration time (registerPeerFrom).
+// DisallowPeer revokes peerID: it removes the peer from the allowlist AND
+// tears down any live session with it. Removing the LAST entry does NOT
+// re-enable open-substrate mode — an empty-but-present list rejects everyone,
+// matching the strict semantics an operator configuring an allowlist has
+// asked for. On a live node the kick is immediate for direct peers
+// (bookkeeping via removePeer, then the transport is closed so the peer's
+// reader exits) and graceful for relayed ones (RelayClose through the via-peer,
+// plus an explicit PeerLeft event, since the relay teardown path otherwise
+// reports migrations only). On a node that never created an allowlist this is
+// a no-op returning MOSS_OK: admission was never list-based there, and a kick
+// would buy nothing because re-registration would succeed at once. The kick
+// is best-effort against a registration race — removePeer is session-matched,
+// so if the peer re-registered in the gap the teardown is a no-op, but the
+// allowlist entry is gone and every later registration is refused.
 func (n *Node) DisallowPeer(peerID string) int32 {
 	if len(peerID) != 64 {
 		return MOSS_ERR_CONFIG_INVALID
 	}
 	n.mu.Lock()
+	if n.allowlist == nil {
+		// Open substrate: admission was never list-based, and a kick here
+		// buys nothing — re-registration would succeed at once. AllowPeer
+		// is what switches the node to strict.
+		n.mu.Unlock()
+		return MOSS_OK
+	}
 	delete(n.allowlist, peerID)
+	var session *transport.Session
+	if peer := n.peers[peerID]; peer != nil {
+		session = peer.session // nil for a relayed peer
+	}
+	relayed := make([]relayLocalSession, 0, 1)
+	for _, rs := range n.relayLocals {
+		if rs.remotePeerID == peerID {
+			relayed = append(relayed, rs)
+		}
+	}
 	n.mu.Unlock()
+	if session != nil {
+		// removePeer does the bookkeeping and the PeerLeft event but never
+		// closes the transport — close it so the remote's reader exits now.
+		n.removePeer(peerID, session)
+		_ = session.Close()
+	}
+	for _, rs := range relayed {
+		// Graceful for the chain: RelayClose to the via-peer, bookkeeping
+		// via closeRelaySession. It reports EventRelayMigrated — the
+		// revocation vocabulary is PeerLeft, so say that explicitly too.
+		n.closeRelaySession(rs)
+		n.enqueueEvent(EventPeerLeft, map[string]string{"peer": peerID, "addr": "relay:" + rs.viaPeerID})
+	}
 	return MOSS_OK
 }
 

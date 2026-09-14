@@ -412,3 +412,160 @@ func TestTunAttachValidation(t *testing.T) {
 		t.Fatal("PeerAddr on nil node must fail")
 	}
 }
+
+// TestTunFragmentationEndToEnd walks the v2 fragmentation loop end to end:
+// a 4400-byte packet (over the 1500 MTU) is injected, forwarded as THREE
+// TypeDirect frames on the wire, decrypted at the far end, and reassembled
+// out of order through the chained callback into one byte-identical
+// interface write.
+func TestTunFragmentationEndToEnd(t *testing.T) {
+	node, spy, b := tunAttachedNode(t, "frag-e2e")
+	carrier := tunInjectPeer(t, node, "peer-far")
+	if _, err := PeerAddr(node, "peer-far"); err != nil {
+		t.Fatalf("PeerAddr: %v", err)
+	}
+
+	packet := tunIP4Packet("10.66.0.1", 4400)
+	if err := spy.Inject(packet); err != nil {
+		t.Fatalf("inject: %v", err)
+	}
+	tunWaitFor(t, "the fragmented packet to be forwarded", func() bool {
+		return b.router.Counters().Forwarded.Load() == 1
+	})
+	if got := b.router.Counters().FragSent.Load(); got != 3 {
+		t.Fatalf("FragSent = %d, want 3", got)
+	}
+	if got := directCaptureCount(carrier); got != 3 {
+		t.Fatalf("expected 3 carrier writes, got %d", got)
+	}
+	if got := b.router.Counters().DroppedOversize.Load(); got != 0 {
+		t.Fatalf("a fragmented packet must not count as oversize, got %d", got)
+	}
+
+	// Decrypt all three frames through ONE far session (nonce lockstep)
+	// and assert their headers: same fragID, indices 0-2, total 3.
+	carrier.mu.Lock()
+	frames := append([][]byte(nil), carrier.capture...)
+	carrier.mu.Unlock()
+	if len(frames) != 3 {
+		t.Fatalf("captured %d frames, want 3", len(frames))
+	}
+	farEnd := newCapturingCarrier()
+	t.Cleanup(func() { _ = farEnd.Close() })
+	farSess := cipherMatchedSession(t, farEnd)
+	var plains [][]byte
+	for _, ct := range frames {
+		farEnd.reads <- ct
+		plain, err := farSess.ReadPacket()
+		if err != nil {
+			t.Fatalf("far-end read failed: %v", err)
+		}
+		var env gossip.Envelope
+		if err := json.Unmarshal(plain, &env); err != nil {
+			t.Fatalf("frame is not an envelope: %v", err)
+		}
+		if env.Type != gossip.TypeDirect {
+			t.Fatalf("expected %s, got %s", gossip.TypeDirect, env.Type)
+		}
+		if !tun.IsFragFrame(env.Payload) {
+			t.Fatalf("payload is not a TFRG frame: %x", env.Payload[:4])
+		}
+		plains = append(plains, env.Payload)
+	}
+
+	// Feed the frames back out of order (2, 0, 1): the reassembly must
+	// produce exactly one byte-identical interface write.
+	node.mu.RLock()
+	cb := node.packetCB
+	node.mu.RUnlock()
+	for _, idx := range []int{2, 0, 1} {
+		cb([32]byte{}, plains[idx])
+	}
+	tunWaitFor(t, "the reassembled packet on the interface", func() bool {
+		got := spy.Inbound()
+		return len(got) == 1 && string(got[0]) == string(packet)
+	})
+	if got := b.router.Counters().FragReassembled.Load(); got != 1 {
+		t.Fatalf("FragReassembled = %d, want 1", got)
+	}
+	if got := b.router.Counters().InboundDelivered.Load(); got != 1 {
+		t.Fatalf("InboundDelivered = %d, want 1", got)
+	}
+}
+
+// TestTunRouteRTTSelection pins the beyond-the-pool routing: a destination
+// inside a registered prefix routes to the lowest-RTT candidate, over the
+// node's real directed transport.
+func TestTunRouteRTTSelection(t *testing.T) {
+	node, spy, b := tunAttachedNode(t, "route-rtt")
+	carrierA := tunInjectPeer(t, node, "peer-a")
+	carrierB := tunInjectPeer(t, node, "peer-b")
+
+	if err := AddTunRoute(node, "192.168.50.0/24", "peer-a"); err != nil {
+		t.Fatalf("AddTunRoute a: %v", err)
+	}
+	if err := AddTunRoute(node, "192.168.50.0/24", "peer-b"); err != nil {
+		t.Fatalf("AddTunRoute b: %v", err)
+	}
+	node.mu.Lock()
+	node.peers["peer-a"].lastRTT = 200 * time.Millisecond
+	node.peers["peer-b"].lastRTT = 20 * time.Millisecond
+	node.mu.Unlock()
+
+	if err := spy.Inject(tunIP4Packet("192.168.50.1", 40)); err != nil {
+		t.Fatalf("inject: %v", err)
+	}
+	tunWaitFor(t, "the routed packet to be forwarded", func() bool {
+		return b.router.Counters().Forwarded.Load() == 1
+	})
+	if got := directCaptureCount(carrierB); got != 1 {
+		t.Fatalf("lowest-RTT peer-b should receive the packet, got %d writes", got)
+	}
+	if got := directCaptureCount(carrierA); got != 0 {
+		t.Fatalf("higher-RTT peer-a must not receive the packet, got %d writes", got)
+	}
+}
+
+// TestTunRouteCacheInvalidationOnPeerDeath pins the cache liveness check:
+// a cached choice whose peer left the mesh re-decides to the backup on the
+// very next packet — no 10-second wait.
+func TestTunRouteCacheInvalidationOnPeerDeath(t *testing.T) {
+	node, spy, b := tunAttachedNode(t, "route-invalidate")
+	carrierA := tunInjectPeer(t, node, "peer-a")
+	carrierB := tunInjectPeer(t, node, "peer-b")
+
+	_ = AddTunRoute(node, "192.168.50.0/24", "peer-a")
+	_ = AddTunRoute(node, "192.168.50.0/24", "peer-b")
+	node.mu.Lock()
+	node.peers["peer-a"].lastRTT = 200 * time.Millisecond
+	node.peers["peer-b"].lastRTT = 20 * time.Millisecond
+	node.mu.Unlock()
+
+	// First packet: peer-b wins and the choice is cached.
+	if err := spy.Inject(tunIP4Packet("192.168.50.1", 40)); err != nil {
+		t.Fatalf("inject 1: %v", err)
+	}
+	tunWaitFor(t, "the first routed packet", func() bool {
+		return b.router.Counters().Forwarded.Load() == 1
+	})
+	if got := directCaptureCount(carrierB); got != 1 {
+		t.Fatalf("first packet should reach peer-b, got %d writes", got)
+	}
+
+	// peer-b dies; the cached choice must be re-decided immediately.
+	node.mu.Lock()
+	delete(node.peers, "peer-b")
+	node.mu.Unlock()
+	if err := spy.Inject(tunIP4Packet("192.168.50.2", 40)); err != nil {
+		t.Fatalf("inject 2: %v", err)
+	}
+	tunWaitFor(t, "the second routed packet", func() bool {
+		return b.router.Counters().Forwarded.Load() == 2
+	})
+	if got := directCaptureCount(carrierA); got != 1 {
+		t.Fatalf("peer-b's death must re-decide to peer-a, got %d writes on A", got)
+	}
+	if got := directCaptureCount(carrierB); got != 1 {
+		t.Fatalf("peer-b is gone; its carrier must see no new writes, got %d", got)
+	}
+}
