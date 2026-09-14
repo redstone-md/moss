@@ -84,6 +84,9 @@ func (n *Node) selectRelayPeers(targetPeerID string) ([]string, error) {
 	// Prefer a relay geographically close to the target, shortening the
 	// relay↔target leg. Unknown IPs carry no preference, so this only ever
 	// breaks ties in favour of proximity — it never excludes a candidate.
+	// Builds without the `geoip` tag embed no GeoLite2 database, so
+	// geo.Proximity is neutral there and ordering falls through to
+	// score/load alone.
 	targetIP := hostIP(n.knownPeers[targetPeerID].addr)
 	sort.Slice(candidates, func(i, j int) bool {
 		infoI := n.knownPeers[candidates[i]]
