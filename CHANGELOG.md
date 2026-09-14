@@ -11,7 +11,7 @@ later. Nothing is deleted: the tags stay published because builds that already
 resolved them must keep resolving them.
 
 
-## [Unreleased]
+## [0.8.20] - 2026-09-14
 
 ### Changed
 - **Telemetry is off by default.** v0.6.16 turned it on, putting background
@@ -29,6 +29,69 @@ resolved them must keep resolving them.
 ### Added
 - Visible drop counters in network stats: `stream_drops`, `udp_carrier_drops`,
   `udp_accept_drops`, `outbound_drops` — losses that were invisible before.
+- **Scenario foundation: direct, isolation, streams, TUN, game, app.** A
+  directed path (`SendToPeer` with path auto-select, a `TypeDirect` envelope, a
+  `PeerRTT` getter, unified packet callback); isolation via PSK handshake
+  opt-in and a peer allowlist, with relay and write size gates that save a
+  session from an oversize frame; `StreamID` mux exposed with a latest-wins
+  policy and `ResolveRoute`; a TUN virtual IP table and router over directed
+  packets; a game profile at 20Hz with a binary snapshot codec, sequence
+  filter and best-peer choice; and the app surface — 6 new FFI symbols (34
+  total), Go parity, messenger events, documented API and Python bindings.
+- **End-to-end secrecy, bearer PSK, TUN fragmentation and routing.** Published
+  messages carry sender signatures verified on present, DMs are sealed E2E
+  through the relay funnel, room invites use random keys. Bearers are gated
+  by PSK on Veil and WebRTC handshakes, `DisallowPeer` revokes live sessions,
+  and the allowlist is enforced on relayed register. TUN gains TFRG
+  fragmentation with reassembly and an RTT-aware route table with
+  longest-prefix match and a per-prefix cache.
+- **Game v2, async FFI, crypto rotation, bootstrap, NAT, observability.**
+  Game snapshot delta v2 with bitmask and AOI culling, plus a predictor hook;
+  async directed sends in the FFI, with streams over relay fallback; identity
+  re-derive checks and key rotation with grace; DHT probe fast-fail, tracker
+  health skip and re-announce jitter; median port prediction, coord retry and
+  parallel reachability; a drops metric and growth alerts in the debug plane;
+  fuzz corpora across gossip/transport/tun/mesh and benchmarks with baselines.
+
+### Fixed
+- **Crash-free hardening across transport and mesh.** A 256KB data frame cap
+  with counted drop, non-blocking sends in `finishDial` and `Close`, and the
+  OOM and readLoop-freeze vectors closed. Gossip: announce GRAFTs throttled
+  with `graftedAt` and `meshBlocked` gates, a serve-side IWANT budget mirroring
+  the ask side, malformed-channel and nil-peer guards on inbound paths.
+  Lifecycle: single-outcome MaxPeers overflow, relayed peer cap, accept
+  backoff, Start queue reset, Stop relay cleanup, supernode revoke deadband,
+  scoring and knownPeers wirings, NAT nil guards. Growth: scoring eviction and
+  a TimeInMesh cap, a payload-free cache with bounded store and rings, a
+  pubsub inverse index, overlay top-K Closest, knownPeers TTL and cap sweep.
+- **Channel throughput, deterministic tests, bounded footprint.** A single
+  writev per stream packet, scratch header reads, zero-copy multiplexer
+  enqueue, scoring under RLock, an inverse-index NonMeshSubscribers, and
+  hash/score-once sort comparators. Nine flaky tests fixed with frozen
+  topologies, honest barriers and real margins; the CI main job runs at
+  count=1 with a separate soak. Outbound/local queue teardown on
+  disconnect/unsubscribe, cache/store/chain caps, the vestigial dispatch
+  semaphore removed, and a pre-existing Stop drain deadlock fixed.
+- **Marshal-once broadcast, AEAD caches, conn-tick merge.** `sendEnvelopeWire`
+  carries pre-marshalled wire bytes, so the outbound queue holds ready wire
+  and a fan-out marshals O(N)→O(1); a relay AEAD cache with a static re-check,
+  and a room AEAD cache keyed by meshID with leave/rejoin invalidation. Obfs
+  does a single rand.Read per datagram and conn-tick takes a single lock pass
+  with scoring outside the lock; the pre-existing data race between Score's
+  Total and SetApplicationScore is closed.
+- **30-minute hangs in the overlay, stop and veil tests.** The overlay test
+  fails fast on force-upgrade with an empty address under a 2s ceiling; the
+  stop test registers its peer so the Stop sweep reaps the session, under a
+  30s watchdog; veil retries the dial 3x with a fresh context for the Windows
+  loopback race.
+- **Steady-state heap cut via smaller queue and cache caps.** Gossip outbound
+  queue depth 256→32 with an eager buffer per peer; relay AEAD cache cap
+  1024→128 and the duplicate frame copy dropped; room AEAD cache cap 64→16.
+- **`n.mu`/`outboundMu` AB-BA deadlock in the queue sweep.** The sweep
+  snapshots peer ids under RLock, releases, then closes orphan queues under
+  `outboundMu` alone — a single lock order.
+- **A blocking overlay callback could wedge `Stop` on a soak repeat.** The
+  callback is now non-blocking.
 
 ## [0.8.19] - 2026-07-29
 

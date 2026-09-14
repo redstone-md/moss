@@ -73,7 +73,7 @@ jobs:
         # build it actually got.
         run: >-
           go build -buildmode=c-shared
-          -ldflags "-X main.buildVersion=${{ github.ref_name }}"
+          -ldflags "-X main.buildVersion=${{ github.ref_name }} -X github.com/redstone-md/moss.buildVersion=${{ github.ref_name }}"
           -o ${{ matrix.output }} ./cmd/moss-ffi
 
       - name: Package shared artifact
