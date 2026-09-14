@@ -18,9 +18,11 @@ import (
 // package builds for); the device tests run only where a kernel TUN is
 // actually reachable — a CI container without /dev/net/tun or without
 // CAP_NET_ADMIN skips them rather than failing. Darwin's utun
-// implementation needs a mac to prove and Windows awaits wintun.dll,
-// so on those OSes OpenTun's device tests exercise the
-// ErrNotImplemented / permission skip paths.
+// implementation and Windows's wintun.dll adapter are hardware-untested
+// (no mac / no Windows box in the project), so on those OSes the device
+// tests skip: darwin returns its permission error, windows without
+// wintun.dll returns the driver-missing error — neither reaches the
+// lifecycle asserts until real hardware proves the files.
 
 // TestLoopbackPacketContract drives tun.Loopback — the MVP edge the
 // LanNode wires when no kernel TUN exists — through the PacketIface
@@ -134,10 +136,10 @@ func TestAsNetClosedMapping(t *testing.T) {
 }
 
 // tunAvailable opens a kernel TUN device, skipping the device tests when
-// this host cannot provide one: no implementation on the OS (darwin
-// until proven on a mac, windows until wintun lands), or a linux host
-// without /dev/net/tun or CAP_NET_ADMIN. Absence is an environment
-// property, not a code defect.
+// this host cannot provide one: a linux host without /dev/net/tun or
+// CAP_NET_ADMIN, a darwin host whose utun open fails, or a windows host
+// without wintun.dll beside the binary (the driver-missing error names
+// the fix). Absence is an environment property, not a code defect.
 func tunAvailable(t *testing.T) (tun.PacketIface, func()) {
 	t.Helper()
 
