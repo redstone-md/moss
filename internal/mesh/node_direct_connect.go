@@ -84,6 +84,17 @@ func (n *Node) tryDirect(targetPeerID string, timeout time.Duration, force bool)
 		return n.directPeerConnected(targetPeerID)
 	}
 	if !ok || targetInfo.addr == "" {
+		// Upgrade target with no observable address: a relayed peer registered
+		// with no addr (registerRelayedPeerLocked keeps info.addr empty) has
+		// nothing to dial and nothing to punch — and a nobody-waiting upgrade
+		// has no reason to sleep out its whole budget waiting for a peer that
+		// will not dial us either. On a CI runner with no answers to the
+		// binding observation this branch was a full-budget park repeated by
+		// every promotion tick. Fail fast; the maintenance pass re-arms as
+		// soon as an announcement or a punch reply names an address.
+		if force {
+			return n.directPeerConnected(targetPeerID)
+		}
 		return n.waitForDirectPeer(targetPeerID, time.Until(deadline))
 	}
 	if !force && n.shouldPreferRelayForTarget(targetPeerID) {

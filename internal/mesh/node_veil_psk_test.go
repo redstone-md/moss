@@ -5,6 +5,7 @@ package mesh
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -53,6 +54,32 @@ func TestTransportHandshakePSKConfig(t *testing.T) {
 	}
 }
 
+// veilDialWithRetry drives one veilDial with the same redial behaviour the
+// production dial loop (veilDialLoop) already applies: a fresh per-attempt
+// deadline and a short backoff between failures. The Windows CI loopback
+// stack can force-close a Reality TLS handshake mid-flight (WSAECONNRESET)
+// before the Noise layer ever sees a packet — a transport flap, not a PSK
+// verdict — so a single-shot dial makes the test flap with it. Retrying
+// keeps every assertion intact: a genuine PSK mismatch still fails every
+// attempt, and a genuine match still must form the session.
+func veilDialWithRetry(t *testing.T, client *Node, addr, coverSNI string, remoteStatic []byte, attempts int) error {
+	t.Helper()
+	var lastErr error
+	for i := range attempts {
+		dialCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_, err := client.veilDial(dialCtx, addr, coverSNI, remoteStatic)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if i < attempts-1 {
+			time.Sleep(time.Duration(i+1) * 100 * time.Millisecond)
+		}
+	}
+	return fmt.Errorf("veilDial to %s failed after %d attempts: %w", addr, attempts, lastErr)
+}
+
 // A knob-on veil pair with the SAME room PSK must form a session through the
 // Reality mask — the veil bearer inherits the PSK gate, it does not bypass it.
 func TestVeilBearerPSKMatchFormsSession(t *testing.T) {
@@ -96,9 +123,7 @@ func TestVeilBearerPSKMatchFormsSession(t *testing.T) {
 	}
 	defer client.Stop()
 
-	dialCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if _, err := client.veilDial(dialCtx, veilAddr, coverSNI, relay.identity.NoiseStaticPublic()); err != nil {
+	if err := veilDialWithRetry(t, client, veilAddr, coverSNI, relay.identity.NoiseStaticPublic(), 3); err != nil {
 		t.Fatalf("veilDial with matching PSK failed: %v", err)
 	}
 	waitForPeerCount(t, client, 1)
