@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 
 	"github.com/flynn/noise"
 )
@@ -15,6 +16,17 @@ const defaultUDPCarrierBufferSize = 256
 var (
 	udpCarrierOverflowMu       sync.RWMutex
 	udpCarrierBufferOnOverflow func(remote string)
+
+	// udpCarrierDrops counts inbound datagrams thrown away because the
+	// destination session's queue was full. The stream multiplexer has
+	// counted its drops since v0.8.8 (StreamDrops); the UDP path — the one
+	// every hole-punched session rides — discarded them with no trace: the
+	// overflow hook below exists, but a hook nobody installs counts nothing,
+	// and a dropped ping is why sessions die at six misses over a connection
+	// that was healthy the whole time. Process-wide rather than per session
+	// on purpose, matching StreamDrops: which remote lost the datagram
+	// matters far less than that datagrams are being lost.
+	udpCarrierDrops atomic.Uint64
 )
 
 // SetUDPCarrierOverflowHook installs a callback fired whenever a UDP
@@ -23,6 +35,13 @@ func SetUDPCarrierOverflowHook(hook func(remote string)) {
 	udpCarrierOverflowMu.Lock()
 	defer udpCarrierOverflowMu.Unlock()
 	udpCarrierBufferOnOverflow = hook
+}
+
+// UDPCarrierDrops reports how many inbound UDP datagrams have been dropped
+// process-wide for want of session queue space. The datagram counterpart of
+// StreamDrops.
+func UDPCarrierDrops() uint64 {
+	return udpCarrierDrops.Load()
 }
 
 func (l *UDPListener) handleData(remote *net.UDPAddr, payload []byte) {
@@ -192,6 +211,7 @@ func (c *udpCarrier) enqueue(packet []byte) {
 	select {
 	case c.incoming <- append([]byte(nil), packet...):
 	default:
+		udpCarrierDrops.Add(1)
 		udpCarrierOverflowMu.RLock()
 		hook := udpCarrierBufferOnOverflow
 		udpCarrierOverflowMu.RUnlock()

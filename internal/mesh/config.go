@@ -252,10 +252,13 @@ func DefaultConfig() Config {
 			RateLimitBurst:      256000,
 			RateLimitSustained:  64000,
 		},
-		// Telemetry (the DP-noised, k-anonymous network observability layer) is on
-		// by default; it exposes no address or stable identity. Opt out explicitly
-		// with telemetry_enabled=false.
-		Telemetry:       TelemetryConfig{Enabled: true},
+		// Telemetry (the DP-noised, k-anonymous network observability layer) is
+		// off by default, matching its docs (docs/API.md) and TelemetryConfig's
+		// own doc comment: a plain node joins no telemetry gossip. It exposes no
+		// address or stable identity, and the stat-delta path is bounded-fanout
+		// gossip — but at fleet scale even bounded background traffic is traffic
+		// nobody asked for, so opt in with telemetry_enabled=true.
+		Telemetry:       TelemetryConfig{},
 		ObfsPadMax:      256,
 		DHTEnabled:      true,
 		DHTPort:         0,

@@ -59,14 +59,14 @@ type Node struct {
 	listenPort    int
 	// debugBus is always present so Emit call sites need no nil check; debugSrv
 	// is non-nil only while Config.Debug.Enabled has opened the loopback plane.
-	debugBus *inspect.Bus
-	debugSrv *inspect.Server
-	debugRec *inspect.Recorder
-	bindIfIndex   int
-	startedAt     time.Time
-	dispatchSem   chan struct{}
-	dht           *dhtSource
-	statAgg       *stat.Aggregator
+	debugBus    *inspect.Bus
+	debugSrv    *inspect.Server
+	debugRec    *inspect.Recorder
+	bindIfIndex int
+	startedAt   time.Time
+	dispatchSem chan struct{}
+	dht         *dhtSource
+	statAgg     *stat.Aggregator
 
 	natProfile atomic.Value
 	// natSample holds the evidence from the last multi-vantage classification
@@ -150,6 +150,15 @@ type Node struct {
 	relayCB          RelayCallback
 	dispatchCh       chan any
 
+	// Outbound per-peer envelope queues, drained by dedicated workers so no
+	// send path blocks the caller (GossipFixer's non-blocking announce work).
+	// Lazy-init on first use; an unstarted node with no workers falls back to
+	// synchronous sends. Workers are wg-tracked and exit with rootCtx.
+	outboundMu      sync.Mutex
+	outboundQueues  map[string]chan gossip.Envelope
+	outboundDropped atomic.Uint64
+	iwantAsks       map[string]map[string]time.Time
+	announceSwept   time.Time
 	// Per-channel delivery queues, each drained by its own worker.
 	//
 	// Delivery to the application is a synchronous FFI callback that decrypts
@@ -195,15 +204,17 @@ type peerConn struct {
 	connectedAt    time.Time
 	lastRTT        time.Duration
 	relayed        bool
+	meshBlocked    time.Time
+	// graftedAt records when we last sent this peer a GRAFT, per channel, so
+	// the maintenance path does not re-graft on every heartbeat tick. See
+	// markMeshGrafted / meshGraftEligible in node_peer_discovery.go.
+	graftedAt      map[string]time.Time
 	viaPeerID      string
 	relaySessionID string
-	meshBlocked    time.Time
 	pingSentAt     time.Time
 	pingPending    string
 	pingMisses     int
 }
-
-const sendToPeersConcurrency = 16
 
 type dispatchMessage struct {
 	channel string
@@ -324,4 +335,24 @@ const (
 	// session was torn down and re-established. 15s refreshes the mapping twice
 	// per typical timeout, keeping NAT'd sessions stable.
 	peerProbeIntervalFloor = 15 * time.Second
+)
+
+// meshGraftRetryInterval bounds how often the maintenance path re-sends a
+// GRAFT to the same peer on the same channel. The mesh loop runs at the
+// gossip heartbeat (as low as 250ms in chat clients), so without this bound
+// a peer that ignores or rejects GRAFTs is re-poked every tick — the
+// graft→prune→graft churn both sides pay for. A PRUNE from the far end still
+// takes effect immediately through peer.meshBlocked (set by node_envelope.go);
+// this only spaces our own retries between those signals.
+const meshGraftRetryInterval = 30 * time.Second
+
+// Maintenance phase intervals, counted in ~1s conn-ticks (connMaintenanceEvery).
+// The conn-maintenance block used to run every pass as one unit; these spread
+// its independent jobs so a tick's worst case no longer stacks every O(peers)
+// sweep on top of every other, and connection churn (dials, relay promotion,
+// subscription re-announce) happens on its own cadence instead of all at once.
+const (
+	maintenancePhaseDialEvery    = 3  // connectKnownPeers, dialExplicitTargets, connectBootstrapSeeds
+	maintenancePhasePromoteEvery = 3  // promoteRelayPeers
+	maintenancePhaseSubsEvery    = 30 // refreshLocalSubscriptions safety net
 )

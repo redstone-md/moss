@@ -272,6 +272,15 @@ func (n *Node) maintenanceLoop(ctx context.Context) {
 	ticker := time.NewTicker(n.config.Heartbeat())
 	defer ticker.Stop()
 	connEvery := n.connMaintenanceEvery()
+	// Conn-maintenance phases. Each job class keeps its own counter and fires
+	// when the counter wraps its interval; the counters start at staggered
+	// offsets so dial/promote/subs sweeps do not share a wake-up beat, and a
+	// node-derived offset jitters WHICH conn-tick each phase lands on — so a
+	// fleet of 100 peers does not redial, re-promote, and re-announce in
+	// lockstep. See maintenancePhaseOffset.
+	dialPhase := n.maintenancePhaseOffset(maintenancePhaseDialEvery)
+	promotePhase := n.maintenancePhaseOffset(maintenancePhasePromoteEvery)
+	subsPhase := n.maintenancePhaseOffset(maintenancePhaseSubsEvery)
 	for {
 		select {
 		case <-ctx.Done():
@@ -297,16 +306,37 @@ func (n *Node) maintenanceLoop(ctx context.Context) {
 			if ticks%connEvery != 0 {
 				continue
 			}
+			// Health checks are cheap and mostly no-op; they run every
+			// conn-tick (~1s).
 			n.scoring.Tick()
 			n.probePeerLatency(time.Now())
 			n.pruneLowScoringPeers()
 			n.pruneHighLatencyPeers()
-			n.connectKnownPeers()
-			n.dialExplicitTargets()
-			n.connectBootstrapSeeds(ctx)
-			n.promoteRelayPeers()
-			n.refreshLocalSubscriptions()
 			n.pruneStaleRelayRoutes()
+			// Dials (known peers, explicit targets, bootstrap seeds): every
+			// maintenancePhaseDialEvery conn-ticks. A dial pass costs a
+			// lock-guarded snapshot plus up to DOut asynchronous handshakes;
+			// running it every second had every node re-attempting the same
+			// backoff-eligible peers as soon as their cooldowns expired,
+			// together.
+			if dialPhase++; dialPhase%maintenancePhaseDialEvery == 0 {
+				n.connectKnownPeers()
+				n.dialExplicitTargets()
+				n.connectBootstrapSeeds(ctx)
+			}
+			// Relay promotion: every maintenancePhasePromoteEvery conn-ticks.
+			// Promotion targets are already reachable via relay, so nobody is
+			// waiting on a faster cadence.
+			if promotePhase++; promotePhase%maintenancePhasePromoteEvery == 0 {
+				n.promoteRelayPeers()
+			}
+			// Subscription re-announce: every maintenancePhaseSubsEvery
+			// conn-ticks. Event paths (Subscribe, new-peer join via
+			// sendKnownPeerSnapshot) announce immediately; this is only the
+			// safety net for envelopes lost in flight.
+			if subsPhase++; subsPhase%maintenancePhaseSubsEvery == 0 {
+				n.refreshLocalSubscriptions()
+			}
 		}
 	}
 }
@@ -323,6 +353,25 @@ func (n *Node) connMaintenanceEvery() uint64 {
 		return every
 	}
 	return 1
+}
+
+// maintenancePhaseOffset returns the initial value for a phase counter so that
+// maintenance jobs with an every-N cadence start staggered across nodes. The
+// offset is derived from the node's own peer id, so it is stable across
+// restarts, needs no extra state, and does not require a per-tick RNG; two
+func (n *Node) maintenancePhaseOffset(every uint64) uint64 {
+	if every <= 1 {
+		return 0
+	}
+	var h uint64
+	for _, b := range []byte(n.localPeerID()) {
+		h = h*131 + uint64(b)
+	}
+	// Fold the interval in so two phases with related periods (5 vs 10 vs 30)
+	// decorrelate: a hash of the peer id alone makes every offset a residue of
+	// the same number, and the phases line up again on a shared beat.
+	h = h*131 + every
+	return h % every
 }
 
 func (n *Node) pruneLowScoringPeers() {

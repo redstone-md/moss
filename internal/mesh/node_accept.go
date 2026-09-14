@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"strings"
@@ -34,14 +35,29 @@ func (n *Node) acceptLoop(ctx context.Context) {
 
 func (n *Node) acceptUDPLoop(ctx context.Context) {
 	defer n.wg.Done()
+	// A transient Accept error must not end the loop: a closed accept channel
+	// or a hiccup in the listener used to return for good, and every UDP peer
+	// this node would have accepted afterwards silently never happened. The
+	// listener returns io.EOF once closed for good; anything else gets a
+	// bounded backoff and a retry, so only shutdown stops this loop.
+	backoff := time.Millisecond
 	for {
 		session, err := n.udpListener.Accept()
 		if err != nil {
-			if ctx.Err() != nil {
+			if ctx.Err() != nil || errors.Is(err, io.EOF) {
 				return
 			}
-			return
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			if backoff *= 2; backoff > time.Second {
+				backoff = time.Second
+			}
+			continue
 		}
+		backoff = time.Millisecond
 		n.registerPeerFrom(session, false, originInboundUDP)
 	}
 }
@@ -121,6 +137,82 @@ func (n *Node) announceAndConnect(ctx context.Context, event bootstrap.Event) {
 		"candidate_peers": len(peers),
 		"connected_peers": n.currentPeerCount(),
 	})
+}
+
+// peerDispatchQueueDepth bounds the raw packets buffered between one peer's
+// socket read loop and its dispatch worker. It matches the transport's own
+// 256-packet stream buffer: the queue absorbs a full transport buffer's worth
+// of burst, and anything past it is a peer shouting faster than one worker can
+// decrypt and handle — which is exactly the moment a drop should be counted
+// (`__dispatch_dropped__`) instead of stalling the read.
+const peerDispatchQueueDepth = 256
+
+// readPeer owns one peer's socket: it only reads packets and hands them to a
+// queue; a dedicated worker (peerDispatchWorker) unmarshals and handles them.
+//
+// It used to unmarshal and dispatch synchronously, which made every peer a
+// head-of-line risk on its own session: one slow handler — an Ed25519
+// verification, a central-lock acquisition, a fan-out send — kept the socket
+// unread, the transport's 256-packet buffer filled, and the packets behind it
+// were dropped by the transport without a trace, pings included. That is the
+// "healthy connection dies at six missed pings" signature, and it was local to
+// the misbehaving peer only by accident: a peered lock or a slow forward could
+// stall it for everyone.
+//
+// Split read from dispatch and the failure mode changes shape: a slow or
+// flooding peer now overflows ITS OWN bounded queue (counted per drop), while
+// its socket keeps being read — so the transport buffer keeps draining, pings
+// keep arriving, and other peers share nothing with it. Per-peer FIFO order is
+// preserved (one queue, one worker), matching the ordering a synchronous read
+// loop used to give.
+func (n *Node) readPeer(peer *peerConn) {
+	defer n.wg.Done()
+	// This goroutine is the ONLY sender, so it is also the only closer: the
+	// worker's range ends when the queue is closed here, after the last
+	// packet is already buffered. A worker-side close would never fire —
+	// nothing but this loop feeds the queue.
+	queue := make(chan []byte, peerDispatchQueueDepth)
+	n.wg.Add(1)
+	go n.peerDispatchWorker(peer, queue)
+	defer close(queue)
+	for {
+		packet, err := peer.session.ReadPacket()
+		if err != nil {
+			return
+		}
+		peer.inboundPackets.Add(1)
+		select {
+		case queue <- packet:
+		default:
+			// Count, never block: the read loop's whole job is to keep the
+			// transport buffer draining. A full queue means this one peer is
+			// producing faster than its worker handles — a bounded loss on
+			// the misbehaving peer's own traffic, visible in the counters.
+			n.countInbound("__dispatch_dropped__")
+		}
+	}
+}
+
+// peerDispatchWorker drains one peer's queue in arrival order: JSON unmarshal
+// plus handleEnvelope, both of which may block (lock contention, a slow
+// forward) without ever stalling that peer's socket read. The session's
+// teardown lives HERE, after the last buffered packet is handled, so the
+// removePeer bookkeeping still runs after every envelope that was read —
+// the same ordering the inline dispatch used to give.
+func (n *Node) peerDispatchWorker(peer *peerConn, queue chan []byte) {
+	defer n.wg.Done()
+	defer n.removePeer(peer.id, peer.session)
+	defer peer.session.Close()
+	for packet := range queue {
+		var env gossip.Envelope
+		if err := json.Unmarshal(packet, &env); err != nil {
+			n.countInbound("__invalid__")
+			n.scoring.PenalizeInvalid(peer.id)
+			return
+		}
+		n.countInbound(string(env.Type))
+		n.handleEnvelope(peer, env)
+	}
 }
 
 func (n *Node) rememberTrackerSeeds(peers []string) {
@@ -518,27 +610,6 @@ func yieldsToNewConnection(localPeerID string, existing *peerConn, newOutbound b
 		return true
 	}
 	return shouldReplaceDuplicatePeer(localPeerID, existing.id, existing.outbound, newOutbound)
-}
-
-func (n *Node) readPeer(peer *peerConn) {
-	defer n.wg.Done()
-	defer n.removePeer(peer.id, peer.session)
-	defer peer.session.Close()
-	for {
-		packet, err := peer.session.ReadPacket()
-		if err != nil {
-			return
-		}
-		peer.inboundPackets.Add(1)
-		var env gossip.Envelope
-		if err := json.Unmarshal(packet, &env); err != nil {
-			n.countInbound("__invalid__")
-			n.scoring.PenalizeInvalid(peer.id)
-			return
-		}
-		n.countInbound(string(env.Type))
-		n.handleEnvelope(peer, env)
-	}
 }
 
 func (n *Node) directPeerCountLocked() int {

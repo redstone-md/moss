@@ -152,16 +152,29 @@ func (n *Node) addInboundTypeFields(fields map[string]any) {
 }
 
 func (n *Node) addCapacityFields(fields, info map[string]any) {
-	// Packets thrown away because a reader fell behind. readPeer dispatches each
-	// envelope synchronously, so anything slow in handleEnvelope stops the session
-	// being read, the stream buffer fills, and further packets are silently
-	// discarded — the sender sees a successful write and the receiver never learns
-	// the packet existed. Pings lost that way cost a healthy session at six
-	// misses. Counting them is the difference between knowing that and guessing.
+	// Packets thrown away because a reader fell behind. readPeer hands each
+	// packet to a per-peer dispatch queue, so a slow handler overflows the
+	// peer's own queue (counted as `__dispatch_dropped__`) rather than
+	// stopping the session being read. Drops here mean the transport's
+	// stream buffer itself filled — the read loop is not draining it fast
+	// enough — and the pings lost that way cost a healthy session at six
+	// misses. Counting them is the difference between knowing that and
+	// guessing.
 	fields["stream_drops"] = transport.StreamDrops()
 	dropsDefault, dropsOther := transport.StreamDropsSplit()
 	fields["stream_drops_default"] = dropsDefault
 	fields["stream_drops_other"] = dropsOther
+	// The datagram equivalents: a session queue that filled (per-session
+	// buffer, same shape as the stream one) and sessions that arrived when
+	// the accept backlog was full. Zero on a TCP-only node, which is itself
+	// the useful fact.
+	fields["udp_carrier_drops"] = transport.UDPCarrierDrops()
+	fields["udp_accept_drops"] = transport.UDPAcceptDrops()
+	// Envelopes this node could not hand to a peer's outbound queue: the
+	// outbound mirror of the inbound drops above. A growing value means the
+	// mesh is producing faster than some peer drains its sends — congestion
+	// leaving this node rather than arriving at it.
+	fields["outbound_drops"] = n.outboundDropped.Load()
 	if maxPeers := n.config.MaxPeers; maxPeers > 0 {
 		fields["max_peers"] = maxPeers
 		if direct, ok := numericField(info, "direct_peer_count"); ok {
