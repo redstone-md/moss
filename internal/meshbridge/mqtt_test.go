@@ -238,7 +238,7 @@ func mqttRecv[T any](t *testing.T, ch <-chan T, what string) T {
 // with an empty client ID, so this also proves the auto-ID path.
 func TestMqttLinkRoundTrip(t *testing.T) {
 	b := newMqttFakeBroker(t, 0)
-	link, err := NewMqttLink(b.url(), "")
+	link, err := NewMqttLink(b.url(), "", 0)
 	if err != nil {
 		t.Fatalf("NewMqttLink: %v", err)
 	}
@@ -298,7 +298,7 @@ func TestMqttLinkRoundTrip(t *testing.T) {
 // without dispatching anything.
 func TestMqttLinkCloseLifecycle(t *testing.T) {
 	b := newMqttFakeBroker(t, 0)
-	link, err := NewMqttLink(b.url(), "mqtt-test-close")
+	link, err := NewMqttLink(b.url(), "mqtt-test-close", 0)
 	if err != nil {
 		t.Fatalf("NewMqttLink: %v", err)
 	}
@@ -337,7 +337,7 @@ func TestMqttLinkPingKeepalive(t *testing.T) {
 	defer func() { mqttPingInterval = orig }()
 
 	b := newMqttFakeBroker(t, 0)
-	link, err := NewMqttLink(b.url(), "mqtt-test-ping")
+	link, err := NewMqttLink(b.url(), "mqtt-test-ping", 0)
 	if err != nil {
 		t.Fatalf("NewMqttLink: %v", err)
 	}
@@ -365,7 +365,7 @@ func TestMqttLinkPingKeepalive(t *testing.T) {
 // see one broker PUBLISH.
 func TestMqttLinkSubscribeStacksHandlers(t *testing.T) {
 	b := newMqttFakeBroker(t, 0)
-	link, err := NewMqttLink(b.url(), "mqtt-test-stack")
+	link, err := NewMqttLink(b.url(), "mqtt-test-stack", 0)
 	if err != nil {
 		t.Fatalf("NewMqttLink: %v", err)
 	}
@@ -407,7 +407,7 @@ func TestMqttLinkSubscribeStacksHandlers(t *testing.T) {
 // subscription.
 func TestMqttLinkRejectsNilHandler(t *testing.T) {
 	b := newMqttFakeBroker(t, 0)
-	link, err := NewMqttLink(b.url(), "mqtt-test-nil")
+	link, err := NewMqttLink(b.url(), "mqtt-test-nil", 0)
 	if err != nil {
 		t.Fatalf("NewMqttLink: %v", err)
 	}
@@ -424,7 +424,7 @@ func TestMqttLinkRejectsNilHandler(t *testing.T) {
 // fallback set is a caller error, not a wire write.
 func TestMqttLinkTopicFallback(t *testing.T) {
 	b := newMqttFakeBroker(t, 0)
-	link, err := NewMqttLink(b.url(), "mqtt-test-fallback")
+	link, err := NewMqttLink(b.url(), "mqtt-test-fallback", 0)
 	if err != nil {
 		t.Fatalf("NewMqttLink: %v", err)
 	}
@@ -491,9 +491,12 @@ func TestMqttLinkUnreachableBroker(t *testing.T) {
 	addr := ln.Addr().String()
 	_ = ln.Close()
 
-	_, err = NewMqttLink("tcp://"+addr, "mqtt-test-down")
-	if err == nil || !strings.Contains(err.Error(), "dial") {
-		t.Fatalf("NewMqttLink to closed port: %v, want dial error", err)
+	// bindIfIndex 0 is the explicit "no pin" path: the dial must fail
+	// with the same "mqtt: dial" wrapping as before the bind parameter
+	// existed, proving the parameter did not change the error contract.
+	_, err = NewMqttLink("tcp://"+addr, "mqtt-test-down", 0)
+	if err == nil || !strings.Contains(err.Error(), "mqtt: dial") {
+		t.Fatalf("NewMqttLink to closed port: %v, want mqtt: dial error", err)
 	}
 }
 
@@ -501,7 +504,7 @@ func TestMqttLinkUnreachableBroker(t *testing.T) {
 // constructor error carrying the broker's return code.
 func TestMqttLinkConnackRefused(t *testing.T) {
 	b := newMqttFakeBroker(t, 5) // 5 = not authorized
-	if _, err := NewMqttLink(b.url(), "mqtt-test-refused"); err == nil ||
+	if _, err := NewMqttLink(b.url(), "mqtt-test-refused", 0); err == nil ||
 		!strings.Contains(err.Error(), "refused") {
 		t.Fatalf("NewMqttLink against rejecting broker: %v, want refused error", err)
 	}

@@ -12,6 +12,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/redstone-md/moss/internal/transport"
 )
 
 // The MQTT leg of the bridge, spoken by hand: the dependency this
@@ -72,7 +74,9 @@ var mqttPingInterval = 30 * time.Second
 // that dispatches broker PUBLISHes to the topic's handlers. NewMqttLink
 // connects eagerly (dial + CONNECT + CONNACK) so an unreachable broker
 // is a constructor error, not a silent black hole: the pump attaches
-// subscriptions to a live link only.
+// subscriptions to a live link only. The dial carries the node's
+// bindIfIndex so the broker leg speaks from the same NIC as the mesh
+// (see NewMqttLink for why that matters).
 //
 // Topic is the default used when Publish/Subscribe is called with an
 // empty topic argument — the Link contract passes the topic per call,
@@ -127,12 +131,23 @@ var _ Link = (*MqttLink)(nil)
 // "tls://" is refused — this pass ships no TLS. An empty clientID is
 // auto-generated (blake2s of the clock, the package's idiom) so two
 // bridges started side by side do not kick each other off the broker.
-func NewMqttLink(brokerURL, clientID string) (*MqttLink, error) {
+//
+// bindIfIndex pins the broker socket to the same NIC the node's mesh
+// traffic uses (transport.DialerWithBind; the mesh resolves the same
+// cfg.BindInterface in NewNode). The bridge advertises itself as a
+// gateway for the mesh it sits on, so the broker leg must not take the
+// routing table's word for where it lives: under a VPN that the mesh
+// bypasses, a broker leg leaving through the tunnel would put the
+// advertisement and the actual traffic on different paths. Zero means
+// no pin — the routing table chooses, exactly as before bind_interface
+// existed.
+func NewMqttLink(brokerURL, clientID string, bindIfIndex int) (*MqttLink, error) {
 	addr, err := mqttBrokerAddr(brokerURL)
 	if err != nil {
 		return nil, err
 	}
-	conn, err := net.DialTimeout("tcp", addr, mqttHandshakeTimeout)
+	dialer := transport.DialerWithBind(net.Dialer{Timeout: mqttHandshakeTimeout}, bindIfIndex)
+	conn, err := dialer.Dial("tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("mqtt: dial %s: %w", addr, err)
 	}
