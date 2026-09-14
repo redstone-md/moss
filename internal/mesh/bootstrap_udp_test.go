@@ -37,12 +37,19 @@ func TestConnectBootstrapPeerFallsBackToUDPWithoutPeerHint(t *testing.T) {
 	if nodeB.listener == nil {
 		t.Fatal("expected TCP listener")
 	}
+	listenPort := nodeB.ListenPort()
 	_ = nodeB.listener.Close()
-	time.Sleep(100 * time.Millisecond)
+	// Poll-барьер вместо Sleep(100ms): Close() закрывает FD синхронно, но
+	// тесту нужен доказуемый момент, когда ядро перестало принимать коннекты
+	// на этот порт, — фиксированный sleep его не даёт (может дать меньше,
+	// чем нужно для отработки close, или впустую ждать после). Как только
+	// прямой диал к закрытому порту отказал, TCP мёртв и
+	// connectBootstrapPeer точно пойдёт по UDP fallback-ветке.
+	waitTCPPortRefused(t, listenPort)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if err := nodeA.connectBootstrapPeer(ctx, net.JoinHostPort("127.0.0.1", strconv.Itoa(nodeB.ListenPort()))); err != nil {
+	if err := nodeA.connectBootstrapPeer(ctx, net.JoinHostPort("127.0.0.1", strconv.Itoa(listenPort))); err != nil {
 		t.Fatalf("connectBootstrapPeer failed: %v", err)
 	}
 
@@ -80,12 +87,13 @@ func TestConnectBootstrapSeedPrefersTCPForLoopbackSeeds(t *testing.T) {
 	if nodeB.listener == nil {
 		t.Fatal("expected TCP listener")
 	}
+	listenPort := nodeB.ListenPort()
 	_ = nodeB.listener.Close()
-	time.Sleep(100 * time.Millisecond)
+	waitTCPPortRefused(t, listenPort)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
 	defer cancel()
-	if err := nodeA.connectBootstrapSeed(ctx, net.JoinHostPort("127.0.0.1", strconv.Itoa(nodeB.ListenPort()))); err == nil {
+	if err := nodeA.connectBootstrapSeed(ctx, net.JoinHostPort("127.0.0.1", strconv.Itoa(listenPort))); err == nil {
 		t.Fatal("expected loopback bootstrap seed to fail without TCP listener")
 	}
 
@@ -95,5 +103,26 @@ func TestConnectBootstrapSeedPrefersTCPForLoopbackSeeds(t *testing.T) {
 	nodeA.mu.RUnlock()
 	if connected {
 		t.Fatal("expected loopback bootstrap seed not to establish a UDP-only peer")
+	}
+}
+
+// waitTCPPortRefused blocks until a real dial to 127.0.0.1:port is refused —
+// the honest barrier that a listener Close has taken effect at the kernel.
+// A fixed Sleep after Close gives no such proof: it can expire before the
+// close is fully observed or waste wall-clock after it already was, and the
+// negative assertion that follows depends on the port being genuinely dead.
+func waitTCPPortRefused(t *testing.T, port int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), 250*time.Millisecond)
+		if err != nil {
+			return
+		}
+		_ = conn.Close()
+		if time.Now().After(deadline) {
+			t.Fatal("test setup: closed TCP port still accepts connections")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

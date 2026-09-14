@@ -115,7 +115,6 @@ func NewNodeWithIdentity(meshID string, psk []byte, cfg Config, identity *mcrypt
 		bindingWait:      make(map[string]chan string),
 		reachabilityWait: make(map[string]chan bool),
 		holePunchWait:    make(map[string]holePunchRequest),
-		dispatchSem:      make(chan struct{}, 500),
 		dispatchCh:       make(chan any, 1024),
 		localQueues:      make(map[string]chan dispatchMessage),
 	}
@@ -322,7 +321,24 @@ func (n *Node) Stop() int32 {
 			peer.closeSession()
 		}
 	}
+	// Drain guard: the relay data path (node_relay_control.go) still sends
+	// on dispatchCh with a BLOCKING send, and dispatchLoop exits the moment
+	// the cancelled context wins its select. A worker parked on a full
+	// queue after that would hold wg.Wait here forever. Draining is
+	// bounded — the queue is 1024 deep — and ends as soon as every worker
+	// is done, so the goroutine lives only inside this Stop call.
+	drainDone := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-n.dispatchCh:
+			case <-drainDone:
+				return
+			}
+		}
+	}()
 	n.wg.Wait()
+	close(drainDone)
 	n.closeAxiom()
 	return MOSS_OK
 }
@@ -397,6 +413,23 @@ func (n *Node) UnsubscribeRoom(meshID, channel string) int32 {
 	}
 	n.pubsub.Unsubscribe(topic)
 	n.forgetSubscription(topic)
+	// The channel's delivery queue (~295KB at depth) goes with the last
+	// subscription that names the channel — unless another room still
+	// holds a live subscription under the same name, in which case the
+	// queue stays in service. Queue keys are the bare channel; the walk is
+	// under mu, teardownLocalQueue takes only localMu.
+	otherRoomLive := false
+	n.mu.RLock()
+	for _, sub := range n.subChannels {
+		if sub.channel == channel {
+			otherRoomLive = true
+			break
+		}
+	}
+	n.mu.RUnlock()
+	if !otherRoomLive {
+		n.teardownLocalQueue(channel)
+	}
 	return MOSS_OK
 }
 

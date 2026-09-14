@@ -48,6 +48,13 @@ func StreamOversizeFrames() uint64 {
 type streamCarrier struct {
 	conn net.Conn
 
+	// headerBuf is ReadPacket's length-prefix scratch. ReadPacket is
+	// serialized — the only production caller is Session.readRawPacket,
+	// which holds the session's read mutex — so a per-carrier scratch costs
+	// no allocation where a local [4]byte would escape to the heap once per
+	// packet via the conn interface call.
+	headerBuf [4]byte
+
 	// writeErr is the first write failure on this carrier; once set, every
 	// later WritePacket returns it without touching the conn.
 	//
@@ -82,13 +89,15 @@ func (c *streamCarrier) WritePacket(packet []byte) error {
 		return err
 	}
 	defer c.conn.SetWriteDeadline(time.Time{})
-	header := make([]byte, 4)
-	binary.BigEndian.PutUint32(header, uint32(len(packet)))
-	if err := writeAll(c.conn, header); err != nil {
-		c.writeErr = err
-		return err
-	}
-	if err := writeAll(c.conn, packet); err != nil {
+	var header [4]byte
+	binary.BigEndian.PutUint32(header[:], uint32(len(packet)))
+	// Header and payload leave as ONE write: on a TCP conn net.Buffers
+	// batches them into a single writev syscall, and the fallback loops
+	// per buffer — the exact two-write shape this replaces, never worse.
+	// Every envelope on every stream session pays this path, so the second
+	// syscall was per-packet overhead the kernel happily absorbs in one.
+	buffers := net.Buffers{header[:], packet}
+	if _, err := buffers.WriteTo(c.conn); err != nil {
 		c.writeErr = err
 		return err
 	}
@@ -96,7 +105,7 @@ func (c *streamCarrier) WritePacket(packet []byte) error {
 }
 
 func (c *streamCarrier) ReadPacket() ([]byte, error) {
-	header := make([]byte, 4)
+	header := c.headerBuf[:]
 	if _, err := io.ReadFull(c.conn, header); err != nil {
 		return nil, err
 	}

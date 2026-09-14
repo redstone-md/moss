@@ -315,8 +315,15 @@ func TestStatDeltaHopBudgetEndsForwarding(t *testing.T) {
 // the N sends a flood would spend.
 func TestStatDeltaFanoutIsBounded(t *testing.T) {
 	cfg := telemetryConfig()
-	// Freeze the star: no LAN discovery, no announces — the hub's only peers
-	// are the spokes it is dialed by, and the spokes never learn of each other.
+	// Freeze the star: no LAN discovery, no announces — and, decisively, each
+	// spoke capped at the one peer it dials. The hub hands every new spoke a
+	// snapshot of the peers it knows, so without the cap the spokes learn of
+	// each other and connectKnownPeers melts the star within seconds; the
+	// second hop then LEGITIMATELY delivers the delta to a spoke the hub's
+	// fan-out did not pick, and an "exactly D on this hop" assertion races
+	// that melt for the whole wall-clock window. With the cap the hub's
+	// fan-out is the only path a delta can ever take, so the count below
+	// converges to D and cannot exceed it.
 	cfg.LANDiscoveryEnabled = false
 	cfg.AnnounceIntervalSec = 3600
 	cfg.MaxPeers = 32
@@ -336,6 +343,9 @@ func TestStatDeltaFanoutIsBounded(t *testing.T) {
 		spokeCfg := telemetryConfig()
 		spokeCfg.LANDiscoveryEnabled = false
 		spokeCfg.AnnounceIntervalSec = 3600
+		// The cap that freezes the star (see above): a spoke may hold only
+		// its hub, so no spoke can ever become a second hop.
+		spokeCfg.MaxPeers = 1
 		spokeCfg.StaticPeers = []string{hubAddr}
 		n, err := NewNode("mesh-stat-fanout", nil, spokeCfg)
 		if err != nil {
@@ -379,13 +389,14 @@ func TestStatDeltaFanoutIsBounded(t *testing.T) {
 		return got
 	}
 	want := min(hub.config.GossipSub.D, spokeCount-1)
-	deadline := time.Now().Add(5 * time.Second)
-	for got := receiving(); got < want; got = receiving() {
-		if time.Now().After(deadline) {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	// The star is frozen (each spoke holds only the hub), so no delta can
+	// arrive after the hub's single fan-out has landed: the fan-out put the
+	// message on every receiving spoke's outbound queue the moment
+	// handleStatDelta ran. Waiting for the count to settle would only add
+	// wall-clock slack a frozen topology cannot produce; one generous
+	// settle window for the outbound workers is all the async there is.
+	waitFor(t, func() bool { return receiving() >= want },
+		"fanout did not deliver the delta to enough spokes")
 	if got := receiving(); got != want {
 		t.Fatalf("fanout delivered the delta to %d of 7 spokes, want exactly %d (D=%d)", got, want, hub.config.GossipSub.D)
 	}

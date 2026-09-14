@@ -85,20 +85,38 @@ func TestLookupReachesPastUnreachableNearestContacts(t *testing.T) {
 	for _, decoy := range decoyContacts(key, overlayAlpha) {
 		b.overlayTable.Add(decoy)
 	}
-
 	// STORE is one-way and unacknowledged, so A's publish returning says only
 	// that it was SENT — the core may not have processed it yet. Looking up
-	// immediately raced it, and the test failed one run in four: my own proof was
-	// part luck. Retry the way anything real does.
+	// immediately raced it, and the test failed one run in four: my own proof
+	// was part luck. Retry the way anything real does — but keep the retry
+	// cadence OUT of the latency bound below: retries exist precisely
+	// because the core was slow to process the one-way STORE, and rolling
+	// them into the bound read that slowness as lookup latency.
 	started := time.Now()
-	var providers []gossip.OverlayProvider
-	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
-		if providers, _ = b.overlayLookup(ctx, key, true); len(providers) > 0 {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
+	type lookupResult struct {
+		providers []gossip.OverlayProvider
+		elapsed   time.Duration
 	}
-	elapsed := time.Since(started)
+	firstLookupDone := make(chan lookupResult, 1)
+	go func() {
+		providers, _ := b.overlayLookup(ctx, key, true)
+		firstLookupDone <- lookupResult{providers: providers, elapsed: time.Since(started)}
+	}()
+	// The first attempt either finds the record or comes back empty; either
+	// way its OWN duration is the honest sample for the bound below.
+	first := <-firstLookupDone
+	providers := first.providers
+	if len(providers) == 0 {
+		// Retry the way anything real does: STORE raced, look again. These
+		// retries are NOT part of the latency bound — they exist precisely
+		// because the core can be slow to process the one-way STORE.
+		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
+			if providers, _ = b.overlayLookup(ctx, key, true); len(providers) > 0 {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
 
 	if len(providers) == 0 {
 		t.Fatal("lookup found nobody: it spent its budget on the nearest contacts " +
@@ -108,8 +126,14 @@ func TestLookupReachesPastUnreachableNearestContacts(t *testing.T) {
 	// Unreachable contacts must cost nothing: they fail without a session rather
 	// than being waited on. Sequential alpha queries against dead contacts are
 	// what made a lookup take 12s at p95 and 20s at worst.
-	if elapsed > 5*time.Second {
-		t.Fatalf("lookup took %v — unreachable contacts are still being waited on", elapsed)
+	//
+	// The first lookup is the honest sample: it ran against whatever the core
+	// had processed at that moment, and its own duration — unaffected by how
+	// many retries the STORE race needed — is what the unreachable-contacts
+	// bound must measure. (A first-lookup miss does NOT imply slow queries:
+	// the miss is the record not being there yet.)
+	if first.elapsed > 5*time.Second {
+		t.Fatalf("lookup took %v — unreachable contacts are still being waited on", first.elapsed)
 	}
 }
 

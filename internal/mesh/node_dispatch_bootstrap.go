@@ -22,7 +22,6 @@ func (n *Node) dispatchLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case item := <-n.dispatchCh:
-			n.dispatchSem <- struct{}{}
 			switch v := item.(type) {
 			case dispatchMessage:
 				n.mu.RLock()
@@ -46,7 +45,6 @@ func (n *Node) dispatchLoop(ctx context.Context) {
 					cb(v.sender, v.data)
 				}
 			}
-			<-n.dispatchSem
 		}
 	}
 }
@@ -174,12 +172,22 @@ func (n *Node) reannounceSupernodeStatus() {
 	n.broadcastToAll(signed, "")
 }
 
+// enqueueEvent hands one event to the dispatch loop. The send is
+// non-blocking: the dispatch queue is bounded (1024) and an event burst
+// drops the surplus (counted, monotonic) rather than blocking the caller —
+// a blocked caller here used to wedge Stop() when dispatchLoop had already
+// exited on the cancelled context. Events are advisory; losing one under a
+// flood is the better trade.
 func (n *Node) enqueueEvent(eventType int32, detail any) {
 	raw, _ := json.Marshal(detail)
 	if eventType == EventTrackerFailure {
 		n.forwardEventToAxiom(detail)
 	}
-	n.dispatchCh <- dispatchEvent{eventType: eventType, detail: string(raw)}
+	select {
+	case n.dispatchCh <- dispatchEvent{eventType: eventType, detail: string(raw)}:
+	default:
+		n.countInbound("__dispatch_event_dropped__")
+	}
 }
 
 func (n *Node) connectKnownPeers() {

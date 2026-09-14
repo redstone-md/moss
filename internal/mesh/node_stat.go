@@ -131,9 +131,15 @@ func (n *Node) fanoutStatDelta(env gossip.Envelope, excludePeerID string) {
 		n.sendToPeers(peerIDs, env)
 		return
 	}
+	// Hash-once: the comparator used to re-derive the blake2s key on every
+	// comparison — O(P log P) hashes per fan-out on the maintenance path.
+	keys := make(map[string]string, len(peerIDs))
+	for _, peerID := range peerIDs {
+		keys[peerID] = statDeltaPeerKey(env.MessageID, peerID)
+	}
 	sort.Slice(peerIDs, func(i, j int) bool {
-		ki := statDeltaPeerKey(env.MessageID, peerIDs[i])
-		kj := statDeltaPeerKey(env.MessageID, peerIDs[j])
+		ki := keys[peerIDs[i]]
+		kj := keys[peerIDs[j]]
 		if ki == kj {
 			return peerIDs[i] < peerIDs[j]
 		}

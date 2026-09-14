@@ -24,10 +24,25 @@ const (
 	// republish well inside this, so an entry outliving a node that vanished is
 	// bounded by it.
 	DefaultRecordTTL = 90 * time.Second
-	// DefaultMaxPerKey caps providers per key so a popular channel — or a flood
-	// — cannot grow a core node's memory without bound.
+	// DefaultMaxPerKey caps providers per key so a popular channel — or a
+	// flood — cannot grow a core node's memory without bound.
 	DefaultMaxPerKey = 64
 )
+
+// maxKeys bounds the NUMBER of distinct keys a core node holds records for.
+// maxPerKey alone leaves the keyspace unbounded: a STORE flood with fresh
+// keys each 90s TTL window could pin an unbounded map of provider maps. Worst
+// case per key is maxPerKey entries × (NodeID + ~200B hint payload), so the
+// ceiling is tens of MB; real traffic stays far below — presence records
+// carry an empty payload and one room topic per channel.
+const maxKeys = 4096
+
+// keyEvictScan bounds the eviction scan for maxKeys: at cap, a fresh-key Put
+// inspects at most this many keys for a dead or empty one. Map iteration
+// order gives an arbitrary-but-bounded sample; failing that, the first
+// scanned key loses one provider slot — approximating "evict the least
+// useful" without a full-keyspace sweep under the lock.
+const keyEvictScan = 64
 
 // Entry is one provider record: peer P asserts something about key K until it
 // expires. Payload is opaque here; the mesh layer encodes reachability hints
@@ -71,7 +86,9 @@ func NewStore(ttl time.Duration, maxPerKey int) *Store {
 // republishing on a timer is free.
 //
 // When a key is at capacity a Put from a new peer evicts the entry closest to
-// expiry — the one least likely to still be live.
+// expiry — the one least likely to still be live. When the keyspace itself is
+// at capacity (maxKeys), a fresh-key Put makes room the same way the per-key
+// cap does: expired entries first, then an arbitrary bounded victim.
 func (s *Store) Put(key, peer NodeID, payload []byte, now time.Time) {
 	if now.IsZero() {
 		now = time.Now()
@@ -80,6 +97,9 @@ func (s *Store) Put(key, peer NodeID, payload []byte, now time.Time) {
 	defer s.mu.Unlock()
 	providers, ok := s.entries[key]
 	if !ok {
+		if len(s.entries) >= maxKeys && !s.evictKeyLocked(key, now) {
+			return
+		}
 		providers = make(map[NodeID]Entry)
 		s.entries[key] = providers
 	}
@@ -94,6 +114,47 @@ func (s *Store) Put(key, peer NodeID, payload []byte, now time.Time) {
 		Payload: append([]byte(nil), payload...),
 		Expires: now.Add(s.ttl),
 	}
+}
+
+// evictKeyLocked makes room for one more key under maxKeys. It scans at most
+// keyEvictScan keys (map iteration order = arbitrary): a key whose providers
+// have ALL expired is dropped whole — dead weight no lookup can miss. Failing
+// that, the smallest scanned live key is dropped outright: under a flood the
+// keyspace is the resource being defended, and partial eviction frees no key
+// slot. Reports whether a slot opened. Caller holds mu; newKey must not be
+// present in entries (Put only calls this after a miss).
+func (s *Store) evictKeyLocked(newKey NodeID, now time.Time) bool {
+	scanned := 0
+	var victim NodeID
+	victimLen := -1
+	for k, providers := range s.entries {
+		if scanned >= keyEvictScan {
+			break
+		}
+		scanned++
+		if k == newKey {
+			continue
+		}
+		expiredAll := true
+		for _, e := range providers {
+			if e.Expires.After(now) {
+				expiredAll = false
+				break
+			}
+		}
+		if expiredAll {
+			delete(s.entries, k)
+			return true
+		}
+		if victimLen < 0 || len(providers) < victimLen {
+			victim, victimLen = k, len(providers)
+		}
+	}
+	if victimLen < 0 {
+		return false
+	}
+	delete(s.entries, victim)
+	return true
 }
 
 // evictSoonestLocked drops expired entries, or failing that the single entry

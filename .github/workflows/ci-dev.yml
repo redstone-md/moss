@@ -66,8 +66,8 @@ jobs:
       - name: Run full test suite
         run: go test ./... -count=1 -timeout 1800s
 
-  mesh-hardening:
-    name: Mesh Hardening
+  mesh-strict:
+    name: Mesh Strict (count=1)
     runs-on: ubuntu-latest
     env:
       CGO_ENABLED: "1"
@@ -81,5 +81,34 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Re-run mesh package with retries
+      # count=1 by design: a single run, no retries, so any flaky mesh test
+      # FAILS this job and stays visible. Re-running the package with
+      # -count=3 used to mask exactly the flakes this workflow exists to
+      # catch: a test that passes 2 of 3 runs is green here, and the
+      # regression ships. The soak job below is where repetition belongs —
+      # it hunts nondeterminism that survives a deterministic pass.
+      - name: Run mesh package once, strictly
+        run: go test ./internal/mesh -count=1 -timeout 1800s
+
+  mesh-soak:
+    name: Mesh Soak (repeat)
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The soak deliberately repeats the mesh package: repetition exposes
+      # cross-run state leaks, port reuse races, and timer-boundary bugs that
+      # one pass cannot see. It complements the strict job (which must stay
+      # count=1 so flakes stay red); it is NOT a retry mechanism, and a
+      # failure here is investigated, never re-rolled.
+      - name: Re-run mesh package under repetition
         run: go test ./internal/mesh -count=3 -timeout 1800s

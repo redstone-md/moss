@@ -29,7 +29,12 @@ type Bus struct {
 	start     time.Time
 	// ring is allocated lazily. A node with the debug plane off holds thousands
 	// of these buses in a test run, and pre-allocating history for a buffer that
-	// will never be written to costs ~800 KB each for nothing.
+	// will never be written to costs ~800 KB each for nothing. When the plane IS
+	// on, the ring's memory ceiling is ringSize × sizeof(Event) — the server
+	// default is 16384 × ~200B ≈ ~3.2MB per node while recording or a debugger
+	// is attached, the price of "attach after it broke" history. Shrinking
+	// ringSize or making the ring lossy trades that window for memory; do so
+	// only with drop visibility (Stats) in hand.
 	ringSize int
 	ring     atomic.Pointer[Ring]
 

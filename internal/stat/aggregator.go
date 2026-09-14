@@ -30,6 +30,14 @@ const (
 	defaultKAnon        = 5
 )
 
+// chainKeepEpochs bounds the finalized-epoch digest map. Every finalized
+// epoch kept its digest forever — ~60B per epoch, unbounded on a
+// long-running node. The window covers what any consumer can page through
+// (the serve-side limit param caps at 8640) and always retains the head
+// and its predecessor, because the next finalize and Snapshot both link
+// epoch-1 → epoch through the retained prev digest.
+const chainKeepEpochs = 8640
+
 func (c Config) withDefaults() Config {
 	if c.Precision == 0 {
 		c.Precision = defaultPrecision
@@ -156,6 +164,11 @@ func (a *Aggregator) snapshotFor(epoch uint64) (*Snapshot, error) {
 
 // finalizeLocked computes and records the chained digest for a snapshot leaving
 // the active window. Caller holds a.mu.
+//
+// Recording a digest also prunes the chain to the chainKeepEpochs window: a
+// digest older than the window can no longer be paged to and its prev-link
+// value is spent, while every prune AFTER the head advances keeps epoch
+// head-1 alive for the next finalize and Snapshot's prev-digest lookup.
 func (a *Aggregator) finalizeLocked(s *Snapshot) {
 	if s == nil {
 		return
@@ -170,6 +183,13 @@ func (a *Aggregator) finalizeLocked(s *Snapshot) {
 	a.chain[s.Epoch] = s.Digest(prev)
 	if s.Epoch > a.chainHead {
 		a.chainHead = s.Epoch
+	}
+	if len(a.chain) > chainKeepEpochs {
+		for e := range a.chain {
+			if e+chainKeepEpochs <= a.chainHead {
+				delete(a.chain, e)
+			}
+		}
 	}
 }
 
@@ -312,7 +332,9 @@ type ChainEntry struct {
 
 // RecentChain returns up to limit most-recent finalized epoch digests, oldest
 // first, each linked to its predecessor — the verifiable history an explorer
-// uses to check continuity. limit <= 0 returns the full retained chain.
+// uses to check continuity. limit <= 0 returns the full retained chain: the
+// chainKeepEpochs window behind the head (see finalizeLocked), not the
+// node's entire lifetime.
 func (a *Aggregator) RecentChain(limit int) []ChainEntry {
 	a.mu.Lock()
 	defer a.mu.Unlock()
