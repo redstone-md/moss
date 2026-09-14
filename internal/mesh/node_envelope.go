@@ -265,9 +265,11 @@ const localDeliveryQueueDepth = 4096
 // Blocking here used to stop that loop, and a stopped read loop overflows the
 // transport's inbound buffer, which discards whatever arrives next — including
 // the pings a session dies without. A dropped message on one channel is a
-// bounded, counted loss (`__local_delivery_dropped__`); a stalled reader is an
-// unbounded, invisible one. The first is strictly better, so the send is
-// non-blocking and the overflow is recorded.
+// bounded, counted loss (`__local_delivery_dropped__`); a stalled reader is
+// an unbounded, invisible one. The first is strictly better, so the send is
+// non-blocking and the overflow is recorded. The send also sits INSIDE
+// localMu: the queue's teardown (teardownLocalQueue, on Unsubscribe) closes
+// it under the same mutex, so a send can never race a close.
 func (n *Node) enqueueLocal(msg dispatchMessage) {
 	n.localMu.Lock()
 	queue, ok := n.localQueues[msg.channel]
@@ -278,22 +280,44 @@ func (n *Node) enqueueLocal(msg dispatchMessage) {
 		}
 		n.localQueues[msg.channel] = queue
 		n.wg.Add(1)
-		go n.localDeliveryWorker(queue)
+		go n.localDeliveryWorker(msg.channel, queue)
 	}
-	n.localMu.Unlock()
-
 	select {
 	case queue <- msg:
 	default:
 		n.countInbound("__local_delivery_dropped__")
 	}
+	n.localMu.Unlock()
+}
+
+// teardownLocalQueue closes and removes one channel's delivery queue. Called
+// from UnsubscribeRoom once no live subscription to the channel remains.
+// Closing lets the worker deliver what is already buffered, then exit; its
+// deregistration (delete before wg.Done) no-ops on the removed entry, and
+// Start()'s wholesale map reset is untouched — an Unsubscribe→Publish cycle
+// simply spins a fresh lazy worker.
+func (n *Node) teardownLocalQueue(channel string) {
+	n.localMu.Lock()
+	if queue, ok := n.localQueues[channel]; ok {
+		delete(n.localQueues, channel)
+		close(queue)
+	}
+	n.localMu.Unlock()
 }
 
 // localDeliveryWorker drains one channel's queue in order. One worker per
-// channel: ordering is preserved where it is meaningful, and a slow transfer on
-// one channel cannot delay control traffic on another.
-func (n *Node) localDeliveryWorker(queue chan dispatchMessage) {
+// channel: ordering is preserved where it is meaningful, and a slow transfer
+// on one channel cannot delay control traffic on another. Exits on rootCtx's
+// cancellation or when teardownLocalQueue closes the queue.
+func (n *Node) localDeliveryWorker(channel string, queue chan dispatchMessage) {
 	defer n.wg.Done()
+	defer func() {
+		n.localMu.Lock()
+		if n.localQueues[channel] == queue {
+			delete(n.localQueues, channel)
+		}
+		n.localMu.Unlock()
+	}()
 	for {
 		n.mu.RLock()
 		root := n.rootCtx
@@ -305,7 +329,10 @@ func (n *Node) localDeliveryWorker(queue chan dispatchMessage) {
 		select {
 		case <-done:
 			return
-		case msg := <-queue:
+		case msg, ok := <-queue:
+			if !ok {
+				return
+			}
 			n.mu.RLock()
 			cb := n.messageCB
 			n.mu.RUnlock()

@@ -211,6 +211,12 @@ func (s *Stream) close() {
 	})
 }
 
+// enqueue hands one inbound payload to the stream's reader. The payload is a
+// subslice of the packet readRawPacket produced this iteration — a buffer
+// that Decrypt/Open allocate fresh per packet and that nothing downstream
+// reuses — so it goes into the buffer channel as-is: one copy fewer per
+// inbound packet, and the copy is not load-bearing (the reader may retain the
+// slice past its read; the backing array dies with it).
 func (s *Stream) enqueue(payload []byte) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -219,9 +225,8 @@ func (s *Stream) enqueue(payload []byte) {
 		return
 	default:
 	}
-	packet := append([]byte(nil), payload...)
 	select {
-	case s.buffer <- packet:
+	case s.buffer <- payload:
 	default:
 		streamDrops.Add(1)
 		if s.id == DefaultStream {

@@ -272,8 +272,13 @@ func (n *Node) sendOrEnqueue(peer *peerConn, env gossip.Envelope) bool {
 // re-announced on later heartbeats, so an overfull queue drops — silently
 // costing one redundant copy — where the old code blocked the caller
 // network-wide. The drop counter only grows, keeping the pressure visible.
+//
+// The send happens INSIDE the outboundMu critical section: the queue's
+// lifecycle (teardownOutboundQueue, sweep of orphans in the maintenance
+// loop) closes it under the same mutex, so a send can never race a close.
 func (n *Node) enqueueOutbound(ctx context.Context, peer *peerConn, env gossip.Envelope) bool {
 	n.outboundMu.Lock()
+	defer n.outboundMu.Unlock()
 	if n.outboundQueues == nil {
 		n.outboundQueues = make(map[string]chan gossip.Envelope)
 	}
@@ -284,7 +289,6 @@ func (n *Node) enqueueOutbound(ctx context.Context, peer *peerConn, env gossip.E
 		n.wg.Add(1)
 		go n.outboundWorker(ctx, peer.id, queue)
 	}
-	n.outboundMu.Unlock()
 	select {
 	case queue <- env:
 		return true
@@ -294,12 +298,49 @@ func (n *Node) enqueueOutbound(ctx context.Context, peer *peerConn, env gossip.E
 	}
 }
 
-// outboundWorker drains one peer's queue until the node stops. The peer is
-// looked up at SEND time rather than captured at enqueue time: a peer that
-// vanished, or was replaced by a redial between enqueue and send, must not
-// receive the envelope — but its replacement may. Deregistration runs before
-// wg.Done so a Stop→Start cycle can never find a queue whose worker is
-// already gone.
+// teardownOutboundQueue closes and removes a peer's outbound queue. Called
+// from removePeer AFTER dropping n.mu — never under it — and from the
+// maintenance sweep for queues whose peer left via the eviction paths that
+// bypass removePeer. Closing makes the worker deliver what is already
+// buffered, then exit; its own deregistration no-ops on the deleted entry.
+// A peer that returns gets a fresh lazy queue, and a peer that was REPLACED
+// keeps its live queue — removePeer no-ops on a session mismatch, so this
+// only runs for the peer that actually left.
+func (n *Node) teardownOutboundQueue(peerID string) {
+	n.outboundMu.Lock()
+	if queue, ok := n.outboundQueues[peerID]; ok {
+		delete(n.outboundQueues, peerID)
+		close(queue)
+	}
+	n.outboundMu.Unlock()
+}
+
+// sweepOrphanOutboundQueues reclaims queues whose peer is gone from n.peers
+// — the eviction and relay-removal paths delete peers without removePeer.
+// Runs on the maintenance loop's conn-tick; lock order is outboundMu →
+// n.mu.RLock, which nothing nests the other way around (enqueueOutbound
+// never holds n.mu).
+func (n *Node) sweepOrphanOutboundQueues() {
+	n.outboundMu.Lock()
+	for peerID, queue := range n.outboundQueues {
+		n.mu.RLock()
+		_, connected := n.peers[peerID]
+		n.mu.RUnlock()
+		if connected {
+			continue
+		}
+		delete(n.outboundQueues, peerID)
+		close(queue)
+	}
+	n.outboundMu.Unlock()
+}
+
+// outboundWorker drains one peer's queue until the node stops or the queue is
+// torn down. The peer is looked up at SEND time rather than captured at
+// enqueue time: a peer that vanished, or was replaced by a redial between
+// enqueue and send, must not receive the envelope — but its replacement may.
+// Deregistration runs before wg.Done so a Stop→Start cycle can never find a
+// queue whose worker is already gone.
 func (n *Node) outboundWorker(ctx context.Context, peerID string, queue chan gossip.Envelope) {
 	defer n.wg.Done()
 	defer func() {
@@ -313,7 +354,12 @@ func (n *Node) outboundWorker(ctx context.Context, peerID string, queue chan gos
 		select {
 		case <-ctx.Done():
 			return
-		case env := <-queue:
+		case env, ok := <-queue:
+			if !ok {
+				// Queue torn down with its peer's disconnect: exit
+				// promptly; Stop's wg.Wait is watching.
+				return
+			}
 			n.mu.RLock()
 			peer := n.peers[peerID]
 			n.mu.RUnlock()

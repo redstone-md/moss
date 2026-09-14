@@ -174,11 +174,9 @@ func (m *Manager) NonMeshSubscribers(channel string) []string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	mesh := m.meshPeers[channel]
-	out := make([]string, 0)
-	for peerID, subscriptions := range m.peerSubscriptions {
-		if _, ok := subscriptions[channel]; !ok {
-			continue
-		}
+	subs := m.channelSubs[channel]
+	out := make([]string, 0, len(subs))
+	for peerID := range subs {
 		if _, inMesh := mesh[peerID]; inMesh {
 			continue
 		}

@@ -108,6 +108,12 @@ func TestDiscoveredPeerReconnectsAfterRestartWithNewPort(t *testing.T) {
 	waitForDirectPeer(t, nodeB, nodeAID)
 	waitForPeerCount(t, nodeA, 2)
 
+	// nodeB's death drops A→B and leaves the pair in the dial cooldown:
+	// discoveredPeerTargets backs off for HandshakeTimeout (5s) plus the
+	// redial's own handshake budget, so the reconnect worst case is ~2x the
+	// old waitForDirectPeer deadline (5s) — a zero-margin race whenever the
+	// runner was loaded. 15s is >= 2x that worst case: the reconnect itself
+	// is loopback-fast, the wait is purely for the cooldown to lapse.
 	nodeB.Stop()
 
 	nodeB = newLeaf(restartIdentity)
@@ -118,8 +124,8 @@ func TestDiscoveredPeerReconnectsAfterRestartWithNewPort(t *testing.T) {
 	}
 	restartedAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(nodeB.ListenPort()))
 	waitForKnownPeer(t, nodeA, nodeBID)
-	waitForDirectPeer(t, nodeA, nodeBID)
-	waitForDirectPeer(t, nodeB, nodeAID)
+	waitForDirectPeerWithin(t, nodeA, nodeBID, 15*time.Second)
+	waitForDirectPeerWithin(t, nodeB, nodeAID, 15*time.Second)
 	waitForKnownPeerAddr(t, nodeA, nodeBID, restartedAddr)
 	waitForPeerCount(t, nodeA, 2)
 }

@@ -64,7 +64,6 @@ type Node struct {
 	debugRec    *inspect.Recorder
 	bindIfIndex int
 	startedAt   time.Time
-	dispatchSem chan struct{}
 	dht         *dhtSource
 	statAgg     *stat.Aggregator
 
@@ -160,7 +159,13 @@ type Node struct {
 	// Lazy-init on first use; an unstarted node with no workers falls back to
 	// synchronous sends. Workers are wg-tracked and exit with rootCtx.
 	//
-	// Memory ceiling: outboundQueueDepth (256) envelopes per connected peer,
+	// Lifetime: a queue exists only while its peer does. removePeer tears it
+	// down (close + delete) after dropping n.mu, and the maintenance loop's
+	// conn-tick sweeps orphans left by eviction paths that bypass
+	// removePeer. Before that teardown, every peer the node EVER connected
+	// leaked its queue until Stop — ~110KB apiece on a gossiping node.
+	//
+	// Memory ceiling: outboundQueueDepth (256) envelopes per CONNECTED peer,
 	// an envelope being its header plus a payload up to
 	// Security.MaxMessageSizeBytes (64KB). Worst case per queue is therefore
 	// 256 × ~64KB ≈ 16MB, so N connected peers bound the total at ~16MB × N:
@@ -190,6 +195,14 @@ type Node struct {
 	// One queue per channel keeps ordering where it matters (within a channel)
 	// while a slow blob transfer can no longer stall control traffic, and the
 	// read loop never blocks on delivery at all.
+	//
+	// Lifetime: a queue exists only while a live subscription to its channel
+	// does — UnsubscribeRoom tears it down (delete + close; the worker exits
+	// on the closed channel and deregisters) after checking no OTHER room
+	// still holds a subscription under the same channel name. Before that
+	// teardown the queue (~295KB: localDeliveryQueueDepth × 72B) stayed for
+	// the node's whole life. Start() resets the map wholesale because the
+	// previous run's workers are gone with their rootCtx.
 	localMu     sync.Mutex
 	localQueues map[string]chan dispatchMessage
 }

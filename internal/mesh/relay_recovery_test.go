@@ -10,9 +10,20 @@ import (
 )
 
 func TestPruneStaleRelayRoutesReapsExpiredSessionsKeepsLive(t *testing.T) {
+	// Timing geometry: "live" is touched at t=settleLive and pruned at
+	// t=settleLive+settleDead, so at prune time live's idle age is
+	// settleDead and dead's is settleLive+settleDead. The TTL must sit
+	// strictly between: settleDead < TTL < settleLive+settleDead. The old
+	// 150/100/100 shape left ±50ms on each side; my first widening kept the
+	// same trap (settleDead alone outgrew the TTL). 400/400/600 gives both
+	// margins 200ms — far beyond the jitter a loaded runner adds inside a
+	// sleep, and still a sub-second test.
+	const sessionTTL = 600 * time.Millisecond
+	const settleLive = 400 * time.Millisecond // "live" idles this long, then is touched
+	const settleDead = 400 * time.Millisecond // "dead" has now been idle settleLive+settleDead > TTL
 	node := &Node{
 		relayRoutes:   map[string]relayRoute{},
-		relaySessions: nat.NewSessionManager(100, 150*time.Millisecond),
+		relaySessions: nat.NewSessionManager(100, sessionTTL),
 	}
 	// A non-ready NAT profile makes refreshSupernodeStatus a no-op (it reads the
 	// profile and returns early when the ready state is unchanged).
@@ -24,9 +35,9 @@ func TestPruneStaleRelayRoutesReapsExpiredSessionsKeepsLive(t *testing.T) {
 	node.relaySessions.Acquire("dead")
 
 	// Keep "live" fresh with a touch; let "dead" idle out past the TTL.
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(settleLive)
 	node.relaySessions.Touch("live")
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(settleDead)
 
 	node.pruneStaleRelayRoutes()
 

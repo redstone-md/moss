@@ -89,6 +89,11 @@ func (n *Node) removePeer(peerID string, session *transport.Session) {
 		n.knownPeers[peerID] = info
 	}
 	n.mu.Unlock()
+	// The peer is gone: its outbound queue (~110KB at depth) must go with
+	// it, or every peer this node EVER connected leaks until Stop. Under
+	// NO n.mu here — teardownOutboundQueue takes outboundMu, and nothing
+	// nests the two the other way around.
+	n.teardownOutboundQueue(peerID)
 	n.pubsub.RemovePeer(peerID)
 	for _, relayedPeerID := range removedRelayed {
 		n.pubsub.RemovePeer(relayedPeerID)
@@ -319,6 +324,10 @@ func (n *Node) maintenanceLoop(ctx context.Context) {
 			n.pruneLowScoringPeers()
 			n.pruneHighLatencyPeers()
 			n.pruneStaleRelayRoutes()
+			// Reclaim outbound queues orphaned by the eviction/relay paths
+			// that delete peers without removePeer; one bounded pass per
+			// conn-tick. See sweepOrphanOutboundQueues.
+			n.sweepOrphanOutboundQueues()
 			// The known-peers directory sweep self-throttles internally
 			// (knownPeersSwept, once per knownPeerSweepEvery), so calling it on
 			// every conn-tick is a timestamp check — the walk only runs on its

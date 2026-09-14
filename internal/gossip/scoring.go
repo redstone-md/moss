@@ -38,7 +38,7 @@ func (p PeerScore) Total() float64 {
 }
 
 type Engine struct {
-	mu    sync.Mutex
+	mu    sync.RWMutex
 	peers map[string]*PeerScore
 	// onRemove is invoked (under mu) for every peer dropped by Remove —
 	// the eviction hook, so a node can release peer-keyed state it owns
@@ -130,9 +130,9 @@ func timeInMeshLocked(connectedAt, now time.Time) float64 {
 // write lock; the read-only path no longer serializes against the writers
 // that actually mutate scores.
 func (e *Engine) Score(peerID string) float64 {
-	e.mu.Lock()
+	e.mu.RLock()
 	peer, ok := e.peers[peerID]
-	e.mu.Unlock()
+	e.mu.RUnlock()
 	if !ok {
 		return 0
 	}

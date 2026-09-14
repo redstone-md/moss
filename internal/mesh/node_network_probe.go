@@ -202,9 +202,16 @@ func (n *Node) selectLazyPeers(channel, excludePeerID string, limit int) []strin
 		return nil
 	}
 	heartbeat := atomic.LoadUint64(&n.heartbeat)
+	// Hash-once: the comparator used to re-derive the blake2s key on every
+	// comparison — the heartbeat rotation key is fixed for this pass, so one
+	// hash per peer answers every comparison.
+	keys := make(map[string]string, len(peers))
+	for _, peerID := range peers {
+		keys[peerID] = lazyPeerKey(channel, peerID, heartbeat)
+	}
 	sort.Slice(peers, func(i, j int) bool {
-		keyI := lazyPeerKey(channel, peers[i], heartbeat)
-		keyJ := lazyPeerKey(channel, peers[j], heartbeat)
+		keyI := keys[peers[i]]
+		keyJ := keys[peers[j]]
 		if keyI == keyJ {
 			return peers[i] < peers[j]
 		}

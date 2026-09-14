@@ -572,9 +572,16 @@ func (n *Node) pruneTopicMeshExcess(channel string) {
 	if len(meshPeers) <= n.config.GossipSub.DHigh {
 		return
 	}
+	// Hash-once for scores: the comparator used to call peerScore per
+	// comparison — O(M log M) scoring-callback invocations per prune, each
+	// taking the scoring read lock — on the maintenance path.
+	scores := make(map[string]float64, len(meshPeers))
+	for _, peerID := range meshPeers {
+		scores[peerID] = n.peerScore(peerID)
+	}
 	sort.Slice(meshPeers, func(i, j int) bool {
-		scoreI := n.peerScore(meshPeers[i])
-		scoreJ := n.peerScore(meshPeers[j])
+		scoreI := scores[meshPeers[i]]
+		scoreJ := scores[meshPeers[j]]
 		if scoreI == scoreJ {
 			return meshPeers[i] > meshPeers[j]
 		}
@@ -629,14 +636,24 @@ func (n *Node) selectMeshCandidates(channel string, limit int) []string {
 	if len(candidates) == 0 {
 		return nil
 	}
+	// Hash-once for the comparator: isOutboundPeer took n.mu.RLock and
+	// peerScore took the scoring read lock on EVERY comparison —
+	// O(C log C) lock acquisitions per selection pass on the maintenance
+	// path.
+	scores := make(map[string]float64, len(candidates))
+	outbound := make(map[string]bool, len(candidates))
+	for _, peerID := range candidates {
+		scores[peerID] = n.peerScore(peerID)
+		outbound[peerID] = n.isOutboundPeer(peerID)
+	}
 	sort.Slice(candidates, func(i, j int) bool {
-		outI := n.isOutboundPeer(candidates[i])
-		outJ := n.isOutboundPeer(candidates[j])
+		outI := outbound[candidates[i]]
+		outJ := outbound[candidates[j]]
 		if outI != outJ {
 			return outI
 		}
-		scoreI := n.peerScore(candidates[i])
-		scoreJ := n.peerScore(candidates[j])
+		scoreI := scores[candidates[i]]
+		scoreJ := scores[candidates[j]]
 		if scoreI == scoreJ {
 			return candidates[i] < candidates[j]
 		}

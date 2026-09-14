@@ -20,8 +20,15 @@ const (
 	defaultEndpoint      = "https://api.axiom.co"
 	defaultFlushInterval = 5 * time.Second
 	maxBatch             = 128
-	maxQueue             = 4096
-	httpTimeout          = 10 * time.Second
+	// maxQueue is the sink's memory ceiling: the buffered channel is
+	// allocated whole in NewAxiomSink, ~4096 × ~128B per Event ≈ 500KB per
+	// process — but ONLY on a host that opted in by enabling the sink; an
+	// ordinary node never constructs it. Shipping is lossy by design (see
+	// Dropped), so the queue must never block; shrinking it raises the drop
+	// rate under a burst of errors instead of saving steady-state memory.
+	// Do not reduce without watching Dropped() in production.
+	maxQueue    = 4096
+	httpTimeout = 10 * time.Second
 )
 
 // Event is one structured record. Time defaults to now when zero.

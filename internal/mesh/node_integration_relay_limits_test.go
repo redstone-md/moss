@@ -221,6 +221,21 @@ func TestRelayNodeEnforcesConfiguredBandwidth(t *testing.T) {
 	relayNode.relayBuckets[nodeAID] = nat.NewTokenBucket(burst, sustained)
 	relayNode.mu.Unlock()
 
+	// The negative window is the bucket itself, not wall-clock: burst is
+	// 1KBPS*1024 = 1024 tokens and refill is burst/4 = 256/s, so the first
+	// 1024-byte payload drains the bucket exactly, and NOTHING relayed from
+	// nodeA — the second payload, or any post-reset gossip envelope — can
+	// pass for the next ~4s. Reading the relay's overload marker
+	// (overloadedUntil, stamped by markRelayOverloaded on every refused
+	// relay byte) is deterministic: it flips the moment the bucket refuses,
+	// with no dependence on when nodeB's callback fires. The old
+	// window-bound assertion had exactly that failure mode: a join-time
+	// gossip envelope tunnelled after the reset surfaced in the relay
+	// callback within 400ms and read as "the throttle failed".
+	relayNode.mu.RLock()
+	overloadBase := relayNode.overloadedUntil
+	relayNode.mu.RUnlock()
+
 	firstPayload := bytes.Repeat([]byte("a"), 1024)
 	secondPayload := bytes.Repeat([]byte("b"), 1024)
 	if err := nodeA.RelaySend(sessionID, firstPayload); err != nil {
@@ -239,11 +254,14 @@ func TestRelayNodeEnforcesConfiguredBandwidth(t *testing.T) {
 		t.Fatal("timed out waiting for first relayed payload")
 	}
 
-	select {
-	case payload := <-received:
-		t.Fatalf("expected second relay payload to be throttled, got %d bytes", len(payload))
-	case <-time.After(400 * time.Millisecond):
-	}
+	// The second payload was refused at the relay: the bucket said no and
+	// markRelayOverloaded stamped the cooldown. Poll the marker rather than
+	// racing a delivery window — it is the relay's own record of the refusal.
+	waitFor(t, func() bool {
+		relayNode.mu.RLock()
+		defer relayNode.mu.RUnlock()
+		return relayNode.overloadedUntil.After(overloadBase)
+	}, "second relay payload was not throttled by the bandwidth bucket")
 }
 
 func TestRelayBandwidthOverloadDemotesAndRecoversSupernode(t *testing.T) {
