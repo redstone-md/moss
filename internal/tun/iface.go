@@ -8,10 +8,12 @@
 // WritePacket), so the mesh package never links against a TUN library and
 // the routing logic is testable in userspace.
 //
-// v1 scope, fixated: NO FRAGMENTATION. A packet larger than the MTU is
-// dropped and counted on both directions; splitting an IP packet across
-// directed payloads is a v2 decision. The default MTU of 1500 matches the
-// conservative end-to-end assumption of the underlying mesh transport
+// v2 adds fragmentation and beyond-the-pool routing: a packet larger than
+// the MTU is split into TFRG fragment frames carried as ordinary directed
+// payloads (reassembled at the far edge, hard-capped at 64KB), and a
+// prefix→peers Routes table routes destinations outside the assigned-IP
+// pool by lowest RTT. The default MTU of 1500 matches the conservative
+// end-to-end assumption of the underlying mesh transport
 // (Security.MaxMessageSizeBytes gates the directed payload at 64KB, so a
 // 1500-byte packet passes with headroom).
 package tun
@@ -37,7 +39,8 @@ type PacketIface interface {
 	Close() error
 }
 
-// DefaultMTU is the intranet's maximum IP packet size. Packets larger than
-// the active MTU are dropped and counted on both the outbound (iface→mesh)
-// and inbound (mesh→iface) paths — never fragmented (v1, fixated).
+// DefaultMTU is the intranet's maximum IP packet size. A packet larger than
+// the active MTU is fragmented on the outbound path (v2) and reassembled on
+// the inbound path; a single payload larger than the MTU is dropped and
+// counted inbound.
 const DefaultMTU = 1500

@@ -401,8 +401,9 @@ func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origi
 	// Allowlist gate: an EMPTY-but-created map is strict (reject-all) while
 	// nil keeps the default open substrate. Checked after the self-loop guard
 	// and before any state is created, so a rejected peer leaves no trace
-	// beyond the counted drop. Existing connections are unaffected — the
-	// gate runs at registration time only.
+	// beyond the counted drop. The gate runs at registration time only; the
+	// revocation path for an already-connected peer is DisallowPeer, which
+	// tears down the live session.
 	if n.allowlist != nil {
 		if _, ok := n.allowlist[peerID]; !ok {
 			n.countInbound("__allowlist_rejected__")

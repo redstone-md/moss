@@ -3,6 +3,7 @@ package mesh
 import (
 	"time"
 
+	mcrypto "github.com/redstone-md/moss/internal/crypto"
 	"github.com/redstone-md/moss/internal/gossip"
 	"github.com/redstone-md/moss/internal/inspect"
 )
@@ -200,6 +201,19 @@ func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 		if len(env.Payload) > n.config.Security.MaxMessageSizeBytes {
 			n.scoring.PenalizeInvalid(peer.id)
 			n.emitPenalty(peer.id, "publish over the message size limit")
+			return
+		}
+		// Verify-on-present sender authentication. A publish's Signature
+		// proves the envelope was authored by the key named in SenderID;
+		// without it a peer can publish under anyone's SenderID. Legacy
+		// senders never set Signature — that stays accepted, only counted
+		// — so old clients interoperate untouched.
+		if len(env.Signature) == 0 {
+			n.countInbound("__sender_unsigned__")
+		} else if !mcrypto.Verify(env.SenderID, publishSenderSignaturePayload(env), env.Signature) {
+			n.countInbound("__sender_signature_bad__")
+			n.scoring.PenalizeInvalid(peer.id)
+			n.emitPenalty(peer.id, "publish sender signature invalid")
 			return
 		}
 		n.observeMeshDelivery(env.Channel, env.MessageID, peer.id)

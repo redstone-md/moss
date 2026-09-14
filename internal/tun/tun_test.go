@@ -171,10 +171,10 @@ func TestRouterOutboundKnownUnknownOversize(t *testing.T) {
 	_, _ = table.PeerAddr("peer-b")
 
 	var sentTo []string
-	var sent []byte
+	var frames [][]byte
 	router := NewRouter(&fakeIface{}, table, func(peerID string, payload []byte) error {
 		sentTo = append(sentTo, peerID)
-		sent = append([]byte(nil), payload...)
+		frames = append(frames, append([]byte(nil), payload...))
 		return nil
 	}, DefaultMTU)
 
@@ -184,7 +184,7 @@ func TestRouterOutboundKnownUnknownOversize(t *testing.T) {
 	if len(sentTo) != 1 || sentTo[0] != "peer-b" {
 		t.Fatalf("known dst should reach peer-b, got %v", sentTo)
 	}
-	if string(sent) != string(pkt) {
+	if len(frames) != 1 || string(frames[0]) != string(pkt) {
 		t.Fatal("forwarded packet mutated")
 	}
 	if router.Counters().Forwarded.Load() != 1 {
@@ -200,13 +200,37 @@ func TestRouterOutboundKnownUnknownOversize(t *testing.T) {
 		t.Fatalf("DroppedUnknownDst = %d", router.Counters().DroppedUnknownDst.Load())
 	}
 
-	// Oversize: counted drop, no send, no fragmentation.
+	// Oversize (MTU+1 .. 64KB): fragmented, not dropped. 1501 bytes
+	// with a 1488-byte chunk capacity is 2 frames; the packet counts as
+	// one Forwarded and never touches DroppedOversize.
+	sentTo = nil
+	frames = nil
 	router.RouteOutbound(ip4Packet("10.66.0.1", DefaultMTU+1))
-	if len(sentTo) != 1 {
-		t.Fatal("oversize packet must not be sent")
+	if len(frames) != 2 {
+		t.Fatalf("MTU+1 packet should fragment into 2 frames, got %d", len(frames))
 	}
-	if router.Counters().DroppedOversize.Load() != 1 {
-		t.Fatalf("DroppedOversize = %d", router.Counters().DroppedOversize.Load())
+	if len(sentTo) != 2 || sentTo[0] != "peer-b" || sentTo[1] != "peer-b" {
+		t.Fatalf("both fragments should reach peer-b, got %v", sentTo)
+	}
+	if router.Counters().FragSent.Load() != 2 {
+		t.Fatalf("FragSent = %d", router.Counters().FragSent.Load())
+	}
+	if router.Counters().Forwarded.Load() != 2 {
+		t.Fatalf("Forwarded = %d (1 whole + 1 fragmented packet)", router.Counters().Forwarded.Load())
+	}
+	if router.Counters().DroppedOversize.Load() != 0 {
+		t.Fatalf("DroppedOversize must not grow for a fragmented packet, got %d", router.Counters().DroppedOversize.Load())
+	}
+
+	// Over the 64KB hard cap: dropped and counted as a frag oversize,
+	// nothing on the wire.
+	before := len(frames)
+	router.RouteOutbound(ip4Packet("10.66.0.1", fragHardCap+1))
+	if len(frames) != before {
+		t.Fatal("hard-cap packet must not be sent")
+	}
+	if router.Counters().FragOversize.Load() != 1 {
+		t.Fatalf("FragOversize = %d", router.Counters().FragOversize.Load())
 	}
 
 	// Malformed (short): counted drop.
@@ -215,13 +239,28 @@ func TestRouterOutboundKnownUnknownOversize(t *testing.T) {
 		t.Fatalf("DroppedMalformed = %d", router.Counters().DroppedMalformed.Load())
 	}
 
-	// Send failure: counted, not fatal.
-	router2 := NewRouter(&fakeIface{}, table, func(string, []byte) error {
+	// Send failure: counted, not fatal. A fragment mid-sequence fails the
+	// whole packet: the second frame's failure leaves Forwarded flat.
+	var sent2 []string
+	router2 := NewRouter(&fakeIface{}, table, func(peerID string, payload []byte) error {
+		sent2 = append(sent2, peerID)
 		return errors.New("send broke")
 	}, DefaultMTU)
 	router2.RouteOutbound(ip4Packet("10.66.0.1", 40))
 	if router2.Counters().SendFailed.Load() != 1 {
 		t.Fatal("send failure not counted")
+	}
+	router2.RouteOutbound(ip4Packet("10.66.0.1", DefaultMTU*2))
+	if router2.Counters().SendFailed.Load() != 2 {
+		t.Fatalf("fragment send failure not counted, SendFailed = %d", router2.Counters().SendFailed.Load())
+	}
+	if router2.Counters().Forwarded.Load() != 0 {
+		t.Fatal("a packet with a failed fragment must not count as forwarded")
+	}
+	if len(sent2) != 2 {
+		// One whole-packet attempt + the FIRST fragment of the second
+		// packet; the rest are aborted.
+		t.Fatalf("send called %d times, want 2 (abort on first fragment failure)", len(sent2))
 	}
 }
 

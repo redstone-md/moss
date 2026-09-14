@@ -24,10 +24,44 @@ func (n *Node) sendRelayedEnvelope(peer *peerConn, env gossip.Envelope) bool {
 	if err != nil {
 		return false
 	}
-	return n.sendRelayPayload(peer.relaySessionID, sealed)
+	return n.sendRelayFrame(peer.relaySessionID, sealed)
 }
 
+// sendRelayPayload sends application DM bytes through a relay session. The
+// bytes are end-to-end sealed to the target peer BEFORE the relay frame is
+// built, so the middle node — which forwards the frame — sees only
+// ciphertext. This is the only path DM bytes take: no plaintext fallback
+// exists, by design; a target whose noise static we do not know is a send
+// failure, not a downgrade.
 func (n *Node) sendRelayPayload(sessionID string, data []byte) bool {
+	n.mu.RLock()
+	session, ok := n.relayLocals[sessionID]
+	viaPeer := n.peers[session.viaPeerID]
+	n.mu.RUnlock()
+	if !ok || viaPeer == nil || viaPeer.relayed || !session.established {
+		return false
+	}
+	// The sealed form is what rides the relay and what the middle node's
+	// oversize gate measures: refuse here rather than send a payload the
+	// first hop must drop. The origin-side gate in RelaySend sees only the
+	// plaintext, so the AEAD expansion must be accounted on this side of
+	// the seal.
+	if len(data) > maxRelayPayloadBytes-dmAEADExpansion {
+		return false
+	}
+	sealed, err := n.sealDMPayload(session.remotePeerID, data)
+	if err != nil {
+		return false
+	}
+	return n.sendRelayFrame(sessionID, sealed)
+}
+
+// sendRelayFrame forwards already-opaque bytes down an established relay
+// session. It performs no sealing of its own: the gossip path seals with the
+// session AEAD before calling, the DM path seals end-to-end first. All
+// TypeRelayData frames flow through here, so the frame overhead (source,
+// target, session id) stays in one place.
+func (n *Node) sendRelayFrame(sessionID string, data []byte) bool {
 	n.mu.RLock()
 	session, ok := n.relayLocals[sessionID]
 	viaPeer := n.peers[session.viaPeerID]
@@ -232,4 +266,87 @@ func (n *Node) knownPeerNoiseStatic(peerID string) []byte {
 
 func relayGossipAAD(networkID, sessionID, sourcePeerID, targetPeerID string) []byte {
 	return []byte("moss-relay-gossip-v1|" + networkID + "|" + sessionID + "|" + sourcePeerID + "|" + targetPeerID)
+}
+
+// deriveDMPayloadAEAD builds the end-to-end AEAD a DM payload or room invite
+// is sealed under: X25519 DH between the local noise static and the target
+// peer's noise static, expanded with the network id and a domain tag. It is
+// NOT bound to a relay session id — a conversation must survive relay
+// session churn without its keys changing. Derived fresh on every send
+// rather than cached: DM volume is low, and a static rotation is picked up
+// on the very next send instead of serving a dead key from a cache.
+func (n *Node) deriveDMPayloadAEAD(targetPeerID string) (cipher.AEAD, error) {
+	remoteStatic := n.knownPeerNoiseStatic(targetPeerID)
+	if len(remoteStatic) != 32 {
+		return nil, errors.New("target noise static key is unavailable")
+	}
+	localStatic := n.identity.NoiseStaticKeypair()
+	secret, err := noise.DH25519.DH(localStatic.Private, remoteStatic)
+	if err != nil {
+		return nil, err
+	}
+	keyMaterial, err := mcrypto.Expand(secret, []byte(n.networkID), "moss-dm-payload-v1")
+	if err != nil {
+		return nil, err
+	}
+	return chacha20poly1305.New(keyMaterial)
+}
+
+// dmPayloadAAD binds a sealed DM to its endpoints so a frame cannot be
+// replayed at anyone else: the middle node cannot rewrite source or target,
+// and a sealed payload sent to one peer never opens for another.
+func dmPayloadAAD(networkID, sourcePeerID, targetPeerID string) []byte {
+	return []byte("moss-dm-v1|" + networkID + "|" + sourcePeerID + "|" + targetPeerID)
+}
+
+// dmAEADExpansion is the fixed wire overhead the DM seal adds: a
+// chacha20poly1305 nonce plus its tag. Both relay endpoints and the middle
+// node's oversize gate see the sealed form, so every bound on relayed DM
+// bytes must account for it — see relayChargeableBytes.
+const dmAEADExpansion = chacha20poly1305.NonceSize + chacha20poly1305.Overhead
+
+// relayChargeableBytes maps a TypeRelayData payload's wire length to the
+// application bytes it carries. Every payload this node relays is an AEAD
+// blob — a gossip envelope or a DM sealed end-to-end — so the expansion is
+// a constant subtraction, not a guess. Charging the raw wire length would
+// bill the origin's cryptography as its bandwidth.
+func relayChargeableBytes(wireLen int) int {
+	if wireLen < dmAEADExpansion {
+		return 0
+	}
+	return wireLen - dmAEADExpansion
+}
+
+// sealDMPayload seals application DM bytes to the target peer. The wire form
+// is nonce || Seal(nonce, plaintext, ad). Fails closed: no target static, no
+// send — there is no plaintext fallback path.
+func (n *Node) sealDMPayload(targetPeerID string, plaintext []byte) ([]byte, error) {
+	aead, err := n.deriveDMPayloadAEAD(targetPeerID)
+	if err != nil {
+		return nil, err
+	}
+	nonce := make([]byte, chacha20poly1305.NonceSize)
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return nil, err
+	}
+	ad := dmPayloadAAD(n.networkID, n.localPeerID(), targetPeerID)
+	return aead.Seal(nonce, nonce, plaintext, ad), nil
+}
+
+// openDMPayload opens a DM payload sealed by sourcePeerID to us. The mirror
+// of sealDMPayload: derives the shared key against the source's noise static
+// and opens with the endpoint-binding AAD. Any mismatch — wrong source,
+// wrong target, tampered bytes — is an error.
+func (n *Node) openDMPayload(sourcePeerID string, payload []byte) ([]byte, error) {
+	if len(payload) <= chacha20poly1305.NonceSize {
+		return nil, errors.New("dm payload is too small")
+	}
+	aead, err := n.deriveDMPayloadAEAD(sourcePeerID)
+	if err != nil {
+		return nil, err
+	}
+	nonce := payload[:chacha20poly1305.NonceSize]
+	ciphertext := payload[chacha20poly1305.NonceSize:]
+	ad := dmPayloadAAD(n.networkID, sourcePeerID, n.localPeerID())
+	return aead.Open(nil, nonce, ciphertext, ad)
 }
