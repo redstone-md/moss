@@ -67,27 +67,30 @@ func (c *scrambleCodec) padBound(kind byte) int {
 }
 
 func (c *scrambleCodec) Seal(kind byte, payload []byte) ([]byte, error) {
+	// One rand.Read covers the 12-byte nonce, plus the 2-byte padLen draw
+	// when this kind is padded; the unpadded fast path reads 12B only.
 	padLen := 0
+	nonce := make([]byte, chacha20poly1305.NonceSize)
 	if bound := c.padBound(kind); bound > 0 {
-		n, err := randIntn(bound + 1)
-		if err != nil {
+		var head [2 + chacha20poly1305.NonceSize]byte
+		if _, err := rand.Read(head[:]); err != nil {
 			return nil, err
 		}
-		padLen = n
+		// Padding length only, not a security-sensitive value, so the
+		// small modulo bias is acceptable.
+		padLen = int(binary.BigEndian.Uint16(head[:2])) % (bound + 1)
+		copy(nonce, head[2:])
+	} else if _, err := rand.Read(nonce); err != nil {
+		return nil, err
 	}
+	// The padding content stays all-zero: it lives inside the AEAD, never
+	// reaches the wire in the clear, and Open discards it — only the pad
+	// length shapes the datagram, so filling it from crypto-rand bought
+	// nothing.
 	plain := make([]byte, 3+len(payload)+padLen)
 	plain[0] = kind
 	binary.BigEndian.PutUint16(plain[1:3], uint16(padLen))
 	copy(plain[3:], payload)
-	if padLen > 0 {
-		if _, err := rand.Read(plain[3+len(payload):]); err != nil {
-			return nil, err
-		}
-	}
-	nonce := make([]byte, chacha20poly1305.NonceSize)
-	if _, err := rand.Read(nonce); err != nil {
-		return nil, err
-	}
 	// dst==nonce aliasing is safe: chacha20poly1305 allocates a fresh backing
 	// array (nonce cap is exactly 12) and reads nonce before writing the
 	// result. wire = nonce || ciphertext || tag.
@@ -112,17 +115,4 @@ func (c *scrambleCodec) Open(wire []byte) (byte, []byte, bool) {
 	kind := plain[0]
 	payload := append([]byte(nil), plain[3:len(plain)-padLen]...)
 	return kind, payload, true
-}
-
-// randIntn returns a uniform-ish int in [0, n). Padding length only, not a
-// security-sensitive value, so the small modulo bias is acceptable.
-func randIntn(n int) (int, error) {
-	if n <= 1 {
-		return 0, nil
-	}
-	var b [2]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return 0, err
-	}
-	return int(binary.BigEndian.Uint16(b[:])) % n, nil
 }

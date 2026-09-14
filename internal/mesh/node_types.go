@@ -177,11 +177,21 @@ type Node struct {
 	// depth or the frame cap shrinks the ceiling linearly; see
 	// outboundQueueDepth before touching either.
 	outboundMu      sync.Mutex
-	outboundQueues  map[string]chan gossip.Envelope
+	outboundQueues  map[string]chan outboundEnvelope
 	outboundDropped atomic.Uint64
-	iwantAsks       map[string]map[string]time.Time
-	iwantServes     map[string]map[string]time.Time
-	announceSwept   time.Time
+	// relayAEADs caches the per-(peer, session, source, target) AEAD a
+	// relayed send derives — an X25519 DH + HKDF + chacha20poly1305.New per
+	// envelope otherwise. Value type with lazy map init: nodes are built as
+	// bare literals in tests, so the constructor must not be the only
+	// init point. See node_relay_transport.go.
+	relayAEADs relayAEADCache
+	// roomAEADs caches the per-room AEAD (chacha20poly1305.New per
+	// publish/delivery otherwise). Keyed by meshID; invalidated on
+	// leaveRoom and on a re-join with a different PSK. See node_room.go.
+	roomAEADs     roomAEADCache
+	iwantAsks     map[string]map[string]time.Time
+	iwantServes   map[string]map[string]time.Time
+	announceSwept time.Time
 	// Per-channel delivery queues, each drained by its own worker.
 	//
 	// Delivery to the application is a synchronous FFI callback that decrypts

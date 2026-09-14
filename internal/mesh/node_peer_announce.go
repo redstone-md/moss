@@ -12,6 +12,16 @@ import (
 )
 
 func (n *Node) sendEnvelope(peer *peerConn, env gossip.Envelope) bool {
+	return n.sendEnvelopeWire(peer, env, nil)
+}
+
+// sendEnvelopeWire sends one envelope to one peer, reusing the caller's
+// marshaled wire bytes when wire is non-nil. A broadcast marshals an envelope
+// once for all N targets instead of once per peer — a 100-peer mesh paid
+// ~100 marshals per heartbeat announcement for the same bytes — while a nil
+// wire marshals here, so single-send callers keep the old lazy shape.
+// Relayed peers re-seal the envelope themselves and ignore the wire.
+func (n *Node) sendEnvelopeWire(peer *peerConn, env gossip.Envelope, wire []byte) bool {
 	if peer == nil {
 		return false
 	}
@@ -21,18 +31,28 @@ func (n *Node) sendEnvelope(peer *peerConn, env gossip.Envelope) bool {
 	if peer.relayed {
 		return n.sendRelayedEnvelope(peer, env)
 	}
-	return n.sendDirectEnvelope(peer, env)
+	return n.sendDirectEnvelopeWire(peer, env, wire)
 }
 
+// sendDirectEnvelope is the lazy-wire form of sendDirectEnvelopeWire: it
+// marshals at send time. It stays because the relay payload path builds its
+// own envelope per send and deliberately bypasses the graylist gate
+// sendEnvelope applies.
 func (n *Node) sendDirectEnvelope(peer *peerConn, env gossip.Envelope) bool {
+	return n.sendDirectEnvelopeWire(peer, env, nil)
+}
+
+func (n *Node) sendDirectEnvelopeWire(peer *peerConn, env gossip.Envelope, wire []byte) bool {
 	if peer == nil || peer.session == nil {
 		return false
 	}
-	payload, err := json.Marshal(env)
-	if err != nil {
-		return false
+	if wire == nil {
+		var err error
+		if wire, err = json.Marshal(env); err != nil {
+			return false
+		}
 	}
-	return peer.session.WritePacket(payload) == nil
+	return peer.session.WritePacket(wire) == nil
 }
 
 // snapshotCatalogCap bounds how much of the directory a joining peer is handed

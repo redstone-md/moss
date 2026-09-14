@@ -1,12 +1,15 @@
 package mesh
 
 import (
+	"bytes"
+	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"io"
+	"sync"
 
 	"golang.org/x/crypto/chacha20poly1305"
 
@@ -49,6 +52,68 @@ import (
 // later rather than a mistake at the call site.
 var errNotInRoom = errors.New("not in room")
 
+// roomAEADCacheMax bounds the room AEAD cache. Held rooms are the only
+// source of keys and each holds one entry, so a real node sits far below
+// this; the bound exists for the join/leave churn paths that outpace the
+// invalidation calls.
+const roomAEADCacheMax = 64
+
+// roomAEADCache memoizes the chacha20poly1305.New(key) construction per
+// room: a publish or delivery paid it on every message otherwise, and the
+// room key is immutable for the lifetime of a joined room. Value type with
+// lazy map init — nodes are built as bare literals in tests, so the
+// constructor must not be the only init point.
+type roomAEADCache struct {
+	mu    sync.Mutex
+	aeads map[string]roomAEADEntry
+}
+
+type roomAEADEntry struct {
+	aead cipher.AEAD
+	key  []byte
+}
+
+// roomAEADFor returns the cached AEAD for a held room key, constructing it
+// on first use. Keyed by meshID per the cache contract, with the key bytes
+// stored alongside: a re-join with a different PSK overwrites n.rooms before
+// the invalidation can matter, and the stored key is what catches it — the
+// AEAD is re-constructed whenever the room's current key differs.
+func (n *Node) roomAEADFor(meshID string, key []byte) (cipher.AEAD, error) {
+	n.roomAEADs.mu.Lock()
+	if entry, ok := n.roomAEADs.aeads[meshID]; ok && bytes.Equal(entry.key, key) {
+		n.roomAEADs.mu.Unlock()
+		return entry.aead, nil
+	}
+	n.roomAEADs.mu.Unlock()
+	aead, err := chacha20poly1305.New(key)
+	if err != nil {
+		return nil, err
+	}
+	n.roomAEADs.mu.Lock()
+	if n.roomAEADs.aeads == nil {
+		n.roomAEADs.aeads = make(map[string]roomAEADEntry)
+	}
+	// Bound the map by held rooms: join/leave cycles would otherwise keep
+	// every dead room's AEAD alive. The invalidation paths delete the
+	// current entry; this clears wholesale when a working-set-size breach
+	// means the invalidation paths missed (a node holds one entry per
+	// joined room, never 64), still correct — the next call re-constructs.
+	if len(n.roomAEADs.aeads) >= roomAEADCacheMax {
+		n.roomAEADs.aeads = make(map[string]roomAEADEntry)
+	}
+	n.roomAEADs.aeads[meshID] = roomAEADEntry{aead: aead, key: append([]byte(nil), key...)}
+	n.roomAEADs.mu.Unlock()
+	return aead, nil
+}
+
+// dropRoomAEAD forgets a room's cached AEAD. Called from leaveRoom and from
+// joinRoom when the derived key differs from the held one (a PSK rotation).
+func (n *Node) dropRoomAEAD(meshID string) {
+	n.roomAEADs.mu.Lock()
+	delete(n.roomAEADs.aeads, meshID)
+	n.roomAEADs.mu.Unlock()
+}
+
 // deriveRoomKey returns the 32-byte room key, computed once at construction.
 func deriveRoomKey(meshID string, psk []byte) []byte {
 	if meshID == "" {
@@ -80,8 +145,19 @@ func (n *Node) joinRoom(meshID string, psk []byte) bool {
 	if n.rooms == nil {
 		n.rooms = make(map[string][]byte)
 	}
-	n.rooms[meshID] = key
+	held := n.rooms[meshID]
+	changed := !bytes.Equal(held, key)
+	if changed {
+		n.rooms[meshID] = key
+	}
 	n.mu.Unlock()
+	// A re-join with a different PSK is a key rotation: drop the cached
+	// AEAD so the next seal/open constructs it from the new key. The
+	// cache's stored-key guard would catch it anyway; this keeps the map
+	// from holding a dead room's entry.
+	if changed {
+		n.dropRoomAEAD(meshID)
+	}
 	return true
 }
 
@@ -96,6 +172,9 @@ func (n *Node) leaveRoom(meshID string) bool {
 	_, held := n.rooms[meshID]
 	delete(n.rooms, meshID)
 	n.mu.Unlock()
+	if held {
+		n.dropRoomAEAD(meshID)
+	}
 	return held
 }
 
@@ -213,7 +292,7 @@ func (n *Node) sealRoomIn(meshID string, plaintext []byte) ([]byte, error) {
 		}
 		return nil, errNotInRoom
 	}
-	aead, err := chacha20poly1305.New(key)
+	aead, err := n.roomAEADFor(meshID, key)
 	if err != nil {
 		return nil, err
 	}
@@ -235,7 +314,7 @@ func (n *Node) openRoom(meshID string, payload []byte) ([]byte, bool) {
 		}
 		return nil, false
 	}
-	aead, err := chacha20poly1305.New(key)
+	aead, err := n.roomAEADFor(meshID, key)
 	if err != nil {
 		return nil, false
 	}

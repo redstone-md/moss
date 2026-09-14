@@ -131,11 +131,15 @@ func timeInMeshLocked(connectedAt, now time.Time) float64 {
 // that actually mutate scores.
 func (e *Engine) Score(peerID string) float64 {
 	e.mu.RLock()
+	defer e.mu.RUnlock()
 	peer, ok := e.peers[peerID]
-	e.mu.RUnlock()
 	if !ok {
 		return 0
 	}
+	// The map stores pointers, and the mutating setters (SetApplicationScore,
+	// Tick, ...) write the PeerScore in place: reading any field after RUnlock
+	// races with them. Total's value receiver copies the struct here — under
+	// the read lock — so concurrent Score calls still never block each other.
 	return peer.Total()
 }
 

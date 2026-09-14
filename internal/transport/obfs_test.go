@@ -149,3 +149,63 @@ func TestScrambleNoFixedFingerprint(t *testing.T) {
 		t.Fatalf("nonces not unique: %d/%d", len(seen), N)
 	}
 }
+
+// The unpadded fast path (data kind, padData=false) must draw its nonce in a
+// single 12B rand.Read and produce a fixed-size wire — this is the hot
+// per-datagram path in high-throughput mode.
+func TestScrambleFastPathFixedLayout(t *testing.T) {
+	c, err := newScrambleCodec("mesh-1", []byte("secret"), 256, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("fixed-hot-path")
+	want := chacha20poly1305.NonceSize + 3 + len(payload) + c.aead.Overhead()
+	for range 64 {
+		wire, err := c.Seal(udpMessageData, payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(wire) != want {
+			t.Fatalf("unpadded fast path varied size: got %d, want %d", len(wire), want)
+		}
+		kind, got, ok := c.Open(wire)
+		if !ok || kind != udpMessageData || !bytes.Equal(got, payload) {
+			t.Fatalf("fast-path round-trip failed: ok=%v kind=%d payload=%q", ok, kind, got)
+		}
+	}
+}
+
+// The padded path must draw padLen and the nonce together (one rand.Read) while
+// keeping padLen uniform over [0, bound] and the wire round-trip intact.
+func TestScramblePadDrawCoversBound(t *testing.T) {
+	const bound = 32
+	c, err := newScrambleCodec("mesh-1", []byte("secret"), bound, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("padded")
+	minLen, maxLen := 1<<62, 0
+	for range 512 {
+		wire, err := c.Seal(udpMessageHandshakeInit, payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(wire) < minLen {
+			minLen = len(wire)
+		}
+		if len(wire) > maxLen {
+			maxLen = len(wire)
+		}
+		kind, got, ok := c.Open(wire)
+		if !ok || kind != udpMessageHandshakeInit || !bytes.Equal(got, payload) {
+			t.Fatalf("padded round-trip failed at padLen=%d: ok=%v kind=%d payload=%q",
+				len(wire)-chacha20poly1305.NonceSize-3-len(payload)-c.aead.Overhead(), ok, kind, got)
+		}
+	}
+	if minLen != chacha20poly1305.NonceSize+3+len(payload)+c.aead.Overhead() {
+		t.Fatalf("padded path emitted below the zero-pad floor: min=%d", minLen)
+	}
+	if maxLen != chacha20poly1305.NonceSize+3+len(payload)+c.aead.Overhead()+bound {
+		t.Fatalf("padded path never hit the bound: max=%d want +%d", maxLen, bound)
+	}
+}
