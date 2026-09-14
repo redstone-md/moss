@@ -106,6 +106,7 @@ import (
 	"time"
 	"unsafe"
 
+	moss "github.com/redstone-md/moss"
 	mcrypto "github.com/redstone-md/moss/internal/crypto"
 	"github.com/redstone-md/moss/internal/mesh"
 	"github.com/redstone-md/moss/internal/transport"
@@ -750,16 +751,23 @@ func Moss_GetNATType(handle C.MossHandle) *C.char {
 //
 // Moss_Version returns the version this library was built at, as a newly
 // allocated C string (free with Moss_Free). Release builds carry their tag;
-// anything else reports "dev".
+// anything else reports "dev". A host loads moss by path at runtime, so
+// nothing stops an old library from sitting next to a new host — and the
+// symptoms of that are transport bugs the host cannot diagnose. This lets a
+// host say which library it got instead of guessing. Callers must treat a
+// missing symbol as "older than v0.8.17".
 //
-// A host loads moss by path at runtime, so nothing stops an old library from
-// sitting next to a new host — and the symptoms of that are transport bugs the
-// host cannot diagnose. This lets a host say which library it got instead of
-// guessing. Callers must treat a missing symbol as "older than v0.8.17".
+// Both this package and the root moss package carry a link-time buildVersion
+// stamp (release-main.yml stamps both), so the local stamp wins and the root
+// package's is the fallback: a build stamped on only one of the two still
+// reports its tag rather than "dev".
 //
 //export Moss_Version
 func Moss_Version() *C.char {
-	return C.CString(buildVersion)
+	if buildVersion != "dev" {
+		return C.CString(buildVersion)
+	}
+	return C.CString(moss.Version())
 }
 
 //export Moss_LastError
