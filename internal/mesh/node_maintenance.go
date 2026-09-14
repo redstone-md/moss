@@ -191,19 +191,27 @@ func (n *Node) handlePong(peer *peerConn, env gossip.Envelope) {
 	current.pingMisses = 0
 }
 
-func (n *Node) probePeerLatency(now time.Time) {
-	type pingTarget struct {
-		peer      *peerConn
-		requestID string
-	}
+// pingTarget pairs a peer selected for a latency probe with the request ID
+// already written to its pingPending, so the unlocked send phase can clear the
+// field if the write fails and the next pass re-probes instead of timing out.
+type pingTarget struct {
+	peer      *peerConn
+	requestID string
+}
+
+// collectPingTargetsLocked marks probe-eligible peers with a fresh ping and
+// returns the send list. Caller must hold n.mu. A peer holding an expired ping
+// is deliberately left alone — consuming it belongs to the prune scan
+// (collectPruneLocked), so a standalone probe never eats the timeout
+// accounting the prune pass acts on.
+func (n *Node) collectPingTargetsLocked(now time.Time) []pingTarget {
 	interval := n.peerProbeInterval()
-	targets := make([]pingTarget, 0)
-	n.mu.Lock()
+	targets := make([]pingTarget, 0, len(n.peers))
 	for _, peer := range n.peers {
 		if peer.pingPending != "" {
 			continue
 		}
-		if peer.pingPending == "" && !peer.pingSentAt.IsZero() && now.Sub(peer.pingSentAt) < interval {
+		if !peer.pingSentAt.IsZero() && now.Sub(peer.pingSentAt) < interval {
 			continue
 		}
 		requestID, err := newRelaySessionID()
@@ -214,11 +222,16 @@ func (n *Node) probePeerLatency(now time.Time) {
 		peer.pingSentAt = now
 		targets = append(targets, pingTarget{peer: peer, requestID: requestID})
 	}
-	n.mu.Unlock()
-	failed := make([]pingTarget, 0)
+	return targets
+}
+
+// sendPingTargets writes the queued pings outside n.mu and clears pingPending
+// on peers whose write failed, so a ping that never left the node is retried
+// by the next pass instead of aging into a phantom miss.
+func (n *Node) sendPingTargets(targets []pingTarget) {
+	failed := make([]pingTarget, 0, len(targets))
 	for _, target := range targets {
-		ok := n.sendEnvelope(target.peer, gossip.Envelope{Type: gossip.TypePing, RequestID: target.requestID})
-		if ok {
+		if n.sendEnvelope(target.peer, gossip.Envelope{Type: gossip.TypePing, RequestID: target.requestID}) {
 			continue
 		}
 		failed = append(failed, target)
@@ -237,36 +250,77 @@ func (n *Node) probePeerLatency(now time.Time) {
 	}
 }
 
-func (n *Node) pruneHighLatencyPeers() {
-	now := time.Now()
-	ids := make([]string, 0, len(n.peers))
-	pruneOnly := make([]string, 0, len(n.peers))
-	n.mu.Lock()
+// pruneLists is one prune scan's outcome: peers to drop from topic meshes,
+// and the subset whose session must also be closed.
+type pruneLists struct {
+	meshOnly   []string
+	disconnect []string
+}
+
+// collectPruneLocked consumes expired pings and partitions the affected peers
+// into mesh-prune and disconnect lists. Caller must hold n.mu.
+func (n *Node) collectPruneLocked(now time.Time) pruneLists {
+	lists := pruneLists{
+		meshOnly:   make([]string, 0, len(n.peers)),
+		disconnect: make([]string, 0),
+	}
 	for id, peer := range n.peers {
 		if peer.lastRTT > peerLatencyPruneThreshold {
-			pruneOnly = append(pruneOnly, id)
+			lists.meshOnly = append(lists.meshOnly, id)
 			continue
 		}
 		if peer.pingPending != "" && now.Sub(peer.pingSentAt) > peerPingTimeout {
 			peer.pingPending = ""
 			peer.pingSentAt = time.Time{}
 			peer.pingMisses++
-			pruneOnly = append(pruneOnly, id)
+			lists.meshOnly = append(lists.meshOnly, id)
 			if !n.shouldRetainPeerLocked(peer) && peer.pingMisses >= peerDisconnectMissLimit {
-				ids = append(ids, id)
+				lists.disconnect = append(lists.disconnect, id)
 			}
 		}
 	}
-	n.mu.Unlock()
-	for _, id := range pruneOnly {
+	return lists
+}
+
+// applyPruneLists drops mesh-only peers from every topic mesh and closes the
+// sessions of disconnect peers.
+func (n *Node) applyPruneLists(lists pruneLists) {
+	for _, id := range lists.meshOnly {
 		n.prunePeerFromAllMeshes(id)
 	}
-	for _, id := range ids {
+	for _, id := range lists.disconnect {
 		n.mu.RLock()
 		peer := n.peers[id]
 		n.mu.RUnlock()
 		peer.closeSession()
 	}
+}
+
+func (n *Node) probePeerLatency(now time.Time) {
+	n.mu.Lock()
+	targets := n.collectPingTargetsLocked(now)
+	n.mu.Unlock()
+	n.sendPingTargets(targets)
+}
+
+func (n *Node) pruneHighLatencyPeers() {
+	n.mu.Lock()
+	lists := n.collectPruneLocked(time.Now())
+	n.mu.Unlock()
+	n.applyPruneLists(lists)
+}
+
+// connTickProbeAndPrune is the maintenance loop's per-second pass: the probe
+// and prune scans share one n.mu acquisition instead of two back-to-back
+// lock cycles, with the envelope sends and mesh mutations after the unlock —
+// the same ordering the standalone functions use.
+func (n *Node) connTickProbeAndPrune(now time.Time) {
+	n.mu.Lock()
+	targets := n.collectPingTargetsLocked(now)
+	lists := n.collectPruneLocked(now)
+	n.mu.Unlock()
+	n.sendPingTargets(targets)
+	n.applyPruneLists(lists)
 }
 
 // closeSession closes the peer's transport session if it has one. A relayed peer reaches us through a supernode and has NO
@@ -320,9 +374,11 @@ func (n *Node) maintenanceLoop(ctx context.Context) {
 			// Health checks are cheap and mostly no-op; they run every
 			// conn-tick (~1s).
 			n.scoring.Tick()
-			n.probePeerLatency(time.Now())
+			// Probe + high-latency prune in one locked pass; the low-score
+			// prune collects ids under RLock and scores them only after
+			// releasing it (peerScore must never run under n.mu).
+			n.connTickProbeAndPrune(time.Now())
 			n.pruneLowScoringPeers()
-			n.pruneHighLatencyPeers()
 			n.pruneStaleRelayRoutes()
 			// Reclaim outbound queues orphaned by the eviction/relay paths
 			// that delete peers without removePeer; one bounded pass per
@@ -396,16 +452,21 @@ func (n *Node) maintenancePhaseOffset(every uint64) uint64 {
 }
 
 func (n *Node) pruneLowScoringPeers() {
+	// Snapshot the peer ids only; the scores are computed after the RLock is
+	// released. peerScore may run an application scoring callback, and that
+	// callback must never be invoked while n.mu is held (the node_peer_
+	// discovery.go:76 invariant): a blocking callback holding RLock stalls
+	// every writer on the hot envelope path.
 	n.mu.RLock()
 	ids := make([]string, 0, len(n.peers))
 	for id := range n.peers {
-		if n.peerScore(id) < 0 {
-			ids = append(ids, id)
-		}
+		ids = append(ids, id)
 	}
 	n.mu.RUnlock()
 	for _, id := range ids {
-		n.prunePeerFromAllMeshes(id)
+		if n.peerScore(id) < 0 {
+			n.prunePeerFromAllMeshes(id)
+		}
 	}
 }
 

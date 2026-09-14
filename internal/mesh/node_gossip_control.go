@@ -2,6 +2,7 @@ package mesh
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/redstone-md/moss/internal/gossip"
@@ -14,6 +15,17 @@ import (
 // never the read loop, the maintenance pass, or the publish call that
 // happened to target it.
 const outboundQueueDepth = 256
+
+// outboundEnvelope is one queued send: the envelope plus its marshaled wire
+// bytes. Carrying the wire form through the queue is what makes a broadcast
+// O(1) marshals instead of O(N): sendToPeers marshals once and hands every
+// peer's queue the same buffer; the worker hands it to sendEnvelopeWire
+// untouched. An empty wire means the enqueueing path had no pre-marshaled
+// form (compat enqueue), and the worker marshals once at send time.
+type outboundEnvelope struct {
+	env  gossip.Envelope
+	wire []byte
+}
 
 // One IHAVE must not fan out an unbounded burst of IWANTs. Gossip re-sends
 // the same message list every heartbeat, so without a per-peer cooldown one
@@ -232,9 +244,20 @@ func (n *Node) sendToPeers(peerIDs []string, env gossip.Envelope) bool {
 	if len(peers) == 0 {
 		return false
 	}
+	// Marshal once for the whole fan-out: every direct peer's queue receives
+	// the same wire buffer, and the worker hands it to sendEnvelopeWire
+	// instead of re-marshaling per peer. Relayed peers re-seal the envelope
+	// themselves, so they are unaffected by the shared form. A marshal
+	// failure can only come from an unmarshalable envelope, which the old
+	// per-peer path would have dropped peer by peer anyway — one drop for
+	// all, same observable outcome.
+	wire, err := json.Marshal(env)
+	if err != nil {
+		return false
+	}
 	sent := false
 	for _, peer := range peers {
-		if n.sendOrEnqueue(peer, env) {
+		if n.sendOrEnqueueWire(peer, env, wire) {
 			sent = true
 		}
 	}
@@ -247,6 +270,15 @@ func (n *Node) sendToPeers(peerIDs []string, env gossip.Envelope) bool {
 // or one that is stopping, it falls back to the synchronous send so the
 // observable behavior of an unstarted node is unchanged.
 func (n *Node) sendOrEnqueue(peer *peerConn, env gossip.Envelope) bool {
+	return n.sendOrEnqueueWire(peer, env, nil)
+}
+
+// sendOrEnqueueWire is sendOrEnqueue for callers that already hold the
+// envelope's marshaled wire bytes; the queue carries them to the worker so
+// the fan-out that produced them marshals once, not once per peer. A nil
+// wire marshals at send time — the worker's fallback for the sync path and
+// for compat enqueues.
+func (n *Node) sendOrEnqueueWire(peer *peerConn, env gossip.Envelope, wire []byte) bool {
 	if peer == nil {
 		return false
 	}
@@ -260,9 +292,9 @@ func (n *Node) sendOrEnqueue(peer *peerConn, env gossip.Envelope) bool {
 	n.mu.RLock()
 	if !n.started || n.rootCtx == nil || n.rootCtx.Err() != nil {
 		n.mu.RUnlock()
-		return n.sendEnvelope(peer, env)
+		return n.sendEnvelopeWire(peer, env, wire)
 	}
-	queued := n.enqueueOutbound(n.rootCtx, peer, env)
+	queued := n.enqueueOutboundWire(n.rootCtx, peer, outboundEnvelope{env: env, wire: wire})
 	n.mu.RUnlock()
 	return queued
 }
@@ -277,20 +309,27 @@ func (n *Node) sendOrEnqueue(peer *peerConn, env gossip.Envelope) bool {
 // lifecycle (teardownOutboundQueue, sweep of orphans in the maintenance
 // loop) closes it under the same mutex, so a send can never race a close.
 func (n *Node) enqueueOutbound(ctx context.Context, peer *peerConn, env gossip.Envelope) bool {
+	return n.enqueueOutboundWire(ctx, peer, outboundEnvelope{env: env})
+}
+
+// enqueueOutboundWire is enqueueOutbound carrying the envelope's marshaled
+// wire form when the caller already produced it; a nil wire defers the
+// marshal to the worker's send.
+func (n *Node) enqueueOutboundWire(ctx context.Context, peer *peerConn, e outboundEnvelope) bool {
 	n.outboundMu.Lock()
 	defer n.outboundMu.Unlock()
 	if n.outboundQueues == nil {
-		n.outboundQueues = make(map[string]chan gossip.Envelope)
+		n.outboundQueues = make(map[string]chan outboundEnvelope)
 	}
 	queue, ok := n.outboundQueues[peer.id]
 	if !ok {
-		queue = make(chan gossip.Envelope, outboundQueueDepth)
+		queue = make(chan outboundEnvelope, outboundQueueDepth)
 		n.outboundQueues[peer.id] = queue
 		n.wg.Add(1)
 		go n.outboundWorker(ctx, peer.id, queue)
 	}
 	select {
-	case queue <- env:
+	case queue <- e:
 		return true
 	default:
 		n.outboundDropped.Add(1)
@@ -341,7 +380,7 @@ func (n *Node) sweepOrphanOutboundQueues() {
 // enqueue and send, must not receive the envelope — but its replacement may.
 // Deregistration runs before wg.Done so a Stop→Start cycle can never find a
 // queue whose worker is already gone.
-func (n *Node) outboundWorker(ctx context.Context, peerID string, queue chan gossip.Envelope) {
+func (n *Node) outboundWorker(ctx context.Context, peerID string, queue chan outboundEnvelope) {
 	defer n.wg.Done()
 	defer func() {
 		n.outboundMu.Lock()
@@ -354,7 +393,7 @@ func (n *Node) outboundWorker(ctx context.Context, peerID string, queue chan gos
 		select {
 		case <-ctx.Done():
 			return
-		case env, ok := <-queue:
+		case e, ok := <-queue:
 			if !ok {
 				// Queue torn down with its peer's disconnect: exit
 				// promptly; Stop's wg.Wait is watching.
@@ -366,7 +405,9 @@ func (n *Node) outboundWorker(ctx context.Context, peerID string, queue chan gos
 			if peer == nil {
 				continue
 			}
-			n.sendEnvelope(peer, env)
+			// The wire form rides the queue from the fan-out that produced
+			// it; a nil wire (compat enqueue) marshals once, here.
+			n.sendEnvelopeWire(peer, e.env, e.wire)
 		}
 	}
 }
