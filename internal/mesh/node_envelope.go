@@ -222,6 +222,8 @@ func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 		n.sendEnvelope(peer, gossip.Envelope{Type: gossip.TypePong, RequestID: env.RequestID})
 	case gossip.TypePong:
 		n.handlePong(peer, env)
+	case gossip.TypeDirect:
+		n.handleDirectPacket(peer, env)
 	}
 }
 

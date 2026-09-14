@@ -569,6 +569,11 @@ func (n *Node) overlayPublishLoop(ctx context.Context) {
 			if store != nil {
 				store.Expire(time.Now())
 			}
+			// Safety net for peers that connected after the last OnStream/
+			// SetStreamUnreliable registration: their inbound streams would
+			// sit undrained until someone re-registered. One sweep per
+			// republish tick (30s) closes that window.
+			n.ensureStreamReaders()
 		}
 	}
 }
@@ -760,4 +765,69 @@ func (n *Node) findChannelPeers(ctx context.Context, channel string) map[string]
 		out[peerID] = hint
 	}
 	return out
+}
+
+// Route describes how to reach a peer right now: a direct session, or a
+// relay hop. ResolveRoute returns one of these.
+type Route struct {
+	// Relayed is true when the peer is only reachable through the relay
+	// named in ViaPeerID.
+	Relayed bool
+	// ViaPeerID is the relay peer that carries traffic for the target.
+	// Empty for direct routes.
+	ViaPeerID string
+}
+
+// ResolveRoute finds a usable path to peerID and returns it. A peer with a
+// live session (direct or relayed) resolves immediately. An unknown peer
+// triggers an overlay lookup: the provider records carry reachability hints
+// (public/ported address, relay name), and one that dials successfully makes
+// the peer known — either as a direct connection or, when the hint itself is
+// a relay, as a relayed peerConn. Callers that get a relayed Route use
+// RelaySendTo via ViaPeerID; direct routes can use the stream API.
+func (n *Node) ResolveRoute(peerID string) (Route, error) {
+	if peer := n.peerByID(peerID); peer != nil {
+		if !peer.relayed {
+			return Route{}, nil
+		}
+		return Route{Relayed: true, ViaPeerID: peer.viaPeerID}, nil
+	}
+	// Unknown peer: search the overlay for its provider record and dial
+	// via its hint. IDFromHex demands the canonical 64-hex form.
+	id, ok := overlay.IDFromHex(peerID)
+	if !ok {
+		return Route{}, errors.New("mesh: peer id must be 64 hex characters")
+	}
+	// The loop is wg-tracked and context-bounded; on an unstarted node
+	// rootCtx is nil and WithTimeout would panic — fall back to Background.
+	ctx := n.rootCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	lookupCtx, cancel := withTimeout(ctx, 20*time.Second)
+	defer cancel()
+	providers, _ := n.overlayLookup(lookupCtx, id, true)
+	for _, p := range providers {
+		if len(p.Peer) != overlay.IDLen {
+			continue
+		}
+		if hex.EncodeToString(p.Peer) != peerID {
+			continue
+		}
+		hint, ok := decodeHint(p.Payload)
+		if !ok {
+			continue
+		}
+		if n.reachPeerViaHint(lookupCtx, peerID, hint) {
+			break
+		}
+	}
+	peer := n.peerByID(peerID)
+	if peer == nil {
+		return Route{}, errors.New("mesh: no route to peer")
+	}
+	if peer.relayed {
+		return Route{Relayed: true, ViaPeerID: peer.viaPeerID}, nil
+	}
+	return Route{}, nil
 }

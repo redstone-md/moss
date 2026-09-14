@@ -130,6 +130,23 @@ func deriveRoomKey(meshID string, psk []byte) []byte {
 	return key
 }
 
+// deriveTransportPSK returns the 32-byte transport handshake PSK derived
+// from the room PSK, bound to the networkID so two networks reusing one PSK
+// still gate on different transport keys. A node without a room PSK (or one
+// whose key derivation fails) gets nil — no transport gate, the handshake
+// behaves exactly as before. See SecurityConfig.PSKHandshake for why this is
+// opt-in rather than unconditional.
+func deriveTransportPSK(psk []byte, networkID string) []byte {
+	if len(psk) == 0 || networkID == "" {
+		return nil
+	}
+	key, err := mcrypto.Expand(psk, []byte(networkID), "moss-transport-psk-v1")
+	if err != nil {
+		return nil
+	}
+	return key
+}
+
 // joinRoom derives and stores a room's key. Joining a room already held is a
 // no-op rather than an error: the caller re-joining on reconnect must not have
 // to track what it already did.

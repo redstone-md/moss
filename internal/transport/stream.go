@@ -33,6 +33,18 @@ var streamWriteTimeout = 5 * time.Second
 // 256 KiB is ~2.2x that: the 4 GiB lie dies, no honest frame ever does.
 const maxDataFrameSize = 256 * 1024
 
+// streamOversizeFramesOut counts outbound frames rejected at the same cap —
+// a local caller handing WritePacket more than one honest frame can carry.
+// Symmetric with streamOversizeFrames so the two directions of the same lie
+// are separately observable in telemetry.
+var streamOversizeFramesOut atomic.Uint64
+
+// StreamOversizeFramesOut reports how many outbound stream frames exceeded
+// the data-frame cap and were rejected before reaching the wire.
+func StreamOversizeFramesOut() uint64 {
+	return streamOversizeFramesOut.Load()
+}
+
 // streamOversizeFrames counts inbound stream frames rejected at the cap — a
 // peer claiming a length no honest sender can produce. Process-wide and
 // monotonic, matching StreamDrops: the fact that matters is that header lies
@@ -83,6 +95,17 @@ func newStreamCarrier(conn net.Conn) carrier {
 func (c *streamCarrier) WritePacket(packet []byte) error {
 	if c.writeErr != nil {
 		return c.writeErr
+	}
+	if len(packet) > maxDataFrameSize {
+		// The inbound twin of this gate tears the session down — a peer that
+		// lied about its frame length has proven the stream untrustworthy.
+		// Here the frame never reaches the wire: the far end's cap would kill
+		// it on arrival (and the session with it), so rejecting locally
+		// returns the error to the local caller while the session stays up
+		// for every legal frame after it. writeErr is deliberately left
+		// unset: it is terminal for the session, and an oversize send is not.
+		streamOversizeFramesOut.Add(1)
+		return fmt.Errorf("transport: outbound frame of %d bytes exceeds the %d-byte data-frame cap", len(packet), maxDataFrameSize)
 	}
 	if err := c.conn.SetWriteDeadline(time.Now().Add(streamWriteTimeout)); err != nil {
 		c.writeErr = err

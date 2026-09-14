@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"math"
 	"os"
 	"os/exec"
@@ -70,6 +71,132 @@ func TestBuildSharedLibrary(t *testing.T) {
 	if !strings.Contains(string(headerBytes), "Moss_Connect") {
 		t.Fatal("generated header is missing Moss_Connect")
 	}
+	for _, symbol := range []string{
+		"Moss_JoinRoom",
+		"Moss_LeaveRoom",
+		"Moss_SubscribeRoom",
+		"Moss_UnsubscribeRoom",
+		"Moss_PublishRoom",
+		"Moss_ConnectToPeer",
+		"Moss_RelaySendTo",
+		"Moss_SetRelayCallback",
+		"Moss_SendToPeer",
+		"Moss_PeerRTT",
+		"Moss_SetPacketCallback",
+		"Moss_OpenStream",
+		"Moss_SendStream",
+		"Moss_OnStream",
+		"Moss_Version",
+		"Moss_LastError",
+		"Moss_EnableAxiom",
+		"Moss_LogEvent",
+		"Moss_GetNetworkStats",
+	} {
+		if !strings.Contains(string(headerBytes), symbol) {
+			t.Fatalf("generated header is missing %s", symbol)
+		}
+	}
+}
+
+// TestNewFFIWrappersValidateInputsInSharedLibrary builds the shared library
+// and drives the wave-2 FFI wrappers through a C harness, covering their
+// synchronous validation paths without network I/O: nil/invalid arguments
+// must fail fast with the coarse codes hosts switch on, before anything
+// touches the mesh runtime.
+func TestNewFFIWrappersValidateInputsInSharedLibrary(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping shared library ffi smoke in short mode")
+	}
+	if _, err := exec.LookPath("gcc"); err != nil {
+		t.Skip("gcc is required for ffi smoke harness")
+	}
+	tmp := t.TempDir()
+	libName, exeName := sharedLibrarySpec()
+	libPath := filepath.Join(tmp, libName)
+	headerPath := libPath[:len(libPath)-len(filepath.Ext(libPath))] + ".h"
+	harnessPath := filepath.Join(tmp, "ffi_wave2_validation.c")
+	exePath := filepath.Join(tmp, exeName)
+
+	buildSharedLibraryForBench(t, libPath, tmp)
+	if err := os.WriteFile(harnessPath, []byte(ffiWave2ValidationSource(filepath.Base(headerPath))), 0o644); err != nil {
+		t.Fatalf("write ffi wave2 validation harness failed: %v", err)
+	}
+	buildFFIHarness(t, tmp, exePath, harnessPath)
+	cmd := exec.Command(exePath)
+	cmd.Dir = tmp
+	cmd.Env = ffiHarnessEnv(tmp)
+	if outputBytes, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("ffi wave2 validation harness failed: %v\n%s", err, string(outputBytes))
+	}
+}
+
+func ffiWave2ValidationSource(headerName string) string {
+	return fmt.Sprintf(`#include <stdint.h>
+#include <stdio.h>
+
+#include "%s"
+
+static int failures = 0;
+
+static void expect_code(const char* what, int32_t got, int32_t want) {
+  if (got != want) {
+    fprintf(stderr, "FAIL %%s: expected %%d, got %%d\n", what, (int)want, (int)got);
+    failures++;
+  }
+}
+
+int main(void) {
+  const char* config = "{\"trackers\":[]}";
+  MossHandle handle = Moss_Init("ffi-wave2-validation", NULL, config);
+  if (handle <= 0) {
+    fprintf(stderr, "Moss_Init failed: %%lld\n", (long long)handle);
+    return 2;
+  }
+  expect_code("Moss_Start", Moss_Start(handle), 0);
+
+  uint8_t one_byte = 'x';
+
+  /* Moss_SendToPeer: validation fires before any network work. */
+  expect_code("SendToPeer nil peer", Moss_SendToPeer(handle, NULL, &one_byte, 1), -8);
+  expect_code("SendToPeer negative length", Moss_SendToPeer(handle, "peer", &one_byte, -1), -8);
+  int32_t oversize = (int32_t)65536 + 1; /* > default max_message_size_bytes */
+  expect_code("SendToPeer oversize", Moss_SendToPeer(handle, "peer", &one_byte, oversize), -5);
+
+  /* Moss_PeerRTT: unknown/unprobed peers report 0. */
+  if (Moss_PeerRTT(handle, NULL) != 0) {
+    fprintf(stderr, "FAIL PeerRTT nil peer: expected 0\n");
+    failures++;
+  }
+  if (Moss_PeerRTT(handle, "unknown-peer") != 0) {
+    fprintf(stderr, "FAIL PeerRTT unknown peer: expected 0\n");
+    failures++;
+  }
+
+  /* Moss_SetPacketCallback: NULL clears and returns OK. */
+  expect_code("SetPacketCallback nil", Moss_SetPacketCallback(handle, NULL), 0);
+
+  /* Streams: 0 (raw) and 1 (gossip) are reserved by the transport. */
+  expect_code("OpenStream nil peer", Moss_OpenStream(handle, NULL, 300), -8);
+  expect_code("OpenStream stream 0", Moss_OpenStream(handle, "peer", 0), -8);
+  expect_code("OpenStream gossip stream", Moss_OpenStream(handle, "peer", 1), -8);
+  expect_code("SendStream nil peer", Moss_SendStream(handle, NULL, 300, NULL, 0), -8);
+  expect_code("SendStream stream 0", Moss_SendStream(handle, "peer", 0, NULL, 0), -8);
+  expect_code("SendStream oversize", Moss_SendStream(handle, "peer", 300, &one_byte, (uint32_t)oversize), -5);
+  expect_code("OnStream stream 0", Moss_OnStream(handle, 0, NULL), -8);
+  expect_code("OnStream nil handler", Moss_OnStream(handle, 300, NULL), -8);
+
+  if (failures > 0) {
+    fprintf(stderr, "%%d wave2 validation checks failed\n", failures);
+    return 1;
+  }
+  if (Moss_Stop(handle) != 0) {
+    fprintf(stderr, "Moss_Stop failed\n");
+    return 3;
+  }
+  printf("wave2 validation ok\n");
+  return 0;
+}
+`, headerName)
 }
 
 func TestMossPublishRejectsOversizedLengthInSharedLibrary(t *testing.T) {

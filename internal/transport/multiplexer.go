@@ -81,6 +81,26 @@ type Stream struct {
 	mu     sync.RWMutex
 	closed chan struct{}
 	once   sync.Once
+
+	// latestWins switches the overflow policy: instead of dropping the
+	// incoming payload (drop-newest), evict the oldest buffered one so a
+	// slow reader always sees the most recent data. Unreliable streams —
+	// game ticks, presence — want this; everything else keeps the default.
+	latestWins atomic.Bool
+	// drops counts payloads this stream lost to a full buffer, either
+	// policy. Monotonic; read via Drops for per-stream loss accounting.
+	drops atomic.Uint64
+}
+
+// SetLatestWins marks the stream as latest-wins: when the buffer is full the
+// oldest payload is evicted instead of the new one being refused.
+func (s *Stream) SetLatestWins() {
+	s.latestWins.Store(true)
+}
+
+// Drops reports how many payloads this stream has lost to a full buffer.
+func (s *Stream) Drops() uint64 {
+	return s.drops.Load()
 }
 
 func newMultiplexer(session *Session, buffers BufferConfig) *Multiplexer {
@@ -228,6 +248,22 @@ func (s *Stream) enqueue(payload []byte) {
 	select {
 	case s.buffer <- payload:
 	default:
+		if s.latestWins.Load() {
+			// Latest-wins: evict the oldest buffered payload so the new
+			// one fits. A concurrent reader draining the buffer between
+			// the two selects can starve the re-insert — then the new
+			// payload is lost after all, which is acceptable for a
+			// stream that asked to be treated as unreliable.
+			select {
+			case <-s.buffer:
+			default:
+			}
+			select {
+			case s.buffer <- payload:
+			default:
+			}
+		}
+		s.drops.Add(1)
 		streamDrops.Add(1)
 		if s.id == DefaultStream {
 			streamDropsDefault.Add(1)

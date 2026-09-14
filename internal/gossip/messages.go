@@ -25,6 +25,16 @@ const (
 	TypePong                 EnvelopeType = "pong"
 	TypeStatDelta            EnvelopeType = "stat_delta"
 
+	// TypeDirect carries raw directed data between two peers: one payload,
+	// one recipient, no room. SendToPeer sends it down a direct Noise
+	// session — already encrypted on the wire — so the payload rides the
+	// envelope as-is, deliberately outside the room AEAD that seals
+	// publishes. A relayed delivery never carries this type on the outer
+	// wire: the relay path seals the same bytes inside a TypeRelayData
+	// payload instead. Size-gated at Security.MaxMessageSizeBytes on both
+	// the send and the receive side.
+	TypeDirect EnvelopeType = "direct"
+
 	// Overlay (Kademlia) lookup. Only publicly reachable nodes answer these —
 	// a query cannot be delivered to a node nobody can dial — but any node,
 	// NAT'd included, may ask, since outbound dials always work.

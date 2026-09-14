@@ -11,6 +11,18 @@ import (
 
 const relayMigrationGracePeriod = time.Second
 
+// maxRelayPayloadBytes bounds one relayed application payload. The wire form
+// is a JSON envelope whose Payload field carries the base64 of the bytes
+// (x4/3), plus envelope fields and the relay AEAD's expansion, all sealed
+// inside a stream frame that the 256 KiB data-frame cap (transport
+// maxDataFrameSize) hard-rejects on arrival — killing the middle→target
+// session. 190 KiB leaves ~2.4 KiB of slack inside that cap after the
+// worst-case envelope overhead, so a payload at the limit rides the wire
+// while anything larger is refused by the sender, not by the receiver's
+// teardown. The gate lives in RelaySend (origin) and handleRelayData
+// (middle), never in the target's delivery path.
+const maxRelayPayloadBytes = 190 * 1024
+
 func (n *Node) handleRelayRequest(peer *peerConn, env gossip.Envelope) {
 	if env.RelaySession == "" || env.RelaySource == "" || env.RelayTarget == "" {
 		return
@@ -151,6 +163,17 @@ func (n *Node) handleRelayData(peer *peerConn, env gossip.Envelope) {
 		return
 	}
 	if targetPeer == nil {
+		return
+	}
+	// Oversize payloads are dropped here rather than forwarded: the forward
+	// would land on the target's transport frame cap, and the teardown that
+	// cap triggers kills the middle→target session we would have just used.
+	// A misbehaving origin gets its traffic counted and dropped at the first
+	// hop, never a session belonging to us. The origin's own RelaySend gate is
+	// the primary bound (see maxRelayPayloadBytes); this guards against a
+	// hostile or version-skewed origin.
+	if len(env.Payload) > maxRelayPayloadBytes {
+		n.countInbound("__relay_oversize__")
 		return
 	}
 	bucket := n.relayBucketFor(peer.id)
