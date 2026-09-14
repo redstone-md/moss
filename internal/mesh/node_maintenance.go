@@ -91,8 +91,9 @@ func (n *Node) removePeer(peerID string, session *transport.Session) {
 	n.mu.Unlock()
 	// The peer is gone: its outbound queue (~110KB at depth) must go with
 	// it, or every peer this node EVER connected leaks until Stop. Under
-	// NO n.mu here — teardownOutboundQueue takes outboundMu, and nothing
-	// nests the two the other way around.
+	// NO n.mu here: the single lock order is n.mu → outboundMu
+	// (sendOrEnqueueWire enqueues while holding n.mu.RLock), so
+	// teardownOutboundQueue's outboundMu must never be taken under n.mu.
 	n.teardownOutboundQueue(peerID)
 	n.pubsub.RemovePeer(peerID)
 	for _, relayedPeerID := range removedRelayed {
