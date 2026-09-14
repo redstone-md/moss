@@ -7,10 +7,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	mcrypto "github.com/redstone-md/moss/internal/crypto"
 	"github.com/redstone-md/moss/internal/mesh"
+	"github.com/redstone-md/moss/internal/transport"
 )
+
+// buildVersion is stamped at link time by the release workflow
+// (-ldflags "-X moss.buildVersion=v0.8.17"). A library built any other way
+// reports "dev" rather than claiming a version it cannot know.
+var buildVersion = "dev"
 
 // Node wraps the internal mesh node, providing the public API for MossSpore
 // and other consumers of the Moss library.
@@ -271,6 +278,27 @@ func (n *Node) PublicKey() [32]byte {
 	return n.inner.PublicKey()
 }
 
+// SetScoringCallback lets the host override per-peer score decisions used by
+// mesh candidate selection, pruning, opportunistic grafting, and relay
+// candidate ranking. Pass nil to restore the built-in scoring. The callback
+// receives the peer's 32-byte public key and the computed base score; the
+// return value replaces it.
+func (n *Node) SetScoringCallback(cb func(peerID [32]byte, baseScore float64) float64) {
+	n.inner.SetScoringCallback(cb)
+}
+
+// NetworkStatsJSON returns a JSON document with the current privacy-
+// preserving decentralized network telemetry snapshot, or "{}" when
+// telemetry is disabled (Telemetry.Enabled is false, the default). See
+// Moss_GetNetworkStats / docs/API.md for the field-by-field semantics.
+func (n *Node) NetworkStatsJSON() string {
+	stats := n.inner.StatsJSON()
+	if stats == "" {
+		return "{}"
+	}
+	return stats
+}
+
 // NoiseStaticPublicHex returns the node's X25519 Noise static public key as
 // hex. A relay operator publishes this so Veil dialers can pin it in their
 // veil relay config (`pubkey`); it is the key the masked-tunnel auth secret
@@ -314,6 +342,65 @@ func (n *Node) SetRelayCallback(cb func(senderID [32]byte, data []byte)) {
 	n.inner.SetRelayCallback(cb)
 }
 
+// SetPacketCallback registers the unified sink for directed payloads: it
+// receives both direct packets (SendToPeer over a direct session) and raw
+// relayed payloads. The legacy relay callback still fires for relayed
+// payloads while no packet callback is registered. Pass nil to clear.
+func (n *Node) SetPacketCallback(cb func(senderID [32]byte, data []byte)) {
+	n.inner.SetPacketCallback(cb)
+}
+
+// SendToPeer delivers a directed payload to one peer: over the direct
+// session when one exists, else via the relay path. The receiver sees it
+// through the packet callback. Size gate matches Publish's; callers wanting
+// larger directed transfers must chunk.
+func (n *Node) SendToPeer(peerID string, payload []byte, timeout time.Duration) error {
+	if err := n.inner.SendToPeer(peerID, payload, timeout); err != nil {
+		return fmt.Errorf("moss: send to peer %s failed: %w", peerID, err)
+	}
+	return nil
+}
+
+// RelaySendTo delivers a payload to a specific peer via the relay path
+// regardless of a direct session. The receiver sees it through the relay
+// callback (or the packet callback, which also catches relayed payloads).
+func (n *Node) RelaySendTo(targetPeerID string, data []byte, timeout time.Duration) error {
+	if err := n.inner.RelaySendTo(targetPeerID, data, timeout); err != nil {
+		return fmt.Errorf("moss: relay send to %s failed: %w", targetPeerID, err)
+	}
+	return nil
+}
+
+// PeerRTT returns the last measured round-trip time to a connected peer —
+// the same value peer selection sorts by. Zero when the peer is unknown or
+// has not yet been probed.
+func (n *Node) PeerRTT(peerID string) time.Duration {
+	return n.inner.PeerRTT(peerID)
+}
+
+// OpenStream makes sure a reader goroutine drains streamID on the direct
+// session with peerID, dialing the peer first if unknown. Stream 0 (raw)
+// and 1 (gossip) are reserved by the transport and rejected with
+// MOSS_ERR_CONFIG_INVALID. The streamID parameter is a plain uint32 —
+// the transport-internal StreamID type stays inside moss.
+func (n *Node) OpenStream(peerID string, streamID uint32) int32 {
+	return n.inner.OpenStream(peerID, transport.StreamID(streamID))
+}
+
+// SendStream writes data to streamID on the direct session with peerID.
+// Fast path: no discovery, no dialing. Use OpenStream first for peers you
+// have not connected to yet.
+func (n *Node) SendStream(peerID string, streamID uint32, data []byte) int32 {
+	return n.inner.SendStream(peerID, transport.StreamID(streamID), data)
+}
+
+// OnStream registers the handler for streamID. Register before sending
+// traffic: the handler is snapshotted when a reader spawns. The runtime has
+// no unregister — re-register with a no-op handler instead.
+func (n *Node) OnStream(streamID uint32, handler func(peerID string, data []byte)) int32 {
+	return n.inner.OnStream(transport.StreamID(streamID), handler)
+}
+
 // Connect dials a specific peer address and adds it to the mesh.
 func (n *Node) Connect(addr string) error {
 	code := n.inner.Connect(addr)
@@ -341,6 +428,85 @@ func (n *Node) Publish(channel string, data []byte) error {
 	return nil
 }
 
+// JoinRoom makes the node a member of a second mesh (room) identified by
+// meshID, encrypted with psk (optional). Rooms let one node serve several
+// conversations without running one node per conversation.
+func (n *Node) JoinRoom(meshID string, psk []byte) error {
+	code := n.inner.JoinRoom(meshID, psk)
+	if code != mesh.MOSS_OK {
+		return errorCode(code)
+	}
+	return nil
+}
+
+// LeaveRoom drops membership in a room joined with JoinRoom. The node's own
+// mesh (the meshID passed to NewNode) cannot be left this way.
+func (n *Node) LeaveRoom(meshID string) error {
+	code := n.inner.LeaveRoom(meshID)
+	if code != mesh.MOSS_OK {
+		return errorCode(code)
+	}
+	return nil
+}
+
+// SubscribeRoom subscribes the node to a channel inside a room joined with
+// JoinRoom.
+func (n *Node) SubscribeRoom(meshID, channel string) error {
+	code := n.inner.SubscribeRoom(meshID, channel)
+	if code != mesh.MOSS_OK {
+		return errorCode(code)
+	}
+	return nil
+}
+
+// UnsubscribeRoom leaves a channel inside a room joined with JoinRoom.
+func (n *Node) UnsubscribeRoom(meshID, channel string) error {
+	code := n.inner.UnsubscribeRoom(meshID, channel)
+	if code != mesh.MOSS_OK {
+		return errorCode(code)
+	}
+	return nil
+}
+
+// PublishRoom publishes a binary payload to a channel inside a room joined
+// with JoinRoom. The message callback fires with the room's channel name;
+// rooms carried in the envelope are matched on the receiving side, so a
+// message published to a channel the node is subscribed to in that room
+// arrives regardless of which mesh it was published on.
+func (n *Node) PublishRoom(meshID, channel string, data []byte) error {
+	code := n.inner.PublishRoom(meshID, channel, data)
+	if code != mesh.MOSS_OK {
+		return errorCode(code)
+	}
+	return nil
+}
+
+// ConnectToPeer attempts an explicit direct connection to a peer by its
+// public key (hex), using known addresses for it (discovered via gossip,
+// trackers, or explicit Connect). Returns an error when the peer is unknown
+// or the connection fails.
+func (n *Node) ConnectToPeer(peerID string) error {
+	code := n.inner.ConnectToPeer(peerID)
+	if code != mesh.MOSS_OK {
+		return errorCode(code)
+	}
+	return nil
+}
+
+// LastError returns the human-readable reason for the most recent failed
+// operation on this node — chiefly the OS bind error behind
+// MOSS_ERR_LISTEN_FAILED (-13). Empty when nothing failed. Call before Stop.
+func (n *Node) LastError() string {
+	return n.inner.LastError()
+}
+
+// Version returns the version this library was built at. Release builds
+// carry their tag via -ldflags "-X moss.buildVersion=..."; anything else
+// reports "dev".
+func Version() string {
+	return buildVersion
+}
+
 // loadOrCreateIdentity loads an identity from a file, or generates a new
 // one and persists it. If identityPath is empty, a fresh identity is
 // generated but not persisted (volatile).
@@ -358,9 +524,6 @@ func loadOrCreateIdentity(identityPath string) (*mcrypto.Identity, error) {
 	ident, err := mcrypto.NewIdentity()
 	if err != nil {
 		return nil, err
-	}
-	if err := os.MkdirAll(filepath.Dir(identityPath), 0700); err != nil {
-		return ident, nil // non-fatal: use identity without persistence
 	}
 	if err := os.WriteFile(identityPath, ident.Encode(), 0600); err != nil {
 		return ident, nil // non-fatal
@@ -386,6 +549,14 @@ func errorCode(code int32) error {
 		return errors.New("moss: invalid configuration")
 	case mesh.MOSS_ERR_CONNECT_FAILED:
 		return errors.New("moss: connection failed")
+	case mesh.MOSS_ERR_RELAY_FAILED:
+		return errors.New("moss: relay/direct send failed")
+	case mesh.MOSS_ERR_INTERNAL:
+		return errors.New("moss: internal error")
+	case mesh.MOSS_ERR_LISTEN_FAILED:
+		return errors.New("moss: listen/bind failed")
+	case mesh.MOSS_ERR_NOT_IN_ROOM:
+		return errors.New("moss: not in room")
 	default:
 		return fmt.Errorf("moss: error code %d", code)
 	}

@@ -87,10 +87,11 @@ func (n *Node) handleInbound(ctx context.Context, conn net.Conn) {
 	hsCtx, cancel := withTimeout(ctx, n.config.HandshakeTimeout())
 	defer cancel()
 	session, err := transport.ServerHandshake(hsCtx, conn, transport.HandshakeConfig{
-		// Substrate handshake binds to networkID (shared), not the room. PSK is
-		// a room-content concern, never a substrate gate.
+		// Substrate handshake binds to networkID (shared), not the room. PSK
+		// gates it only when the node opted in via Security.PSKHandshake;
+		// nil (the default) keeps the handshake open to the substrate.
 		MeshID:   n.networkID,
-		PSK:      nil,
+		PSK:      n.transportHandshakePSK(),
 		Identity: n.identity,
 		Buffers:  transportBufferConfig(n.config.Transport),
 	})
@@ -351,7 +352,7 @@ func (n *Node) connectPeerOnce(ctx context.Context, addr string, remoteStatic []
 	defer cancel()
 	session, err := transport.ClientHandshake(hsCtx, conn, transport.HandshakeConfig{
 		MeshID:       n.networkID,
-		PSK:          nil,
+		PSK:          n.transportHandshakePSK(),
 		Identity:     n.identity,
 		RemoteStatic: remoteStatic,
 		Buffers:      transportBufferConfig(n.config.Transport),
@@ -396,6 +397,19 @@ func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origi
 		n.mu.Unlock()
 		_ = session.Close()
 		return
+	}
+	// Allowlist gate: an EMPTY-but-created map is strict (reject-all) while
+	// nil keeps the default open substrate. Checked after the self-loop guard
+	// and before any state is created, so a rejected peer leaves no trace
+	// beyond the counted drop. Existing connections are unaffected — the
+	// gate runs at registration time only.
+	if n.allowlist != nil {
+		if _, ok := n.allowlist[peerID]; !ok {
+			n.countInbound("__allowlist_rejected__")
+			n.mu.Unlock()
+			_ = session.Close()
+			return
+		}
 	}
 	if existing, exists := n.peers[peerID]; exists {
 		if existing.relayed {

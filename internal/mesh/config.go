@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/redstone-md/moss/internal/inspect"
+	"github.com/redstone-md/moss/internal/transport"
 )
 
 // DefaultMeshID is the standard public room. In the two-layer model a mesh id
@@ -217,6 +218,14 @@ type SecurityConfig struct {
 	MaxMessageSizeBytes int `json:"max_message_size_bytes"`
 	RateLimitBurst      int `json:"rate_limit_burst"`
 	RateLimitSustained  int `json:"rate_limit_sustained"`
+	// PSKHandshake lifts the room/network PSK from a room-content key into
+	// a transport handshake gate (Noise PSK, see transport.HandshakeConfig).
+	// Opt-in and deliberately NOT defaulted: the substrate handshake is bound
+	// to the shared networkID so nodes of different rooms discover and relay
+	// for each other, and gating it on a room PSK would cut every node out
+	// of that shared substrate. Nodes that opt in must agree on the PSK (and
+	// the knob); a mismatch fails the handshake at the first message.
+	PSKHandshake bool `json:"psk_handshake"`
 }
 
 func DefaultConfig() Config {
@@ -391,4 +400,71 @@ func (c *Config) HandshakeTimeout() time.Duration {
 
 func (c *Config) AnnounceInterval() time.Duration {
 	return time.Duration(c.AnnounceIntervalSec) * time.Second
+}
+
+// Game stream IDs reserved by the game preset. The transport reserves 0
+// (raw) and DefaultStream (gossip); the agreed allocation hands 100/101 to
+// the game profile, 200+ to the TUN intranet and 300+ to the messenger.
+// The constants live next to the profile so the reserved ranges are visible
+// wherever the preset is configured.
+const (
+	// GameStateStreamID carries entity state ticks: the latest sample
+	// wins, so ApplyGameProfile marks this stream latest-wins.
+	GameStateStreamID transport.StreamID = 100
+	// GameInputStreamID carries player input: every sample matters, so it
+	// keeps the reliable default stream policy.
+	GameInputStreamID transport.StreamID = 101
+)
+
+// GameProfile presets a node for real-time game traffic. It is standalone
+// configuration — the transport applies it through ApplyGameProfile, it is
+// not a Config field, and nothing is stored on the node: re-apply after
+// building a new profile. V1 is transport-only: no delta compression, no
+// client-side prediction, no authority arbitration.
+type GameProfile struct {
+	// TickRateHz is the application's simulation rate in hertz. The
+	// transport does not tick; this documents the cadence the state
+	// stream is fed at and is validated, nothing more.
+	TickRateHz int `json:"tick_rate_hz"`
+	// StateStreamID is the stream entity state is published on. It must
+	// be non-zero, not the default stream, and distinct from
+	// InputStreamID; ApplyGameProfile marks it latest-wins.
+	StateStreamID transport.StreamID `json:"state_stream_id"`
+	// InputStreamID is the stream player input is sent on. It must be
+	// non-zero, not the default stream, and distinct from StateStreamID;
+	// it keeps the reliable default policy — losing an input sample is
+	// worse than delaying it.
+	InputStreamID transport.StreamID `json:"input_stream_id"`
+	// SnapshotMaxBytes is the application's budget for one snapshot
+	// message sent over the directed path (SendSnapshot). 0 means the
+	// transport-wide Security.MaxMessageSizeBytes applies unchanged; a
+	// positive value must at least fit the fixed snapshot header
+	// (SnapshotWireSize). The transport always enforces
+	// MaxMessageSizeBytes; this field bounds the extension space after
+	// the fixed header.
+	SnapshotMaxBytes int `json:"snapshot_max_bytes"`
+	// InterestRadius is the area-of-interest radius in world units. 0
+	// means no AOI filtering: every subscriber sees every state update.
+	// The transport has no radius concept — see AreaChannelPrefix for
+	// how the radius becomes channels.
+	InterestRadius float64 `json:"interest_radius"`
+	// AreaChannelPrefix is prepended to an area ID to form the pub/sub
+	// channel AOI members subscribe to: "<prefix><areaID>". Empty is only
+	// valid when InterestRadius is 0 (no AOI means no area channels).
+	AreaChannelPrefix string `json:"area_channel_prefix"`
+}
+
+// DefaultGameProfile returns the standard game preset: 20 Hz ticks, entity
+// state on stream 100 (latest-wins), player input on 101 (reliable),
+// snapshot messages bounded by 2 KiB — headroom for the fixed 37-byte
+// header plus extension bytes — and area channels named "room:area:<id>".
+func DefaultGameProfile() GameProfile {
+	return GameProfile{
+		TickRateHz:        20,
+		StateStreamID:     GameStateStreamID,
+		InputStreamID:     GameInputStreamID,
+		SnapshotMaxBytes:  2048,
+		InterestRadius:    0,
+		AreaChannelPrefix: "room:area:",
+	}
 }

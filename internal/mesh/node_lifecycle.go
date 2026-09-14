@@ -37,6 +37,19 @@ func transportBufferConfig(cfg TransportConfig) transport.BufferConfig {
 	}
 }
 
+// transportHandshakePSK is the PSK every direct handshake of this node
+// carries, or nil when transport PSK gating is off. The knob and the room PSK
+// must both be present: SecurityConfig.PSKHandshake is the opt-in and n.psk
+// is the key material. The derivation is bound to the networkID (never the
+// room) so the gate stays a property of the substrate, matching the shared
+// discovery model the handshake is part of.
+func (n *Node) transportHandshakePSK() []byte {
+	if !n.config.Security.PSKHandshake {
+		return nil
+	}
+	return deriveTransportPSK(n.psk, n.networkID)
+}
+
 func NewNode(meshID string, psk []byte, cfg Config) (*Node, error) {
 	return NewNodeWithIdentity(meshID, psk, cfg, nil)
 }
@@ -147,7 +160,7 @@ func (n *Node) Start() int32 {
 	}
 	ln, udpListener, port, err := transport.ListenPair(n.config.ListenPort, transport.HandshakeConfig{
 		MeshID:      n.networkID,
-		PSK:         nil,
+		PSK:         n.transportHandshakePSK(),
 		Identity:    n.identity,
 		Buffers:     transportBufferConfig(n.config.Transport),
 		BindIfIndex: n.bindIfIndex,
@@ -364,6 +377,52 @@ func (n *Node) LeaveRoom(meshID string) int32 {
 		return MOSS_ERR_NOT_IN_ROOM
 	}
 	return MOSS_OK
+}
+
+// AllowPeer admits peerID into the direct-connection allowlist. The FIRST
+// call creates the list and switches the node from the open-substrate default
+// (accept everyone) to strict (accept only listed peers), so configure the
+// full set before or alongside Start rather than after the mesh has formed.
+// Idempotent; valid on a stopped node so it can precede Start.
+func (n *Node) AllowPeer(peerID string) int32 {
+	if len(peerID) != 64 || peerID == n.localPeerID() {
+		return MOSS_ERR_CONFIG_INVALID
+	}
+	n.mu.Lock()
+	if n.allowlist == nil {
+		n.allowlist = make(map[string]struct{})
+	}
+	n.allowlist[peerID] = struct{}{}
+	n.mu.Unlock()
+	return MOSS_OK
+}
+
+// DisallowPeer removes peerID from the allowlist. Removing the LAST entry
+// does NOT re-enable open-substrate mode: an empty-but-present list rejects
+// everyone, matching the strict semantics an operator configuring an
+// allowlist has asked for. Connections already established are not kicked —
+// the gate is enforced at registration time (registerPeerFrom).
+func (n *Node) DisallowPeer(peerID string) int32 {
+	if len(peerID) != 64 {
+		return MOSS_ERR_CONFIG_INVALID
+	}
+	n.mu.Lock()
+	delete(n.allowlist, peerID)
+	n.mu.Unlock()
+	return MOSS_OK
+}
+
+// IsPeerAllowed reports whether peerID passes the allowlist: true when no
+// allowlist exists (open substrate) or the peer is listed; false when the
+// list is strict and the peer is absent.
+func (n *Node) IsPeerAllowed(peerID string) bool {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	if n.allowlist == nil {
+		return true
+	}
+	_, ok := n.allowlist[peerID]
+	return ok
 }
 
 func (n *Node) Subscribe(channel string) int32 {

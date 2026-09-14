@@ -36,6 +36,30 @@ MossKeyStoreSaveCallback = ctypes.CFUNCTYPE(
     ctypes.POINTER(ctypes.c_uint8),
     ctypes.c_uint32,
 )
+MossRelayCallback = ctypes.CFUNCTYPE(
+    None,
+    ctypes.POINTER(ctypes.c_uint8),
+    ctypes.POINTER(ctypes.c_uint8),
+    ctypes.c_uint32,
+)
+MossPacketCallback = ctypes.CFUNCTYPE(
+    None,
+    ctypes.POINTER(ctypes.c_uint8),
+    ctypes.POINTER(ctypes.c_uint8),
+    ctypes.c_uint32,
+)
+
+MossScoringCallback = ctypes.CFUNCTYPE(
+    ctypes.c_double,
+    ctypes.POINTER(ctypes.c_uint8),
+    ctypes.c_double,
+)
+MossStreamCallback = ctypes.CFUNCTYPE(
+    None,
+    ctypes.c_char_p,
+    ctypes.POINTER(ctypes.c_uint8),
+    ctypes.c_uint32,
+)
 
 
 ERROR_NAMES = {
@@ -50,6 +74,10 @@ ERROR_NAMES = {
     -8: "invalid config",
     -9: "out of memory",
     -10: "connect failed",
+    -11: "relay failed",
+    -12: "internal",
+    -13: "listen failed",
+    -14: "not in room",
 }
 
 EVENT_NAMES = {
@@ -60,6 +88,10 @@ EVENT_NAMES = {
     5: "tracker_announce",
     6: "tracker_failure",
     7: "relay_migrated",
+    8: "message_delivered",
+    9: "message_read",
+    10: "typing",
+    11: "presence",
 }
 
 _INIT_LOCK = threading.Lock()
@@ -134,7 +166,94 @@ Moss_GetPublicKey = bind_function(
 Moss_GetNATType = bind_function("Moss_GetNATType", [ctypes.c_int64], ctypes.c_void_p)
 Moss_Free = bind_function("Moss_Free", [ctypes.c_void_p], None)
 
+# --- rooms: one node serving several conversations ---
+Moss_JoinRoom = bind_function(
+    "Moss_JoinRoom",
+    [ctypes.c_int64, ctypes.c_char_p, ctypes.POINTER(ctypes.c_uint8), ctypes.c_uint32],
+    ctypes.c_int32,
+)
+Moss_LeaveRoom = bind_function("Moss_LeaveRoom", [ctypes.c_int64, ctypes.c_char_p], ctypes.c_int32)
+Moss_SubscribeRoom = bind_function(
+    "Moss_SubscribeRoom",
+    [ctypes.c_int64, ctypes.c_char_p, ctypes.c_char_p],
+    ctypes.c_int32,
+)
+Moss_UnsubscribeRoom = bind_function(
+    "Moss_UnsubscribeRoom",
+    [ctypes.c_int64, ctypes.c_char_p, ctypes.c_char_p],
+    ctypes.c_int32,
+)
+Moss_PublishRoom = bind_function(
+    "Moss_PublishRoom",
+    [ctypes.c_int64, ctypes.c_char_p, ctypes.c_char_p, ctypes.POINTER(ctypes.c_uint8), ctypes.c_uint32],
+    ctypes.c_int32,
+)
 
+# --- directed payloads (DMs): direct session first, relay fallback ---
+Moss_ConnectToPeer = bind_function("Moss_ConnectToPeer", [ctypes.c_int64, ctypes.c_char_p], ctypes.c_int32)
+Moss_RelaySendTo = bind_function(
+    "Moss_RelaySendTo",
+    [ctypes.c_int64, ctypes.c_char_p, ctypes.POINTER(ctypes.c_uint8), ctypes.c_int32],
+    ctypes.c_int32,
+)
+Moss_SendToPeer = bind_function(
+    "Moss_SendToPeer",
+    [ctypes.c_int64, ctypes.c_char_p, ctypes.POINTER(ctypes.c_uint8), ctypes.c_int32],
+    ctypes.c_int32,
+)
+Moss_PeerRTT = bind_function("Moss_PeerRTT", [ctypes.c_int64, ctypes.c_char_p], ctypes.c_int64)
+Moss_SetRelayCallback = bind_function(
+    "Moss_SetRelayCallback",
+    [ctypes.c_int64, MossRelayCallback],
+    ctypes.c_int32,
+)
+Moss_SetPacketCallback = bind_function(
+    "Moss_SetPacketCallback",
+    [ctypes.c_int64, MossPacketCallback],
+    ctypes.c_int32,
+)
+
+# --- streams: ordered per-stream channels over a direct session ---
+# Stream ID convention: 0-1 reserved by transport, 100-101 game profile
+# defaults, 300 = messenger app-data default (overridable per-app).
+Moss_OpenStream = bind_function(
+    "Moss_OpenStream",
+    [ctypes.c_int64, ctypes.c_char_p, ctypes.c_uint32],
+    ctypes.c_int32,
+)
+Moss_SendStream = bind_function(
+    "Moss_SendStream",
+    [ctypes.c_int64, ctypes.c_char_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint8), ctypes.c_uint32],
+    ctypes.c_int32,
+)
+Moss_OnStream = bind_function(
+    "Moss_OnStream",
+    [ctypes.c_int64, ctypes.c_uint32, MossStreamCallback],
+    ctypes.c_int32,
+)
+
+# --- diagnostics / metadata ---
+Moss_Version = bind_function("Moss_Version", [], ctypes.c_void_p)
+Moss_LastError = bind_function("Moss_LastError", [ctypes.c_int64], ctypes.c_void_p)
+Moss_GetNetworkStats = bind_function("Moss_GetNetworkStats", [ctypes.c_int64], ctypes.c_void_p)
+
+
+
+Moss_SetScoringCallback = bind_function(
+    "Moss_SetScoringCallback",
+    [ctypes.c_int64, MossScoringCallback],
+    ctypes.c_int32,
+)
+Moss_EnableAxiom = bind_function(
+    "Moss_EnableAxiom",
+    [ctypes.c_int64, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p],
+    ctypes.c_int32,
+)
+Moss_LogEvent = bind_function(
+    "Moss_LogEvent",
+    [ctypes.c_int64, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p],
+    ctypes.c_int32,
+)
 
 class MossError(RuntimeError):
     pass

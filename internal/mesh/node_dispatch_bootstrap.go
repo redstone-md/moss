@@ -40,9 +40,23 @@ func (n *Node) dispatchLoop(ctx context.Context) {
 			case dispatchRelay:
 				n.mu.RLock()
 				cb := n.relayCB
+				packet := n.packetCB
 				n.mu.RUnlock()
-				if cb != nil {
+				// The unified packet sink takes precedence when
+				// registered: an application that asked for one
+				// directed-payload stream must not ALSO see the same
+				// bytes twice through the legacy relay callback.
+				if packet != nil {
+					packet(v.sender, v.data)
+				} else if cb != nil {
 					cb(v.sender, v.data)
+				}
+			case dispatchPacket:
+				n.mu.RLock()
+				packet := n.packetCB
+				n.mu.RUnlock()
+				if packet != nil {
+					packet(v.sender, v.data)
 				}
 			}
 		}

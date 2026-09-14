@@ -101,6 +101,192 @@ The current runtime uses:
 - `IHAVE` / `IWANT` replay for recent messages
 - `IDONTWANT` suppression for larger payloads
 
+
+## Rooms
+
+Rooms let ONE node serve several conversations. A host that gave each
+conversation its own room had to start a node per conversation, and node
+identity is per process, so every one of those nodes presented the same peer
+id from a different port — remote peers keep one session per identity and
+closed the rest on arrival.
+
+The room-less calls (`Moss_Subscribe`, `Moss_Publish`, ...) are unchanged and
+still mean "this node's own room", so a host that does not care never sees
+any of this. Callers older than this build simply lack the symbols; treat a
+missing one as "this moss cannot share a node".
+
+### `Moss_JoinRoom`
+
+```c
+int32_t Moss_JoinRoom(MossHandle handle, const char* mesh_id,
+                      const uint8_t* psk, uint32_t psk_len);
+```
+
+Adds a room this node can subscribe and publish in, alongside the one it was
+constructed with. Idempotent. `psk` may be `NULL` for an open room.
+
+### `Moss_LeaveRoom`
+
+```c
+int32_t Moss_LeaveRoom(MossHandle handle, const char* mesh_id);
+```
+
+Drops a joined room's key. Subscriptions made in it stop resolving, so
+anything still arriving for it is dropped rather than delivered. Callers
+should `Moss_UnsubscribeRoom` first if they want the mesh told; this only
+forgets the key. The node's own room cannot be left this way.
+
+### `Moss_SubscribeRoom`
+
+```c
+int32_t Moss_SubscribeRoom(MossHandle handle, const char* mesh_id,
+                           const char* channel);
+```
+
+Subscribes the node to a channel inside a joined room.
+
+### `Moss_UnsubscribeRoom`
+
+```c
+int32_t Moss_UnsubscribeRoom(MossHandle handle, const char* mesh_id,
+                             const char* channel);
+```
+
+Leaves a channel inside a joined room.
+
+### `Moss_PublishRoom`
+
+```c
+int32_t Moss_PublishRoom(MossHandle handle, const char* mesh_id,
+                         const char* channel,
+                         const uint8_t* data, uint32_t len);
+```
+
+Publishes a binary payload to a channel inside a joined room. The message
+callback fires with the room's channel name; rooms carried in the envelope
+are matched on the receiving side, so a message published to a channel the
+node is subscribed to in that room arrives regardless of which mesh carried
+it.
+
+## Directed Payloads (DMs)
+
+### `Moss_ConnectToPeer`
+
+```c
+int32_t Moss_ConnectToPeer(MossHandle handle, const char* peer_id);
+```
+
+Attempts an explicit direct connection to a peer by its hex-encoded public
+key (64 chars), using known addresses for it — worth calling when reaching
+one specific peer matters (e.g. a DM counterpart on the room-blind
+substrate, which organic discovery would only ever reach by chance). The
+registration survives disconnects and is dropped on `Moss_Stop`.
+
+### `Moss_SendToPeer`
+
+```c
+int32_t Moss_SendToPeer(MossHandle handle, const char* peer_id,
+                        const uint8_t* data, int32_t len);
+```
+
+Delivers a directed payload to one peer: over the direct session when one
+exists, else via the relay path with the same 5-second budget as
+`Moss_RelaySendTo`. The receiver sees it through the packet callback
+(`Moss_SetPacketCallback`), which also catches relayed payloads. The size
+gate matches `Moss_Publish`'s (`security.max_message_size_bytes`); callers
+wanting larger directed transfers must chunk.
+
+Returns `MOSS_ERR_RELAY_FAILED` (-11) when neither path could deliver.
+
+### `Moss_RelaySendTo`
+
+```c
+int32_t Moss_RelaySendTo(MossHandle handle, const char* peer_id,
+                         const uint8_t* data, int32_t len);
+```
+
+Delivers a payload to a specific peer via the relay path regardless of a
+direct session. The receiver sees it through the relay callback — or the
+packet callback, which also catches relayed payloads. Same 5-second relay
+budget and size gate as `Moss_SendToPeer`.
+
+### `Moss_PeerRTT`
+
+```c
+int64_t Moss_PeerRTT(MossHandle handle, const char* peer_id);
+```
+
+Returns the last measured round-trip time to a peer in **nanoseconds** —
+the same value the maintenance loop's ping/pong probes refresh and that peer
+selection sorts by. Returns `0` when the peer is unknown or has not yet
+been probed (zero RTT is also a legitimate sub-microsecond measurement on
+loopback, but in practice treat 0 as "no sample yet"). Blocked (never
+trampolines through a callback), so it is safe to call from a scoring
+callback.
+
+## Streams
+
+Streams are ordered per-stream channels multiplexed over a **direct**
+session. The transport reserves stream 0 (raw) and stream 1 (gossip) and
+rejects them with `MOSS_ERR_CONFIG_INVALID`.
+
+Stream ID convention across moss-based applications: 0–1 transport,
+100–101 game-profile defaults, 200+ TUN, 300+ messenger app-data (e.g. 300
+as the messenger default). All defaults are overridable per-app; only 0–1
+are truly off-limits.
+
+Relayed peers have no streams — relay data flows through dispatch, not the
+transport mux — so every stream call on a relayed peer returns
+`MOSS_ERR_RELAY_FAILED` (-11). Use `Moss_ConnectToPeer` first when a
+direct session is what you want.
+
+### `Moss_OpenStream`
+
+```c
+int32_t Moss_OpenStream(MossHandle handle, const char* peer_id,
+                        uint32_t stream_id);
+```
+
+Makes sure a reader goroutine drains `stream_id` on the direct session with
+`peer_id`, dialing the peer first if unknown. Returns `MOSS_ERR_NO_PEERS`
+(-6) when the peer cannot be resolved.
+
+### `Moss_SendStream`
+
+```c
+int32_t Moss_SendStream(MossHandle handle, const char* peer_id,
+                        uint32_t stream_id,
+                        const uint8_t* data, uint32_t len);
+```
+
+Writes data to `stream_id` on the direct session with `peer_id`, spawning
+the inbound reader for that stream if needed. Fast path: no overlay lookup,
+no dialing — a hot loop must not stall on discovery. Use `Moss_OpenStream`
+first for peers you have not connected to yet. Size gate matches
+`Moss_Publish`'s.
+
+### `Moss_OnStream`
+
+```c
+int32_t Moss_OnStream(MossHandle handle, uint32_t stream_id,
+                      MossStreamCallback cb);
+```
+
+Registers the handler for `stream_id`; packets arrive on it from the moment
+of registration (per-peer readers spawn as peers connect or send). Register
+before sending traffic: the handler is snapshotted when a reader spawns, so
+re-registering replaces the entry for future readers but does not
+retro-fit already-running ones. Passing `NULL` returns
+`MOSS_ERR_CONFIG_INVALID`; the runtime has no unregister — re-register with
+a no-op handler instead of expecting to clear it.
+
+Callback signature:
+
+```c
+typedef void (*MossStreamCallback)(const char* peer_id,
+                                   const uint8_t* data,
+                                   uint32_t len);
+```
 ## Callbacks
 
 ### `Moss_SetCallback`
@@ -144,6 +330,54 @@ Current event IDs:
 - `5` `EventTrackerAnnounce`
 - `6` `EventTrackerFailure`
 - `7` `EventRelayMigrated`
+- `8` `EventMessageDelivered` — *reserved, not dispatched by this runtime*
+- `9` `EventMessageRead` — *reserved, not dispatched by this runtime*
+- `10` `EventTyping` — *reserved, not dispatched by this runtime*
+- `11` `EventPresence` — *reserved, not dispatched by this runtime*
+
+Events 8–11 are pinned for the messenger layer but the mesh runtime never
+dispatches them yet. Connection-level presence is already covered by
+`EventPeerJoined`/`EventPeerLeft`; read receipts and typing indicators are
+application-level concepts that live on top of directed payloads — hosts
+that want them carry their own protocol inside the payload and emit their
+own events. The values are pinned so every host agrees on the numbering
+when that layer exists. Treat an unknown positive ID as a future event.
+
+### `Moss_SetRelayCallback`
+
+```c
+int32_t Moss_SetRelayCallback(MossHandle handle, MossRelayCallback cb);
+```
+
+Registers the legacy callback for relayed data packets. Pass `NULL` to
+clear.
+
+Callback signature:
+
+```c
+typedef void (*MossRelayCallback)(const uint8_t* sender_id,
+                                  const uint8_t* data,
+                                  uint32_t length);
+```
+
+### `Moss_SetPacketCallback`
+
+```c
+int32_t Moss_SetPacketCallback(MossHandle handle, MossPacketCallback cb);
+```
+
+Registers the unified sink for directed payloads: it receives BOTH direct
+packets (`Moss_SendToPeer` over a direct session) and raw relayed payloads.
+The legacy relay callback still fires for relayed payloads while no packet
+callback is registered. Pass `NULL` to clear.
+
+Callback signature:
+
+```c
+typedef void (*MossPacketCallback)(const uint8_t* sender_id,
+                                   const uint8_t* data,
+                                   uint32_t length);
+```
 
 ### `Moss_SetScoringCallback`
 
@@ -275,6 +509,62 @@ suppressed until at least `k_anon` nodes contribute (`k_anon_ok`).
 - `nat_histogram` / `degree_histogram`: aggregate distributions for topology
   *simulation* — no real edges or addresses are ever published.
 
+### `Moss_Version`
+
+```c
+const char* Moss_Version(void);
+```
+
+Returns the version this library was built at, as a newly allocated string
+(free with `Moss_Free`). Release builds carry their tag; anything else
+reports `"dev"`.
+
+A host loads moss by path at runtime, so nothing stops an old library from
+sitting next to a new host — and the symptoms of that are transport bugs
+the host cannot diagnose. This lets a host say which library it got instead
+of guessing. Callers must treat a missing symbol as "older than v0.8.17".
+
+### `Moss_LastError`
+
+```c
+const char* Moss_LastError(MossHandle handle);
+```
+
+Returns the human-readable reason for the most recent operation on this
+handle that failed with a coarse error code — chiefly the underlying OS
+bind error behind `MOSS_ERR_LISTEN_FAILED` (-13), which is what surfaces
+when Go's netpoller cannot bind sockets under an older Wine/Proton.
+Returns an allocated C string (free with `Moss_Free`), or `NULL` if the
+handle is unknown. Call it before `Moss_Stop`, which removes the handle
+from the registry.
+
+### `Moss_EnableAxiom`
+
+```c
+int32_t Moss_EnableAxiom(MossHandle handle, const char* token,
+                         const char* dataset, const char* endpoint,
+                         const char* service);
+```
+
+Turns on the opt-in Axiom error/log sink. `token` is an ingest-only Axiom
+token, `dataset` the target dataset, `endpoint` the Axiom base URL (`""` →
+cloud default `https://api.axiom.co`), and `service` a host identifier
+(e.g. `"gse-4576510"`, `"mosh-0.6.5"`). A node ships nothing until this is
+called.
+
+### `Moss_LogEvent`
+
+```c
+int32_t Moss_LogEvent(MossHandle handle, const char* level,
+                      const char* kind, const char* message,
+                      const char* fields_json);
+```
+
+Ships a structured event through the Axiom sink (no-op when disabled).
+`level` is `"error"`|`"warn"`|`"info"`, `kind` a short slug, `message` free
+text, and `fields_json` an optional JSON object of extra context (`""` for
+none).
+
 ### `Moss_Free`
 
 ```c
@@ -287,6 +577,8 @@ Frees memory returned by:
 - `Moss_GetPublicKey`
 - `Moss_GetNATType`
 - `Moss_GetNetworkStats`
+- `Moss_Version`
+- `Moss_LastError`
 
 ## Error Codes
 
@@ -303,6 +595,13 @@ Current error codes:
 - `-8` `MOSS_ERR_CONFIG_INVALID`
 - `-9` `MOSS_ERR_OUT_OF_MEMORY`
 - `-10` `MOSS_ERR_CONNECT_FAILED`
+- `-11` `MOSS_ERR_RELAY_FAILED` — a directed send could not deliver over
+  either path (direct or relay), or a stream call hit a relayed peer
+  (streams need a direct session)
+- `-12` `MOSS_ERR_INTERNAL` — an internal precondition failed
+- `-13` `MOSS_ERR_LISTEN_FAILED` — the OS refused the bind; call
+  `Moss_LastError` for the underlying reason
+- `-14` `MOSS_ERR_NOT_IN_ROOM` — the room was never joined on this handle
 
 ## Config JSON
 

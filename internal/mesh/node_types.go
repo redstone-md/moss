@@ -93,10 +93,15 @@ type Node struct {
 	cancel          context.CancelFunc
 	wg              sync.WaitGroup
 	peers           map[string]*peerConn
-	suppress        map[string]map[string]time.Time
-	relayRoutes     map[string]relayRoute
-	relayLocals     map[string]relayLocalSession
-	relayBuckets    map[string]*nat.TokenBucket
+	// allowlist gates direct peer registration (registerPeerFrom). nil (the
+	// default) keeps the open-substrate model; a CREATED map is strict — an
+	// empty-but-present allowlist rejects everyone. Guarded by mu; populated
+	// by AllowPeer/DisallowPeer before or during Start.
+	allowlist    map[string]struct{}
+	suppress     map[string]map[string]time.Time
+	relayRoutes  map[string]relayRoute
+	relayLocals  map[string]relayLocalSession
+	relayBuckets map[string]*nat.TokenBucket
 
 	// overlayMu guards the overlay's own bookkeeping. It is deliberately NOT
 	// n.mu: routing discovery traffic through the node's central RWMutex meant
@@ -152,7 +157,24 @@ type Node struct {
 	messageCB        MessageCallback
 	eventCB          EventCallback
 	relayCB          RelayCallback
-	dispatchCh       chan any
+	// packetCB is the unified handler for directed payloads: a TypeDirect
+	// packet off a direct session and a raw relayed payload both land here
+	// when set, so an application sees one "message from peer X" stream
+	// regardless of which transport carried it. relayCB remains the
+	// legacy relay-only sink, used when packetCB is nil.
+	packetCB   PacketCallback
+	dispatchCh chan any
+
+	// Stream-layer state for the mesh API on top of the transport mux:
+	// per-stream handlers and unreliable-stream flags are keyed by
+	// StreamID; streamReaders tracks which (peer, stream) pairs already
+	// have a reader goroutine so re-registering a handler or resending
+	// never double-spawns. streamMu guards all three maps; it is never
+	// held while taking n.mu (snapshot peers first, then lock streamMu).
+	streamMu         sync.RWMutex
+	streamHandlers   map[transport.StreamID]StreamHandler
+	streamReaders    map[string]map[transport.StreamID]bool
+	streamUnreliable map[transport.StreamID]bool
 
 	// Outbound per-peer envelope queues, drained by dedicated workers so no
 	// send path blocks the caller (GossipFixer's non-blocking announce work).
@@ -273,6 +295,20 @@ type dispatchRelay struct {
 	data   []byte
 }
 
+// dispatchPacket is one directed payload on its way to the application's
+// packet callback: the sender's public key and the raw bytes. It is the
+// unified shape for direct (TypeDirect) and relayed directed delivery.
+type dispatchPacket struct {
+	sender [32]byte
+	data   []byte
+}
+
+// PacketCallback is the unified application sink for directed payloads —
+// raw bytes from one named peer, delivered whether the packet arrived over
+// a direct session or through a relay. Functionally the RelayCallback
+// shape; kept as its own type so the two registrations stay distinct.
+type PacketCallback func(senderID [32]byte, data []byte)
+
 type relayRoute struct {
 	initiator string
 	target    string
@@ -386,6 +422,204 @@ const (
 // takes effect immediately through peer.meshBlocked (set by node_envelope.go);
 // this only spaces our own retries between those signals.
 const meshGraftRetryInterval = 30 * time.Second
+
+// StreamHandler receives one payload delivered on a non-default stream from
+// peerID. data is a stream buffer element — it may be retained past the call.
+type StreamHandler func(peerID string, data []byte)
+
+// OnStream registers handler for streamID and starts reader goroutines for
+// every connected peer that already has the stream open on the far end. The
+// handler is snapshotted when a reader spawns, so register before sending
+// traffic; re-registering replaces the map entry but does not retro-fit
+// already-running readers. streamID 0 (raw) and DefaultStream (gossip) are
+// reserved by the transport and rejected.
+func (n *Node) OnStream(streamID transport.StreamID, handler StreamHandler) int32 {
+	if streamID == 0 || streamID == transport.DefaultStream {
+		return MOSS_ERR_CONFIG_INVALID
+	}
+	if handler == nil {
+		return MOSS_ERR_CONFIG_INVALID
+	}
+	n.streamMu.Lock()
+	if n.streamHandlers == nil {
+		n.streamHandlers = make(map[transport.StreamID]StreamHandler)
+		n.streamReaders = make(map[string]map[transport.StreamID]bool)
+		n.streamUnreliable = make(map[transport.StreamID]bool)
+	}
+	n.streamHandlers[streamID] = handler
+	n.streamMu.Unlock()
+	n.ensureStreamReaders()
+	return MOSS_OK
+}
+
+// SetStreamUnreliable marks streamID as latest-wins on every current and
+// future stream: a full buffer evicts the oldest payload instead of dropping
+// the new one. Use for game ticks, presence, anything where stale data is
+// worth less than missing one sample. The flag applies node-wide — all peers
+// share it — because the transport buffer is per (peer-session, stream).
+func (n *Node) SetStreamUnreliable(streamID transport.StreamID) int32 {
+	if streamID == 0 || streamID == transport.DefaultStream {
+		return MOSS_ERR_CONFIG_INVALID
+	}
+	n.streamMu.Lock()
+	if n.streamUnreliable == nil {
+		n.streamUnreliable = make(map[transport.StreamID]bool)
+	}
+	n.streamUnreliable[streamID] = true
+	n.streamMu.Unlock()
+	for _, peer := range n.snapshotPeersWithSession() {
+		if stream := peer.session.Stream(streamID); stream != nil {
+			stream.SetLatestWins()
+		}
+	}
+	n.ensureStreamReaders()
+	return MOSS_OK
+}
+
+// snapshotPeersWithSession returns direct peers with a live session under
+// n.mu, without holding it: callers iterate the slice after release, and
+// streamMu must never be held while n.mu is taken (see Node.streamMu).
+func (n *Node) snapshotPeersWithSession() []*peerConn {
+	n.mu.RLock()
+	peers := make([]*peerConn, 0, len(n.peers))
+	for _, peer := range n.peers {
+		if peer.session != nil {
+			peers = append(peers, peer)
+		}
+	}
+	n.mu.RUnlock()
+	return peers
+}
+
+// ensureStreamReaders makes sure every (peer, handled stream) pair has a
+// reader goroutine. Called from OnStream, SetStreamUnreliable, SendStream,
+// and the overlay republish tick, so peers that connect later than the last
+// registration still get their inbound streams drained.
+func (n *Node) ensureStreamReaders() {
+	peers := n.snapshotPeersWithSession()
+	n.streamMu.RLock()
+	streamIDs := make([]transport.StreamID, 0, len(n.streamHandlers))
+	for streamID := range n.streamHandlers {
+		streamIDs = append(streamIDs, streamID)
+	}
+	n.streamMu.RUnlock()
+	for _, peer := range peers {
+		for _, streamID := range streamIDs {
+			n.ensureStreamReader(peer, streamID)
+		}
+	}
+}
+
+// ensureStreamReader spawns a reader for (peer, streamID) if none exists
+// yet and a handler is registered for the stream. The handler is captured
+// at spawn time; a stream with no handler is left unread — the far end's
+// buffer fills and its per-stream drops counter (see Stream.Drops) records
+// the loss, which is the correct signal that nobody is listening here.
+func (n *Node) ensureStreamReader(peer *peerConn, streamID transport.StreamID) {
+	n.streamMu.Lock()
+	if n.streamReaders == nil {
+		n.streamReaders = make(map[string]map[transport.StreamID]bool)
+	}
+	handler, ok := n.streamHandlers[streamID]
+	if !ok || handler == nil {
+		n.streamMu.Unlock()
+		return
+	}
+	if n.streamReaders[peer.id] == nil {
+		n.streamReaders[peer.id] = make(map[transport.StreamID]bool)
+	}
+	if n.streamReaders[peer.id][streamID] {
+		n.streamMu.Unlock()
+		return
+	}
+	n.streamReaders[peer.id][streamID] = true
+	unreliable := n.streamUnreliable[streamID]
+	n.streamMu.Unlock()
+
+	stream := peer.session.Stream(streamID)
+	if stream == nil {
+		// Mux closed: peer is going away; forget the marker so a future
+		// call retries if the session is replaced.
+		n.streamMu.Lock()
+		delete(n.streamReaders[peer.id], streamID)
+		n.streamMu.Unlock()
+		return
+	}
+	if unreliable {
+		stream.SetLatestWins()
+	}
+	n.wg.Add(1)
+	go func() {
+		defer n.wg.Done()
+		defer func() {
+			n.streamMu.Lock()
+			delete(n.streamReaders[peer.id], streamID)
+			n.streamMu.Unlock()
+		}()
+		for {
+			data, err := stream.ReadPacket()
+			if err != nil {
+				return
+			}
+			handler(peer.id, data)
+		}
+	}()
+}
+
+// OpenStream resolves peerID (overlay lookup + hint dial if unknown — see
+// ResolveRoute) and makes sure a reader is draining streamID for that peer.
+// Only direct sessions carry streams; a relayed peer returns
+// MOSS_ERR_RELAY_FAILED because relay data flows through dispatchCh, not
+// the transport mux.
+func (n *Node) OpenStream(peerID string, streamID transport.StreamID) int32 {
+	if streamID == 0 || streamID == transport.DefaultStream {
+		return MOSS_ERR_CONFIG_INVALID
+	}
+	peer := n.peerByID(peerID)
+	if peer == nil {
+		if _, err := n.ResolveRoute(peerID); err != nil {
+			return MOSS_ERR_NO_PEERS
+		}
+		peer = n.peerByID(peerID)
+		if peer == nil {
+			return MOSS_ERR_NO_PEERS
+		}
+	}
+	if peer.relayed {
+		return MOSS_ERR_RELAY_FAILED
+	}
+	n.ensureStreamReader(peer, streamID)
+	return MOSS_OK
+}
+
+// SendStream writes data to streamID on the direct session with peerID,
+// spawning the inbound reader for that stream if needed. It is a fast path:
+// no overlay lookup, no dialing — a game tick must not stall on discovery.
+// Use OpenStream (or ResolveRoute) first for peers you have not connected
+// to yet.
+func (n *Node) SendStream(peerID string, streamID transport.StreamID, data []byte) int32 {
+	if streamID == 0 || streamID == transport.DefaultStream {
+		return MOSS_ERR_CONFIG_INVALID
+	}
+	if len(data) > n.config.Security.MaxMessageSizeBytes {
+		return MOSS_ERR_MESSAGE_TOO_LARGE
+	}
+	peer := n.peerByID(peerID)
+	if peer == nil {
+		return MOSS_ERR_NO_PEERS
+	}
+	if peer.relayed {
+		return MOSS_ERR_RELAY_FAILED
+	}
+	if peer.session == nil {
+		return MOSS_ERR_NO_PEERS
+	}
+	if err := peer.session.Stream(streamID).WritePacket(data); err != nil {
+		return MOSS_ERR_CONNECT_FAILED
+	}
+	n.ensureStreamReader(peer, streamID)
+	return MOSS_OK
+}
 
 // Maintenance phase intervals, counted in ~1s conn-ticks (connMaintenanceEvery).
 // The conn-maintenance block used to run every pass as one unit; these spread

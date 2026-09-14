@@ -62,6 +62,28 @@ static inline void callRelayCallback(MossRelayCallback cb,
                                      uint32_t length) {
     cb(sender_id, data, length);
 }
+
+typedef void (*MossPacketCallback)(const uint8_t* sender_id,
+                                   const uint8_t* data,
+                                   uint32_t length);
+
+static inline void callPacketCallback(MossPacketCallback cb,
+                                     const uint8_t* sender_id,
+                                     const uint8_t* data,
+                                     uint32_t length) {
+    cb(sender_id, data, length);
+}
+
+typedef void (*MossStreamCallback)(const char* peer_id,
+                                   const uint8_t* data,
+                                   uint32_t length);
+
+static inline void callStreamCallback(MossStreamCallback cb,
+                                     const char* peer_id,
+                                     const uint8_t* data,
+                                     uint32_t length) {
+    cb(peer_id, data, length);
+}
 */
 import "C"
 
@@ -76,6 +98,7 @@ import (
 
 	mcrypto "github.com/redstone-md/moss/internal/crypto"
 	"github.com/redstone-md/moss/internal/mesh"
+	"github.com/redstone-md/moss/internal/transport"
 )
 
 const relayFFITimeout = 5 * time.Second
@@ -399,6 +422,138 @@ func Moss_SetRelayCallback(handle C.MossHandle, cb C.MossRelayCallback) C.int32_
 		C.free(dataC)
 	})
 	return C.int32_t(mesh.MOSS_OK)
+}
+
+// Moss_SendToPeer delivers a directed payload to one peer: over the direct
+// session when one exists, else via the relay path with the same 5-second
+// budget as Moss_RelaySendTo. The receiver sees it through the packet
+// callback (Moss_SetPacketCallback), which also catches relayed payloads.
+// Size gate matches Publish's (Security.MaxMessageSizeBytes).
+//
+//export Moss_SendToPeer
+func Moss_SendToPeer(handle C.MossHandle, targetPeerID *C.char, data *C.uint8_t, length C.int32_t) C.int32_t {
+	node, code := getNode(int64(handle))
+	if code != mesh.MOSS_OK {
+		return C.int32_t(code)
+	}
+	if targetPeerID == nil || length < 0 {
+		return C.int32_t(mesh.MOSS_ERR_CONFIG_INVALID)
+	}
+	if code := validatePublishPayloadPointer(unsafe.Pointer(data), uint32(length), node.MaxMessageSizeBytes()); code != mesh.MOSS_OK {
+		return C.int32_t(code)
+	}
+	payload := bytesFromPointer(data, int(length))
+	if err := node.SendToPeer(C.GoString(targetPeerID), payload, relayFFITimeout); err != nil {
+		return C.int32_t(mesh.MOSS_ERR_RELAY_FAILED)
+	}
+	return C.int32_t(mesh.MOSS_OK)
+}
+
+// Moss_PeerRTT returns the last measured round-trip time to a peer in
+// nanoseconds — the same value peer selection sorts by. Zero when the peer
+// is unknown or not yet probed.
+//
+//export Moss_PeerRTT
+func Moss_PeerRTT(handle C.MossHandle, peerID *C.char) C.int64_t {
+	node, code := getNode(int64(handle))
+	if code != mesh.MOSS_OK {
+		return 0
+	}
+	if peerID == nil {
+		return 0
+	}
+	return C.int64_t(node.PeerRTT(C.GoString(peerID)).Nanoseconds())
+}
+
+// Moss_SetPacketCallback registers the unified sink for directed payloads:
+// it receives both direct packets (Moss_SendToPeer over a direct session)
+// and raw relayed payloads. The legacy relay callback (Moss_SetRelayCallback)
+// still fires for relayed payloads while no packet callback is registered.
+// Pass NULL to clear.
+//
+//export Moss_SetPacketCallback
+func Moss_SetPacketCallback(handle C.MossHandle, cb C.MossPacketCallback) C.int32_t {
+	node, code := getNode(int64(handle))
+	if code != mesh.MOSS_OK {
+		return C.int32_t(code)
+	}
+	if cb == nil {
+		node.SetPacketCallback(nil)
+		return C.int32_t(mesh.MOSS_OK)
+	}
+	node.SetPacketCallback(func(senderID [32]byte, data []byte) {
+		senderC := C.CBytes(senderID[:])
+		dataC := C.CBytes(data)
+		C.callPacketCallback(cb, (*C.uint8_t)(senderC), (*C.uint8_t)(dataC), C.uint32_t(len(data)))
+		C.free(senderC)
+		C.free(dataC)
+	})
+	return C.int32_t(mesh.MOSS_OK)
+}
+
+// Moss_OpenStream makes sure a reader goroutine drains streamID on the direct
+// session with peerID, dialing the peer first if unknown. Stream 0 (raw) and
+// 1 (gossip) are reserved by the transport and rejected as invalid config.
+// A relayed peer returns MOSS_ERR_RELAY_FAILED: relay data flows through
+// dispatch, not the transport mux, so streams need a direct session.
+//
+//export Moss_OpenStream
+func Moss_OpenStream(handle C.MossHandle, peerID *C.char, streamID C.uint32_t) C.int32_t {
+	node, code := getNode(int64(handle))
+	if code != mesh.MOSS_OK {
+		return C.int32_t(code)
+	}
+	if peerID == nil {
+		return C.int32_t(mesh.MOSS_ERR_CONFIG_INVALID)
+	}
+	return C.int32_t(node.OpenStream(C.GoString(peerID), transport.StreamID(streamID)))
+}
+
+// Moss_SendStream writes data to streamID on the direct session with peerID.
+// Fast path: no discovery, no dialing — a hot loop must not stall on
+// overlays. Use Moss_OpenStream first for peers you have not connected to.
+// Size gate matches Publish's.
+//
+//export Moss_SendStream
+func Moss_SendStream(handle C.MossHandle, peerID *C.char, streamID C.uint32_t, data *C.uint8_t, length C.uint32_t) C.int32_t {
+	node, code := getNode(int64(handle))
+	if code != mesh.MOSS_OK {
+		return C.int32_t(code)
+	}
+	if peerID == nil {
+		return C.int32_t(mesh.MOSS_ERR_CONFIG_INVALID)
+	}
+	if code := validatePublishPayloadPointer(unsafe.Pointer(data), uint32(uint32(length)), node.MaxMessageSizeBytes()); code != mesh.MOSS_OK {
+		return C.int32_t(code)
+	}
+	payload := bytesFromPointer(data, int(length))
+	return C.int32_t(node.SendStream(C.GoString(peerID), transport.StreamID(streamID), payload))
+}
+
+// Moss_OnStream registers the handler for streamID; packets arrive on it
+// from the moment of registration (per-peer readers spawn as peers connect
+// or send). Register before sending traffic: the handler is snapshotted
+// when a reader spawns, so re-registering replaces the entry for future
+// readers but does not retro-fit already-running ones. The runtime has no
+// unregister — re-register with a no-op handler instead of expecting to
+// clear it. Stream 0 (raw) and 1 (gossip) are reserved; NULL is rejected.
+//
+//export Moss_OnStream
+func Moss_OnStream(handle C.MossHandle, streamID C.uint32_t, cb C.MossStreamCallback) C.int32_t {
+	node, code := getNode(int64(handle))
+	if code != mesh.MOSS_OK {
+		return C.int32_t(code)
+	}
+	if cb == nil {
+		return C.int32_t(node.OnStream(transport.StreamID(streamID), nil))
+	}
+	return C.int32_t(node.OnStream(transport.StreamID(streamID), func(peerID string, data []byte) {
+		peerC := C.CString(peerID)
+		dataC := C.CBytes(data)
+		C.callStreamCallback(cb, peerC, (*C.uint8_t)(dataC), C.uint32_t(len(data)))
+		C.free(unsafe.Pointer(peerC))
+		C.free(dataC)
+	}))
 }
 
 //export Moss_SetKeyStore
