@@ -496,3 +496,153 @@ func TestAnnounceAllReturnsBeforeSlowTrackers(t *testing.T) {
 		t.Fatalf("AnnounceAll waited on slow trackers: %v", elapsed)
 	}
 }
+
+// three failing rounds put a tracker on the skip list; the healthy one keeps
+// answering and the bad one stops being dialed.
+func TestManagerAnnounceAllSkipsChronicallyFailingTracker(t *testing.T) {
+	udp := &fakeTrackerClient{
+		responses: map[string]fakeTrackerResult{
+			"udp://tracker-bad/announce":  {err: errors.New("bad failed")},
+			"udp://tracker-good/announce": {peers: []string{"198.51.100.40:4000"}},
+		},
+	}
+	m := &Manager{
+		UDP:           udp,
+		HTTP:          udp,
+		maxConcurrent: 5,
+		state:         make(map[string]trackerState),
+	}
+	trackers := []string{
+		"udp://tracker-bad/announce",
+		"udp://tracker-good/announce",
+	}
+
+	// Three rounds of failure in a row — below this the bad tracker must
+	// still be dialed every round.
+	for range 3 {
+		if _, err := m.AnnounceAll(context.Background(), trackers, AnnounceRequest{}); err != nil {
+			t.Fatalf("announce round: %v", err)
+		}
+	}
+	if calls := udp.Calls(); len(calls) != 6 {
+		t.Fatalf("expected both trackers dialed in all rounds, got %v", calls)
+	}
+
+	udp.mu.Lock()
+	udp.calls = nil
+	udp.mu.Unlock()
+
+	// Fourth round: the bad tracker is skipped, the good one still dialed.
+	peers, err := m.AnnounceAll(context.Background(), trackers, AnnounceRequest{})
+	if err != nil {
+		t.Fatalf("announce after skip: %v", err)
+	}
+	if !reflect.DeepEqual(peers, []string{"198.51.100.40:4000"}) {
+		t.Fatalf("unexpected peers %#v", peers)
+	}
+	calls := udp.Calls()
+	if len(calls) != 1 || !containsTrackerCall(calls, "udp://tracker-good/announce") {
+		t.Fatalf("expected only the healthy tracker to be dialed, got %#v", calls)
+	}
+	if m.SkippedUnhealthyTrackers() != 1 {
+		t.Fatalf("expected 1 recorded skip, got %d", m.SkippedUnhealthyTrackers())
+	}
+}
+
+// A skipped tracker whose skip window has expired gets dialed again, and a
+// success puts it back in the rotation for good.
+func TestManagerSkippedTrackerReturnsAfterWindowAndRecovers(t *testing.T) {
+	udp := &fakeTrackerClient{
+		responses: map[string]fakeTrackerResult{
+			"udp://tracker-flaky/announce": {err: errors.New("flaky failed")},
+			"udp://tracker-good/announce":  {peers: []string{"198.51.100.41:4000"}},
+		},
+	}
+	m := &Manager{
+		UDP:           udp,
+		HTTP:          udp,
+		maxConcurrent: 5,
+		state:         make(map[string]trackerState),
+	}
+	trackers := []string{
+		"udp://tracker-flaky/announce",
+		"udp://tracker-good/announce",
+	}
+
+	for range 3 {
+		if _, err := m.AnnounceAll(context.Background(), trackers, AnnounceRequest{}); err != nil {
+			t.Fatalf("announce round: %v", err)
+		}
+	}
+
+	// Expire the skip window: the flaky tracker must be re-dialed.
+	oldWindow := trackerSkipWindow
+	trackerSkipWindow = time.Nanosecond
+	defer func() { trackerSkipWindow = oldWindow }()
+	time.Sleep(2 * time.Millisecond)
+
+	// The flaky tracker is now healthy: it must stay dialed in later rounds.
+	udp.mu.Lock()
+	udp.responses["udp://tracker-flaky/announce"] = fakeTrackerResult{peers: []string{"198.51.100.42:4000"}}
+	udp.calls = nil
+	udp.mu.Unlock()
+	if _, err := m.AnnounceAll(context.Background(), trackers, AnnounceRequest{}); err != nil {
+		t.Fatalf("announce after window: %v", err)
+	}
+	calls := udp.Calls()
+	if len(calls) != 2 {
+		t.Fatalf("expected both trackers dialed after window expiry, got %#v", calls)
+	}
+
+	// Next round with no window override: recovered tracker stays dialed.
+	udp.mu.Lock()
+	udp.calls = nil
+	udp.mu.Unlock()
+	if _, err := m.AnnounceAll(context.Background(), trackers, AnnounceRequest{}); err != nil {
+		t.Fatalf("announce after recovery: %v", err)
+	}
+	if calls := udp.Calls(); len(calls) != 2 {
+		t.Fatalf("expected recovered tracker to stay in rotation, got %#v", calls)
+	}
+}
+
+// When every configured tracker is chronically failing, the skip list must
+// not collapse AnnounceAll into "no trackers configured": all trackers are
+// dialed and the real error is returned.
+func TestManagerAnnounceAllDoesNotSkipWhenAllUnhealthy(t *testing.T) {
+	udp := &fakeTrackerClient{
+		responses: map[string]fakeTrackerResult{
+			"udp://tracker-a/announce": {err: errors.New("a failed")},
+			"udp://tracker-b/announce": {err: errors.New("b failed")},
+		},
+	}
+	m := &Manager{
+		UDP:           udp,
+		HTTP:          udp,
+		maxConcurrent: 5,
+		state:         make(map[string]trackerState),
+	}
+	trackers := []string{
+		"udp://tracker-a/announce",
+		"udp://tracker-b/announce",
+	}
+	for range 3 {
+		if _, err := m.AnnounceAll(context.Background(), trackers, AnnounceRequest{}); err == nil {
+			t.Fatal("expected failing trackers to return an error")
+		}
+	}
+	udp.mu.Lock()
+	udp.calls = nil
+	udp.mu.Unlock()
+
+	_, err := m.AnnounceAll(context.Background(), trackers, AnnounceRequest{})
+	if err == nil {
+		t.Fatal("expected AnnounceAll to fail when every tracker fails")
+	}
+	if calls := udp.Calls(); len(calls) != 2 {
+		t.Fatalf("expected all trackers dialed despite skip list, got %#v", calls)
+	}
+	if m.SkippedUnhealthyTrackers() != 0 {
+		t.Fatalf("expected no counted skips in the all-unhealthy fallback, got %d", m.SkippedUnhealthyTrackers())
+	}
+}

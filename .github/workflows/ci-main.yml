@@ -64,3 +64,24 @@ jobs:
 
       - name: Run tests
         run: go test ./... -count=1 -timeout 1800s
+
+  race-fast:
+    name: Race (fast packages)
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Mirrors the CI Dev race-fast job: the fast leaf packages run under
+      # -race on every merge to main; the mesh package's -race sweep stays
+      # nightly in CI Dev because of its runtime.
+      - name: Run fast packages under the race detector
+        run: go test -race -count=1 -timeout 900s ./internal/gossip ./internal/transport ./internal/crypto ./internal/bootstrap ./internal/nat

@@ -87,3 +87,23 @@ func TestDefaultConfigDiscoveryDefaults(t *testing.T) {
 		t.Fatalf("peerCacheTTL default = %v, want 7d", c.peerCacheTTL())
 	}
 }
+
+func TestAnnounceJitterDefaults(t *testing.T) {
+	def := DefaultConfig()
+	if def.AnnounceJitter() != 12*time.Second {
+		t.Fatalf("default announce jitter = %v, want 12s", def.AnnounceJitter())
+	}
+	// A parsed config that omits the field inherits the default; a Config
+	// literal keeps its zero value so integration tests can opt out of
+	// jitter entirely (AnnounceWait treats <= 0 as "no jitter").
+	cfg, err := ParseConfig(`{"trackers":[]}`)
+	if err != nil {
+		t.Fatalf("ParseConfig failed: %v", err)
+	}
+	if cfg.AnnounceJitterSec != def.AnnounceJitterSec {
+		t.Fatalf("parsed announce jitter = %d, want %d", cfg.AnnounceJitterSec, def.AnnounceJitterSec)
+	}
+	if zero := (&Config{}).AnnounceJitter(); zero != 0 {
+		t.Fatalf("zero-value Config must report zero jitter, got %v", zero)
+	}
+}

@@ -70,6 +70,11 @@ const (
 	KindProcess   Kind = "process.sample"
 	KindInvariant Kind = "invariant.transition"
 	KindLog       Kind = "log"
+	// KindDropGrowth is the growth observer's aggregate warning: drop counters
+	// are rising faster than dropGrowthWarnPerMin. Not per-drop (that is
+	// transport.datagram_drop's job at the packet level) but per-minute delta —
+	// a queue that is backing up, not a packet that was lost.
+	KindDropGrowth Kind = "node.drop_growth"
 )
 
 // Event is one observation. Time is monotonic nanoseconds since the bus was

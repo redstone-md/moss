@@ -60,6 +60,11 @@ MossStreamCallback = ctypes.CFUNCTYPE(
     ctypes.POINTER(ctypes.c_uint8),
     ctypes.c_uint32,
 )
+MossAsyncCompletionCallback = ctypes.CFUNCTYPE(
+    None,
+    ctypes.c_uint64,
+    ctypes.c_int32,
+)
 
 
 ERROR_NAMES = {
@@ -200,6 +205,16 @@ Moss_SendToPeer = bind_function(
     "Moss_SendToPeer",
     [ctypes.c_int64, ctypes.c_char_p, ctypes.POINTER(ctypes.c_uint8), ctypes.c_int32],
     ctypes.c_int32,
+)
+Moss_SendToPeerAsync = bind_function(
+    "Moss_SendToPeerAsync",
+    [ctypes.c_int64, ctypes.c_char_p, ctypes.POINTER(ctypes.c_uint8), ctypes.c_int32, MossAsyncCompletionCallback],
+    ctypes.c_uint64,
+)
+Moss_RelaySendToAsync = bind_function(
+    "Moss_RelaySendToAsync",
+    [ctypes.c_int64, ctypes.c_char_p, ctypes.POINTER(ctypes.c_uint8), ctypes.c_int32, MossAsyncCompletionCallback],
+    ctypes.c_uint64,
 )
 Moss_PeerRTT = bind_function("Moss_PeerRTT", [ctypes.c_int64, ctypes.c_char_p], ctypes.c_int64)
 Moss_SetRelayCallback = bind_function(

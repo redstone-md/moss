@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	mcrypto "github.com/redstone-md/moss/internal/crypto"
@@ -24,6 +25,15 @@ var buildVersion = "dev"
 type Node struct {
 	inner *mesh.Node
 	cfg   Config
+
+	// streamFallbackMu guards the relayed-stream fallback state: the stream
+	// handlers that can receive over the relay path and the app packet
+	// callback the dispatch chain forwards non-wrapped payloads to. The
+	// chain itself lives in the inner node's packet-callback slot and
+	// reads this state, so all reads snapshot under this mutex.
+	streamFallbackMu  sync.Mutex
+	streamFallbackCbs map[uint32]func(peerID string, data []byte)
+	streamFallbackApp func(senderID [32]byte, data []byte)
 }
 
 // Config mirrors the subset of mesh.Config relevant for external consumers.
@@ -346,8 +356,24 @@ func (n *Node) SetRelayCallback(cb func(senderID [32]byte, data []byte)) {
 // receives both direct packets (SendToPeer over a direct session) and raw
 // relayed payloads. The legacy relay callback still fires for relayed
 // payloads while no packet callback is registered. Pass nil to clear.
+//
+// On a node that has ever registered a stream handler (OnStream), this call
+// also installs the relayed-stream dispatch chain (see OnStream); ordering
+// between the two does not matter, both entries land in the same chain. The
+// chain owns the inner node's packet-callback slot from then on, so a later
+// call with nil keeps the chain while there is anything for it to deliver.
 func (n *Node) SetPacketCallback(cb func(senderID [32]byte, data []byte)) {
-	n.inner.SetPacketCallback(cb)
+	n.streamFallbackMu.Lock()
+	n.streamFallbackApp = cb
+	needChain := cb != nil || len(n.streamFallbackCbs) > 0
+	n.streamFallbackMu.Unlock()
+	if needChain {
+		n.installStreamFallbackChain()
+		return
+	}
+	// Nothing for a chain to deliver: restore the pristine slot so the
+	// legacy relay callback path stays alive.
+	n.inner.SetPacketCallback(nil)
 }
 
 // SendToPeer delivers a directed payload to one peer: over the direct
@@ -383,22 +409,152 @@ func (n *Node) PeerRTT(peerID string) time.Duration {
 // and 1 (gossip) are reserved by the transport and rejected with
 // MOSS_ERR_CONFIG_INVALID. The streamID parameter is a plain uint32 —
 // the transport-internal StreamID type stays inside moss.
+//
+// A relayed peer also succeeds: nothing needs pre-opening there — the relay
+// session opens lazily on the first SendStream fallback — and the handler
+// registered with OnStream catches payloads from either path.
 func (n *Node) OpenStream(peerID string, streamID uint32) int32 {
-	return n.inner.OpenStream(peerID, transport.StreamID(streamID))
+	code := n.inner.OpenStream(peerID, transport.StreamID(streamID))
+	if code == mesh.MOSS_ERR_RELAY_FAILED {
+		// Relayed peer: the transport mux cannot carry the stream, but the
+		// SendStream fallback can. Registering a handler with OnStream is
+		// what makes the relayed side receive; this call has nothing else
+		// to prepare.
+		return mesh.MOSS_OK
+	}
+	return code
 }
 
 // SendStream writes data to streamID on the direct session with peerID.
 // Fast path: no discovery, no dialing. Use OpenStream first for peers you
-// have not connected to yet.
+// have not connected to yet. A relayed peer falls back to the relay path:
+// the payload is wrapped with the stream fallback header (see OnStream) and
+// delivered via RelaySendTo; the receiving side's dispatch chain unwraps it
+// and hands it to the OnStream handler for the stream. Returns
+// MOSS_ERR_RELAY_FAILED only when neither path could deliver.
 func (n *Node) SendStream(peerID string, streamID uint32, data []byte) int32 {
-	return n.inner.SendStream(peerID, transport.StreamID(streamID), data)
+	code := n.inner.SendStream(peerID, transport.StreamID(streamID), data)
+	if code != mesh.MOSS_ERR_RELAY_FAILED {
+		return code
+	}
+	// Relayed peer: wrap and ride a relayed DM. The inner size gate already
+	// applied (it returned -11 only after passing), and the wrapped size
+	// stays under the relay path's own payload cap, which is far larger than
+	// the MaxMessageSizeBytes gate.
+	wrapped := wrapStreamFallback(streamID, data)
+	if err := n.inner.RelaySendTo(peerID, wrapped, defaultStreamRelayTimeout); err != nil {
+		return mesh.MOSS_ERR_RELAY_FAILED
+	}
+	return mesh.MOSS_OK
 }
 
 // OnStream registers the handler for streamID. Register before sending
 // traffic: the handler is snapshotted when a reader spawns. The runtime has
 // no unregister — re-register with a no-op handler instead.
+//
+// The handler serves BOTH delivery paths: inner.OnStream carries the direct
+// session, and the fallback map carries the relayed path — a relayed
+// sender's payloads arrive as wrapped relayed DMs, which the dispatch chain
+// (see installStreamFallbackChain) unwraps and routes to the same handler
+// with the same shape (hex peer id string + payload bytes).
 func (n *Node) OnStream(streamID uint32, handler func(peerID string, data []byte)) int32 {
-	return n.inner.OnStream(transport.StreamID(streamID), handler)
+	code := n.inner.OnStream(transport.StreamID(streamID), handler)
+	if code != mesh.MOSS_OK {
+		return code
+	}
+
+	n.streamFallbackMu.Lock()
+	if n.streamFallbackCbs == nil {
+		n.streamFallbackCbs = make(map[uint32]func(peerID string, data []byte))
+	}
+	n.streamFallbackCbs[streamID] = handler
+	n.streamFallbackMu.Unlock()
+	n.installStreamFallbackChain()
+	return mesh.MOSS_OK
+}
+
+// ---------------------------------------------------------------------
+// Stream fallback over relayed peers (the Go-side mirror of the FFI layer).
+//
+// The transport mux only carries streams on a direct Noise session; a
+// relayed peer has no session, so inner.SendStream/OpenStream answer
+// MOSS_ERR_RELAY_FAILED for it. The fallback turns that refusal into a
+// relayed DM under a tiny additive header
+//
+//	magic (4 bytes: 'M','S','s','1') || streamID (4 bytes, big-endian) || data
+//
+// The receiving side — which sees relayed DMs through the inner node's
+// packet callback — unwraps the header and dispatches to the OnStream
+// handler for that streamID. Non-wrapped payloads forward to the
+// SetPacketCallback handler untouched, so SendToPeer semantics are
+// preserved.
+
+// streamFallbackMagic prefixes every wrapped stream payload sent over the
+// relay path. An application payload whose first four bytes collide is
+// indistinguishable and gets misdispatched; apps with binary protocols that
+// can start with these bytes should avoid sending them as plain relayed DMs
+// while stream fallback is in play.
+const streamFallbackMagic = "MSs1"
+
+// streamFallbackHeaderLen is the size of magic + big-endian streamID.
+const streamFallbackHeaderLen = 8
+
+// defaultStreamRelayTimeout is the relay-session budget the stream
+// fallback spends when it must open a relay session for a payload.
+const defaultStreamRelayTimeout = 5 * time.Second
+
+// wrapStreamFallback frames payload for the relay path.
+func wrapStreamFallback(streamID uint32, payload []byte) []byte {
+	wrapped := make([]byte, streamFallbackHeaderLen+len(payload))
+	copy(wrapped, streamFallbackMagic)
+	wrapped[4] = byte(streamID >> 24)
+	wrapped[5] = byte(streamID >> 16)
+	wrapped[6] = byte(streamID >> 8)
+	wrapped[7] = byte(streamID)
+	copy(wrapped[streamFallbackHeaderLen:], payload)
+	return wrapped
+}
+
+// unwrapStreamFallback extracts the streamID and payload from a relayed
+// DM, reporting whether the payload carries the fallback header at all.
+func unwrapStreamFallback(data []byte) (streamID uint32, payload []byte, ok bool) {
+	if len(data) < streamFallbackHeaderLen || string(data[:4]) != streamFallbackMagic {
+		return 0, nil, false
+	}
+	streamID = uint32(data[4])<<24 | uint32(data[5])<<16 | uint32(data[6])<<8 | uint32(data[7])
+	return streamID, data[streamFallbackHeaderLen:], true
+}
+
+// installStreamFallbackChain makes the fallback dispatch chain the inner
+// node's packet callback. Idempotent: the chain reads its handlers from the
+// node's fallback state, not from the closure, so later OnStream /
+// SetPacketCallback calls only mutate that state.
+//
+// The chain owns the packet-callback slot, so the legacy relay callback
+// (SetRelayCallback) stops firing once any stream handler is registered:
+// the inner dispatch prefers the packet callback. Mixing SetRelayCallback
+// with relayed streams on one node is unsupported.
+func (n *Node) installStreamFallbackChain() {
+	n.inner.SetPacketCallback(func(senderID [32]byte, data []byte) {
+		if streamID, payload, ok := unwrapStreamFallback(data); ok {
+			n.streamFallbackMu.Lock()
+			handler := n.streamFallbackCbs[streamID]
+			n.streamFallbackMu.Unlock()
+			if handler == nil {
+				// Wrapped payload for a stream nobody listens on: drop it.
+				return
+			}
+			handler(hex.EncodeToString(senderID[:]), payload)
+			return
+		}
+		n.streamFallbackMu.Lock()
+		app := n.streamFallbackApp
+		n.streamFallbackMu.Unlock()
+		if app == nil {
+			return
+		}
+		app(senderID, data)
+	})
 }
 
 // Connect dials a specific peer address and adds it to the mesh.

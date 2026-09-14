@@ -177,16 +177,23 @@ Preferred slicing inside `internal/mesh`:
 
 ## 10. Testing Strategy
 
-| Test Type | Scope | Tools |
-|-----------|-------|-------|
-| **Unit Tests** | Individual components (InfoHash generation, Noise handshake, peer scoring, token bucket) | `go test`, table-driven tests |
-| **Integration Tests** | Multi-node scenarios on localhost (mesh formation, pubsub propagation, NAT simulation) | Docker Compose with `tc` (traffic control) for latency/packet loss simulation |
-| **NAT Simulation** | Full Cone, Restricted, Port-Restricted, Symmetric NAT, CGNAT | `iptables` rules in Docker containers, `mininet` for complex topologies |
-| **FFI Tests** | C, C++, C#, Python, Rust integration | Compile-and-run test binaries, memory leak detection via Valgrind/ASan |
-| **Load Tests** | 100+ node mesh, throughput saturation, relay capacity | Kubernetes cluster with Moss containers |
-| **Fuzz Tests** | Malformed tracker responses, invalid Noise handshakes, oversized messages | `go test -fuzz`, AFL |
+| Test Type | Scope | Tools | Status |
+|-----------|-------|-------|--------|
+| **Unit Tests** | Individual components (InfoHash generation, Noise handshake, peer scoring, token bucket) | `go test`, table-driven tests | Implemented and in CI on every push |
+| **Integration Tests** | Multi-node scenarios on localhost (mesh formation, pubsub propagation, NAT simulation) | Plain `go test` multi-node topologies on loopback | Implemented and in CI on every push |
+| **NAT Simulation** | Full Cone, Restricted, Port-Restricted, Symmetric NAT, CGNAT | Simulated profiles exercised through the NAT profiler's own classification path | Implemented at the classification level; container-based `iptables` simulation is planned, not present |
+| **FFI Tests** | C, C++, C#, Python, Rust integration | Compile-and-run test binaries in `cmd/moss-ffi/main_test.go` | Implemented and in CI; memory leak detection via Valgrind/ASan is planned, not wired |
+| **Load Tests** | 25-node sustained soak, 201-node steady-state memory | `go test` loopback topologies, `-bench` heap gate (`make soak`, `make memory-gate`) | Implemented in CI; the 100-node Kubernetes fleet target is planned, not present (no k8s manifests or containers in the repository) |
+| **Race Tests** | Concurrency correctness | `go test -race` on fast packages per push; nightly `-race` sweep of `internal/mesh` | Implemented (`.github/workflows/ci-dev.yml`) |
+| **Fuzz Tests** | Malformed tracker responses, invalid Noise handshakes, oversized messages | `go test -fuzz` seeds shipped in `internal/gossip`/`internal/bootstrap` | Seed corpus shipped and run in CI; continuous fuzzing with AFL is planned, not present |
 
----
+Infrastructure-backed tooling that this document previously described as
+current — Docker Compose with `tc` latency/loss simulation, `mininet`
+topologies, Kubernetes load clusters, and AFL — is **planned**. No Docker,
+`tc`, `mininet`, or Kubernetes configuration exists in the repository today,
+and the largest automated topologies are loopback-only (25 nodes for
+behavior, 201 nodes for memory). Until that tooling lands, load claims in
+§9 beyond those scales should be read as targets, not as measured results.
 
 ## Appendix A: Error Codes
 
@@ -202,29 +209,61 @@ Preferred slicing inside `internal/mesh`:
 | -7 | `MOSS_ERR_TRACKER_FAIL` | All trackers failed to respond |
 | -8 | `MOSS_ERR_CONFIG_INVALID` | JSON config parsing error |
 | -9 | `MOSS_ERR_OUT_OF_MEMORY` | Memory allocation failed |
+| -10 | `MOSS_ERR_CONNECT_FAILED` | Connect failed (see `Moss_LastError` for the underlying OS error) |
+| -11 | `MOSS_ERR_RELAY_FAILED` | Relay send failed (no route, session open failed, or send error) |
+| -12 | `MOSS_ERR_INTERNAL` | Unexpected internal failure (e.g. room-seal crypto error) |
+| -13 | `MOSS_ERR_LISTEN_FAILED` | Could not bind the TCP/UDP listener (port in use, or Go's netpoller can't bind under Wine/Proton). `Moss_LastError` has the underlying OS error |
+| -14 | `MOSS_ERR_NOT_IN_ROOM` | The room was never joined, so this node cannot address or seal for it |
 
 ---
 
 ## Appendix B: Wire Protocol Message Types
 
-| ID | Type | Direction | Description |
-|----|------|-----------|-------------|
-| 0x01 | `MESH_ID_PROOF` | Bidirectional | Post-handshake mesh membership verification |
-| 0x02 | `MESH_ID_ACK` | Response | Mesh membership confirmed |
-| 0x03 | `MESH_ID_REJECT` | Response | Mesh membership rejected (wrong mesh/PSK) |
-| 0x10 | `GRAFT` | Bidirectional | Request to join topic mesh |
-| 0x11 | `PRUNE` | Bidirectional | Leave topic mesh, with backoff timer |
-| 0x12 | `IHAVE` | Outbound | Gossip: advertise known message IDs |
-| 0x13 | `IWANT` | Response | Request messages by ID |
-| 0x14 | `IDONTWANT` | Outbound | Suppress duplicate sends for large messages |
-| 0x15 | `PUBLISH` | Bidirectional | Publish message to topic |
-| 0x20 | `SUPERNODE_ANNOUNCE` | Outbound | Announce SuperNode status |
-| 0x21 | `SUPERNODE_REVOKE` | Outbound | Revoke SuperNode status |
-| 0x22 | `RELAY_REQUEST` | Bidirectional | Request relay session |
-| 0x23 | `RELAY_DATA` | Bidirectional | Relayed encrypted payload |
-| 0x24 | `RELAY_CLOSE` | Bidirectional | Close relay session |
-| 0x30 | `BINDING_REQUEST` | Bidirectional | STUN-like external address query |
-| 0x31 | `BINDING_RESPONSE` | Response | External IP:Port result |
-| 0x32 | `HOLE_PUNCH_COORD` | Bidirectional | Hole-punch coordination (endpoint exchange) |
-| 0x33 | `PING` | Bidirectional | Keepalive |
-| 0x34 | `PONG` | Response | Keepalive response |
+**This table previously listed numeric wire IDs (0x01…0x34) that do not
+match the implementation.** The shipped protocol does not use numeric
+message IDs: every mesh message is a JSON gossip envelope whose `type`
+field is a string constant (see `internal/gossip/messages.go`). Mesh
+membership verification is not a post-handshake message pair either — it
+is the Noise handshake itself (signed identity payload + `moss|<mesh_id>`
+prologue; PSK mode binds the PSK into the handshake, and UDP carriers add
+the scramble codec).
+
+Envelope types on the wire today:
+
+| Type string | Direction | Description |
+|------------|-----------|-------------|
+| `graft` | Bidirectional | Request to join a topic mesh |
+| `prune` | Bidirectional | Leave topic mesh (sets the meshBlocked cooldown; short TTL when answering our own recent GRAFT) |
+| `ihave` | Outbound | Gossip: advertise known message IDs |
+| `iwant` | Response | Request messages by ID (serve side capped: 64 per request, one per ID per peer per 10s) |
+| `idontwant` | Outbound | Suppress duplicate sends for large messages |
+| `publish` | Bidirectional | Publish message to topic (room-sealed AEAD payload; Ed25519-signed sender, verify-on-present) |
+| `direct` | Bidirectional | Directed payload between two peers (DMs, TUN packets, game snapshots) |
+| `peer_announce` | Outbound | Known-peer advertisement (Ed25519-signed, v2 verifies Noise static key) |
+| `supernode_announce` | Outbound | Announce SuperNode status |
+| `supernode_revoke` | Outbound | Revoke SuperNode status |
+| `binding_request` | Bidirectional | STUN-like external address query |
+| `binding_response` | Response | External IP:Port result |
+| `reachability_request` | Bidirectional | Ask a peer to probe our advertised address |
+| `reachability_response` | Response | Reachability probe result |
+| `hole_punch_coord` | Bidirectional | Hole-punch coordination (endpoint exchange) |
+| `relay_request` | Bidirectional | Request relay session |
+| `relay_accept` | Response | Relay session accepted |
+| `relay_data` | Bidirectional | Relayed encrypted payload |
+| `relay_close` | Bidirectional | Close relay session |
+| `ping` | Bidirectional | Keepalive / latency probe |
+| `pong` | Response | Keepalive response |
+| `stat_delta` | Bidirectional | Telemetry CRDT delta gossip |
+| `room_invite` | Bidirectional | Room-membership invitation (sealed to the invitee; peer-to-peer, never flooded) |
+| `ov_find_node` | Bidirectional | Overlay (Kademlia) node lookup |
+| `ov_find_value` | Bidirectional | Overlay record lookup |
+| `ov_nodes` | Response | Overlay lookup contacts |
+| `ov_values` | Response | Overlay record providers |
+| `ov_store` | Outbound | Overlay record store |
+
+Frame-level constants that DO exist as numbers: the transport stream frame
+cap (256 KiB max data frame, `internal/transport/stream.go`), the 64 KiB
+handshake frame cap, and the 12-byte TFRG fragment header
+(`internal/tun/frag.go`). The 4-byte magic `TFRG` (0x54 0x46 0x52 0x47) is
+the only wire-level "magic number" in the envelope payload layer.
+

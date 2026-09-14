@@ -226,6 +226,7 @@ func allKinds() []Kind {
 		KindRelayRequest, KindRelayAccept, KindRelayClose, KindRelayThrottled,
 		KindTrackerAnnounce, KindTrackerResult, KindOverlayLookup, KindOverlayStore, KindBucketChange,
 		KindNodeStart, KindNodeStop, KindConfig, KindProcess, KindInvariant, KindLog,
+		KindDropGrowth,
 	}
 }
 

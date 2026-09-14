@@ -198,17 +198,51 @@ wanting larger directed transfers must chunk.
 
 Returns `MOSS_ERR_RELAY_FAILED` (-11) when neither path could deliver.
 
-### `Moss_RelaySendTo`
+### `Moss_SendToPeerAsync`
 
 ```c
-int32_t Moss_RelaySendTo(MossHandle handle, const char* peer_id,
-                         const uint8_t* data, int32_t len);
+uint64_t Moss_SendToPeerAsync(MossHandle handle, const char* peer_id,
+                              const uint8_t* data, int32_t len,
+                              MossAsyncCompletionCallback cb);
 ```
 
-Delivers a payload to a specific peer via the relay path regardless of a
-direct session. The receiver sees it through the relay callback — or the
-packet callback, which also catches relayed payloads. Same 5-second relay
-budget and size gate as `Moss_SendToPeer`.
+The non-blocking form of `Moss_SendToPeer`: the same routing (direct
+session first, relay fallback) and the same 5-second relay budget, but the
+send runs on a detached goroutine and the outcome is reported through the
+completion callback instead of the return value.
+
+- The payload is copied before the call returns, so the caller may free the
+  buffer immediately.
+- Returns a job ID — never 0, never reused — or `0` when the call is
+  refused up front (unknown handle, `NULL` peer, negative length, oversize
+  payload, or `NULL` callback). A refusal never fires the callback.
+- The completion fires exactly once, from a Go runtime thread, possibly
+  concurrent with other callbacks. `result` is `MOSS_OK` (0) or
+  `MOSS_ERR_RELAY_FAILED` (-11).
+- Do not call `Moss_Stop` from inside the callback. Completion is NOT
+  guaranteed after `Moss_Stop`: if the handle is gone when the send
+  resolves, the callback is dropped rather than invoked on a torn-down host.
+
+Callback signature:
+
+```c
+typedef void (*MossAsyncCompletionCallback)(uint64_t job_id,
+                                             int32_t result);
+```
+
+### `Moss_RelaySendToAsync`
+
+```c
+uint64_t Moss_RelaySendToAsync(MossHandle handle, const char* peer_id,
+                              const uint8_t* data, int32_t len,
+                              MossAsyncCompletionCallback cb);
+```
+
+The non-blocking form of `Moss_RelaySendTo`: the explicit relay path with
+the same 5-second budget, run on a detached goroutine. The same contract as
+`Moss_SendToPeerAsync` applies: payload copied up front, job IDs never 0
+or reused, completion exactly once from a Go runtime thread, dropped (not
+fired) when the handle was stopped in between.
 
 ### `Moss_PeerRTT`
 
@@ -226,19 +260,46 @@ callback.
 
 ## Streams
 
-Streams are ordered per-stream channels multiplexed over a **direct**
-session. The transport reserves stream 0 (raw) and stream 1 (gossip) and
-rejects them with `MOSS_ERR_CONFIG_INVALID`.
+Streams are ordered per-stream channels. On a peer with a **direct**
+session they are multiplexed over the transport mux; on a **relayed** peer
+they ride the relay path under a small additive header (see below). The
+transport reserves stream 0 (raw) and stream 1 (gossip) and rejects them
+with `MOSS_ERR_CONFIG_INVALID`.
 
 Stream ID convention across moss-based applications: 0–1 transport,
 100–101 game-profile defaults, 200+ TUN, 300+ messenger app-data (e.g. 300
 as the messenger default). All defaults are overridable per-app; only 0–1
 are truly off-limits.
 
-Relayed peers have no streams — relay data flows through dispatch, not the
-transport mux — so every stream call on a relayed peer returns
-`MOSS_ERR_RELAY_FAILED` (-11). Use `Moss_ConnectToPeer` first when a
-direct session is what you want.
+Direct is the fast path — no discovery, no dialing, no wrapping. Relay is
+the fallback: `Moss_SendStream` on a relayed peer wraps the payload as
+
+```
+magic (4 bytes: 'M','S','s','1') || stream_id (4 bytes, big-endian) || data
+```
+
+and delivers it via the relay path (`Moss_RelaySendTo` semantics, same
+5-second relay-session budget); the receiving side unwraps the header and
+dispatches to the `Moss_OnStream` handler for `stream_id`, with the same
+callback shape as the direct path. Streams therefore work on every peer,
+relayed or direct.
+
+Consequences of the wire format:
+
+- The header reservation is 8 bytes per relayed stream payload. The size
+  gate matches `Moss_Publish`'s (`security.max_message_size_bytes`) on the
+  raw payload, as before.
+- An application payload whose first four bytes happen to equal the magic
+  is indistinguishable from a wrapped stream payload and gets misdispatched
+  (dropped, or delivered to a stream handler). Applications speaking binary
+  protocols over plain relayed DMs should not start their payloads with
+  these bytes while stream fallback is in play.
+- Registering any stream handler installs the FFI dispatch chain as the
+  node's packet callback, so the legacy relay callback
+  (`Moss_SetRelayCallback`) stops firing on that handle: mixing
+  `Moss_SetRelayCallback` with relayed streams on one handle is
+  unsupported. Non-wrapped relayed payloads forward to the packet callback
+  when one is registered.
 
 ### `Moss_OpenStream`
 
@@ -248,8 +309,11 @@ int32_t Moss_OpenStream(MossHandle handle, const char* peer_id,
 ```
 
 Makes sure a reader goroutine drains `stream_id` on the direct session with
-`peer_id`, dialing the peer first if unknown. Returns `MOSS_ERR_NO_PEERS`
-(-6) when the peer cannot be resolved.
+`peer_id`, dialing the peer first if unknown. Returns
+`MOSS_ERR_NO_PEERS` (-6) when the peer cannot be resolved. On a relayed
+peer it returns `MOSS_OK`: nothing needs pre-opening there — the relay
+session opens lazily on the first `Moss_SendStream` fallback, and the
+handler registered with `Moss_OnStream` catches payloads from either path.
 
 ### `Moss_SendStream`
 
@@ -263,7 +327,9 @@ Writes data to `stream_id` on the direct session with `peer_id`, spawning
 the inbound reader for that stream if needed. Fast path: no overlay lookup,
 no dialing — a hot loop must not stall on discovery. Use `Moss_OpenStream`
 first for peers you have not connected to yet. Size gate matches
-`Moss_Publish`'s.
+`Moss_Publish`'s. On a relayed peer this falls back to the wrapped relay
+delivery described above; `MOSS_ERR_RELAY_FAILED` (-11) is returned only
+when neither path could deliver.
 
 ### `Moss_OnStream`
 
@@ -280,6 +346,10 @@ retro-fit already-running ones. Passing `NULL` returns
 `MOSS_ERR_CONFIG_INVALID`; the runtime has no unregister — re-register with
 a no-op handler instead of expecting to clear it.
 
+The handler serves BOTH delivery paths: the direct-session mux and the
+relayed fallback map. A relayed sender's payloads are unwrapped by the FFI
+dispatch chain and routed to the same C callback with the same shape.
+
 Callback signature:
 
 ```c
@@ -287,6 +357,7 @@ typedef void (*MossStreamCallback)(const char* peer_id,
                                    const uint8_t* data,
                                    uint32_t len);
 ```
+
 ## Callbacks
 
 ### `Moss_SetCallback`
@@ -370,6 +441,11 @@ Registers the unified sink for directed payloads: it receives BOTH direct
 packets (`Moss_SendToPeer` over a direct session) and raw relayed payloads.
 The legacy relay callback still fires for relayed payloads while no packet
 callback is registered. Pass `NULL` to clear.
+
+On a handle that has ever registered a stream handler (`Moss_OnStream`),
+the FFI dispatch chain owns this slot and forwards non-wrapped payloads
+here; the ordering between the two calls does not matter. See Streams for
+the chain's contract.
 
 Callback signature:
 
@@ -595,9 +671,8 @@ Current error codes:
 - `-8` `MOSS_ERR_CONFIG_INVALID`
 - `-9` `MOSS_ERR_OUT_OF_MEMORY`
 - `-10` `MOSS_ERR_CONNECT_FAILED`
-- `-11` `MOSS_ERR_RELAY_FAILED` — a directed send could not deliver over
-  either path (direct or relay), or a stream call hit a relayed peer
-  (streams need a direct session)
+- `-11` `MOSS_ERR_RELAY_FAILED` — a directed send (or a relayed stream's
+  fallback delivery) could not deliver over either path, direct or relay
 - `-12` `MOSS_ERR_INTERNAL` — an internal precondition failed
 - `-13` `MOSS_ERR_LISTEN_FAILED` — the OS refused the bind; call
   `Moss_LastError` for the underlying reason

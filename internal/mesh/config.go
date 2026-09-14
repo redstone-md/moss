@@ -66,6 +66,7 @@ type Config struct {
 	NetworkID           string   `json:"network_id"`
 	Trackers            []string `json:"trackers"`
 	AnnounceIntervalSec int      `json:"announce_interval_sec"`
+	AnnounceJitterSec   int      `json:"announce_jitter_sec"`
 	ListenPort          int      `json:"listen_port"`
 	MaxPeers            int      `json:"max_peers"`
 	StaticPeers         []string `json:"static_peers"`
@@ -233,6 +234,7 @@ func DefaultConfig() Config {
 		NetworkID:           DefaultNetworkID,
 		Trackers:            append([]string(nil), defaultTrackers...),
 		AnnounceIntervalSec: 120,
+		AnnounceJitterSec:   12,
 		ListenPort:          0,
 		MaxPeers:            200,
 		BootstrapTimeoutSec: 3,
@@ -331,6 +333,9 @@ func (c *Config) applyDefaults(fields map[string]json.RawMessage) {
 	if c.AnnounceIntervalSec <= 0 {
 		c.AnnounceIntervalSec = d.AnnounceIntervalSec
 	}
+	if c.AnnounceJitterSec <= 0 {
+		c.AnnounceJitterSec = d.AnnounceJitterSec
+	}
 	if c.MaxPeers <= 0 {
 		c.MaxPeers = d.MaxPeers
 	}
@@ -402,6 +407,14 @@ func (c *Config) AnnounceInterval() time.Duration {
 	return time.Duration(c.AnnounceIntervalSec) * time.Second
 }
 
+// AnnounceJitter is the random spread added to (and subtracted from) each
+// announce interval so that a fleet of nodes does not re-announce in
+// lockstep and hammer the same trackers in the same instant. Zero means the
+// caller wants no jitter at all.
+func (c *Config) AnnounceJitter() time.Duration {
+	return time.Duration(c.AnnounceJitterSec) * time.Second
+}
+
 // Game stream IDs reserved by the game preset. The transport reserves 0
 // (raw) and DefaultStream (gossip); the agreed allocation hands 100/101 to
 // the game profile, 200+ to the TUN intranet and 300+ to the messenger.
@@ -417,10 +430,15 @@ const (
 )
 
 // GameProfile presets a node for real-time game traffic. It is standalone
-// configuration — the transport applies it through ApplyGameProfile, it is
-// not a Config field, and nothing is stored on the node: re-apply after
-// building a new profile. V1 is transport-only: no delta compression, no
-// client-side prediction, no authority arbitration.
+// configuration — the transport applies it through ApplyGameProfile, and
+// the applied InterestRadius and AreaChannelPrefix are stored as the
+// node's area-of-interest settings for directed snapshot sends; re-apply
+// after building a new profile. V2 keeps the transport honest about its
+// role: delta compression of snapshots (SendSnapshotDelta/
+// DecodeSnapshotDelta) and interest-radius culling are transport services,
+// while client-side prediction stays an application concern exposed
+// through the Predictor hook (SetGamePredictor), and authority
+// arbitration lives above the mesh layer.
 type GameProfile struct {
 	// TickRateHz is the application's simulation rate in hertz. The
 	// transport does not tick; this documents the cadence the state
@@ -444,9 +462,11 @@ type GameProfile struct {
 	// the fixed header.
 	SnapshotMaxBytes int `json:"snapshot_max_bytes"`
 	// InterestRadius is the area-of-interest radius in world units. 0
-	// means no AOI filtering: every subscriber sees every state update.
-	// The transport has no radius concept — see AreaChannelPrefix for
-	// how the radius becomes channels.
+	// means no AOI filtering: every subscriber sees every state update. A
+	// positive radius is enforced by the directed snapshot sends —
+	// SendSnapshot and SendSnapshotDelta silently drop (and count) sends
+	// to targets whose last known position lies outside the radius. See
+	// AreaChannelPrefix for the pub/sub channel half of AOI.
 	InterestRadius float64 `json:"interest_radius"`
 	// AreaChannelPrefix is prepended to an area ID to form the pub/sub
 	// channel AOI members subscribe to: "<prefix><areaID>". Empty is only

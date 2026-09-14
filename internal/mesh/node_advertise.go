@@ -26,6 +26,9 @@ func (n *Node) advertisedListenAddr() string {
 	if n.shouldAdvertiseLoopback() {
 		return net.JoinHostPort("127.0.0.1", strconv.Itoa(n.listenPort))
 	}
+	if host, ok := n.peerSubnetAdvertiseHost(); ok {
+		return net.JoinHostPort(host, strconv.Itoa(n.listenPort))
+	}
 	if host, ok := bestLocalAdvertiseHost(); ok {
 		return net.JoinHostPort(host, strconv.Itoa(n.listenPort))
 	}
@@ -221,6 +224,16 @@ func isVirtualOverlayInterfaceName(name string) bool {
 		return true
 	case strings.Contains(normalized, "wsl"):
 		return true
+	case strings.Contains(normalized, "netbird"):
+		return true
+	case strings.Contains(normalized, "nordlynx"):
+		return true
+	case strings.Contains(normalized, "mullvad"):
+		return true
+	case strings.Contains(normalized, "protonvpn"):
+		return true
+	case strings.Contains(normalized, "warp"):
+		return true
 	case strings.HasPrefix(normalized, "utun"):
 		return true
 	case strings.HasPrefix(normalized, "wg"):
@@ -228,6 +241,14 @@ func isVirtualOverlayInterfaceName(name string) bool {
 	case strings.HasPrefix(normalized, "tun"):
 		return true
 	case strings.HasPrefix(normalized, "tap"):
+		return true
+	case strings.HasPrefix(normalized, "ppp"):
+		return true
+	case strings.HasPrefix(normalized, "xfrm"):
+		return true
+	case strings.HasPrefix(normalized, "ipsec"):
+		return true
+	case strings.HasPrefix(normalized, "zt"):
 		return true
 	default:
 		return false
@@ -243,4 +264,109 @@ func isLoopbackHost(host string) bool {
 		return false
 	}
 	return addr.IsLoopback()
+}
+
+// snapshotDirectPeerHostAddrs returns the bare IP hosts of every connected
+// direct peer. Callers must not hold n.mu.
+func (n *Node) snapshotDirectPeerHostAddrs() []netip.Addr {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	hosts := make([]netip.Addr, 0, len(n.peers))
+	for _, peer := range n.peers {
+		if peer == nil || peer.relayed {
+			continue
+		}
+		host, _, err := net.SplitHostPort(peer.addr)
+		if err != nil || host == "" {
+			continue
+		}
+		addr, err := netip.ParseAddr(host)
+		if err != nil {
+			continue
+		}
+		hosts = append(hosts, addr.Unmap())
+	}
+	return hosts
+}
+
+// peerSubnetAdvertiseHost picks the local address of the interface that hosts
+// the most directly connected peers, when that choice is unambiguous. On a
+// multi-homed box the "best" address by generic preference can sit on an
+// interface the peers cannot route to; matching the interface to the subnet
+// the peers actually come from is what makes the advertised address dialable
+// for them.
+func (n *Node) peerSubnetAdvertiseHost() (string, bool) {
+	peerHosts := n.snapshotDirectPeerHostAddrs()
+	if len(peerHosts) == 0 {
+		return "", false
+	}
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return "", false
+	}
+	return selectAdvertiseHostForPeersFunc(ifaces, func(iface net.Interface) ([]net.Addr, error) {
+		return iface.Addrs()
+	}, peerHosts)
+}
+
+// selectAdvertiseHostForPeersFunc picks the address of the eligible interface
+// whose subnets contain the most connected peers. A tie at the top is refused
+// (falling back to the generic preference) and so is a match set of zero: the
+// evidence must point at exactly one interface before it may override the
+// default choice.
+func selectAdvertiseHostForPeersFunc(
+	ifaces []net.Interface,
+	addrFn func(net.Interface) ([]net.Addr, error),
+	peerHosts []netip.Addr,
+) (string, bool) {
+	bestHost := ""
+	bestMatches := 0
+	for _, iface := range ifaces {
+		if !eligibleLocalInterface(iface) {
+			continue
+		}
+		ifaceAddrs, err := addrFn(iface)
+		if err != nil {
+			continue
+		}
+		prefixes := make([]netip.Prefix, 0, len(ifaceAddrs))
+		for _, addr := range ifaceAddrs {
+			value, err := netip.ParsePrefix(addr.String())
+			if err != nil {
+				continue
+			}
+			prefixes = append(prefixes, value)
+		}
+		if len(prefixes) == 0 {
+			continue
+		}
+		matches := 0
+		for _, peerHost := range peerHosts {
+			for _, prefix := range prefixes {
+				if prefix.Contains(peerHost) {
+					matches++
+					break
+				}
+			}
+		}
+		if matches == 0 {
+			continue
+		}
+		host, ok := selectAdvertiseHost(ifaceAddrs)
+		if !ok {
+			continue
+		}
+		if matches > bestMatches {
+			bestMatches = matches
+			bestHost = host.String()
+		} else if matches == bestMatches && bestMatches > 0 {
+			// Two interfaces host the same number of peers: the evidence does
+			// not point at one interface, so it must not pick one for them.
+			return "", false
+		}
+	}
+	if bestMatches == 0 {
+		return "", false
+	}
+	return bestHost, true
 }

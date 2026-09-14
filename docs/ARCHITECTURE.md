@@ -54,12 +54,25 @@ The public C ABI is intentionally narrow. Most behavior should be reachable thro
 
 ```text
 cmd/moss-ffi/              C shared-library adapter and exported ABI
-internal/bootstrap/        tracker rendezvous and infohash derivation
+cmd/moss-gateway/          read-only telemetry gateway binary (deprecated by moss-scope serve)
+cmd/moss-scope/            MossScope: single-binary site bundle + telemetry relay + server
+cmd/moss-signal/           WebRTC signaling relay binary
+cmd/moss-wasm/             wasm verifier build for the site explorer
+cmd/moss-node-wasm/        node built for GOOS=js (browser/runtime targets)
+internal/bootstrap/        tracker rendezvous, DHT source, and infohash derivation
 internal/crypto/           Moss identity and key derivation
+internal/geo/              embedded GeoLite2 country lookup for relay-distance ranking
 internal/gossip/           pubsub envelopes, cache, and scoring
+internal/inspect/          debug plane: event bus, WebSocket server, ring recorder
 internal/mesh/             Node orchestration across transport, NAT, relay, gossip
 internal/nat/              NAT profiling, mapping, relay primitives
+internal/observe/          client-side telemetry verification (wasm-safe, pure)
+internal/overlay/          Kademlia-style discovery layer (routing table, records)
+internal/stat/             privacy-preserving telemetry aggregation (HLL, DP, hash chain)
+internal/telemetry/         opt-in Axiom event sink (inert without a token)
 internal/transport/        encrypted TCP/UDP sessions and handshakes
+internal/tun/              virtual intranet: packet router and TFRG fragmentation
+internal/webui/            go:embed bundle so moss-scope serves with no files on disk
 examples/                  host-language FFI examples
 docs/                      API, integration, architecture, and specification docs
 ```
@@ -77,7 +90,6 @@ It should stay thin. Do not implement peer selection, pubsub routing, NAT probin
 `mesh` is the runtime coordinator. `Node` composes trackers, transport sessions, gossip state, NAT probing, relay sessions, callbacks, and lifecycle management.
 
 Important files:
-
 ```text
 node_types.go                 private Node state and closely related structs
 node_lifecycle.go             construction, start/stop, public Node API
@@ -86,23 +98,37 @@ node_advertise.go             local address and announce-port selection
 node_direct_connect.go        direct peer dial policy and known-peer address ranking
 node_dispatch_bootstrap.go    host callback dispatch and bootstrap coordination
 node_envelope.go              local delivery, broadcast, and flood publish
-node_gossip_control.go        IHAVE/IWANT/IDONTWANT control messages
+node_gossip_control.go        IHAVE/IWANT/IDONTWANT control messages and per-peer outbound queues
 node_peer_announce.go         known-peer and supernode announcement handling
-node_peer_discovery.go        discovered peer targets and topic mesh upkeep
-node_relay_api.go             public relay methods
+node_peer_discovery.go        discovered peer targets, dial backoff, and topic mesh upkeep
+node_relay_api.go             public relay methods, directed payloads (SendToPeer), packet callbacks
 node_relay_control.go         relay request, accept, data, close, migration
-node_relay_selection.go       relay candidate ranking and mesh eligibility
+node_relay_selection.go        relay candidate ranking and mesh eligibility
+node_relay_transport.go       relay session transport integration
 node_nat_control.go           binding, reachability, and hole-punch control messages
 node_holepunch.go             UDP hole-punch attempts and direct peer promotion
 node_reachability.go          external address and reachability probes
 node_network_probe.go         address utility and probe helpers used by Node
 node_maintenance.go           latency probing, pruning, housekeeping
+node_overlay.go               Kademlia overlay orchestration (lookups, STORE, republish)
+node_room.go                  room keys, topic sealing, room invites
+node_veil.go                  Veil "Reality" DPI-masked bearer (non-js builds)
+node_game.go                  game preset: binary snapshot codec, latest-sequence-wins filter
+node_stat.go                  per-epoch telemetry contribution to the stat CRDT
+node_telemetry.go             telemetry wiring and event forwarding
+node_telemetry_nat.go         NAT telemetry snapshots for the explorer
+node_tun_bind.go              intranet binding: virtual-IP registry, packet pump over SendToPeer
+node_explicit_targets.go      ConnectToPeer registration and explicit dial scheduling
 config.go                     JSON config parsing and defaults
 events.go                     host-visible event IDs and event payload helpers
 errors.go                     public error code constants
+peer_cache.go                 persisted known-good peers for fast cold start
+lan_discovery.go              multicast LAN beacon discovery
+dht.go                        BitTorrent mainline DHT peer source
+reachability.go               probe orchestration for external reachability
+supernode_signing.go          signed supernode announcements
+relay_signing.go              relay envelope signatures
 ```
-
-`internal/mesh` intentionally remains one Go package because `Node` owns tightly coupled private state. Split behavior by capability files first. Create child packages only when extracted code no longer needs `Node` internals.
 
 ### `internal/transport`
 
@@ -113,13 +139,17 @@ Important files:
 ```text
 listener.go        TCP listener and authenticated accept path
 conn.go            encrypted connection wrapper
-noise.go           Noise XX/IK handshake implementation
+noise.go           Noise XX/IK handshake implementation, identity payloads
 multiplexer.go     stream multiplexing over an encrypted session
+stream.go          stream frame path (256 KiB max data frame)
 datagram.go        datagram support for session payloads
 udp.go             UDP listener state and public UDP listener methods
 udp_handshake.go   UDP Noise handshake packet flow
 udp_observe.go     endpoint observation and STUN helpers
 udp_session.go     UDP carrier and session lifecycle
+obfs.go            DPI-scramble codec for UDP carriers
+bind.go            listener address/binding selection and platform variants
+webrtc_js.go       WebRTC transport surface (js builds)
 ```
 
 `transport` must not know about pubsub topics, peer scoring, relay policy, or host callbacks.
@@ -152,6 +182,38 @@ It should not import transport, NAT, bootstrap, or FFI code.
 
 `crypto` owns Moss identities and key derivation. Keep key generation, serialization, signing, and HKDF logic here instead of spreading crypto details across callers.
 
+### `internal/overlay`
+
+`overlay` implements the Kademlia-style discovery layer: the routing table (XOR-distance buckets), the record store (channel/peer rendezvous), and closest-contact queries. It is a lookup layer, not a packet-routing layer — data always flows A → core → B in two hops, so the overlay only answers "who holds/can reach what". Only publicly reachable nodes hold buckets and answer queries; NAT'd nodes are full clients but never hops. See `mesh/node_overlay.go` for the orchestration side.
+
+### `internal/tun`
+
+`tun` implements the virtual-intranet data plane: a packet router over virtual IPs, IPv4 classification, and the v2 TFRG fragmentation of packets between the MTU and the 64KB directed-payload cap. It knows nothing of `mesh` — `Node` supplies the send function (`SendToPeer`) and the packet callback; the binding glue lives in `mesh/node_tun_bind.go`.
+
+### `internal/inspect`
+
+`inspect` is the debug plane: an event bus whose emit cost is one atomic load when nobody listens, a ring recorder that keeps recent history even with no subscriber attached, and the loopback HTTP/WebSocket server the MossScope UI reads. Mesh emits lifecycle, dial, punch, drop, and session events into it via `mesh/node_debug*.go`; it is enabled only with `debug.enabled`.
+
+### `internal/observe`
+
+`observe` provides the pure, client-side primitives a network explorer needs to TRUST telemetry it did not produce: hash-chain continuity verification, cross-gateway agreement, and deterministic topology simulation from aggregate statistics. It is deliberately free of sockets, time, and randomness so it compiles unchanged to GOOS=js/wasm and verifies what it renders in the browser.
+
+### `internal/stat`
+
+`stat` is the privacy-preserving telemetry aggregation layer: per-epoch unlinkable node IDs (BLAKE2s over epoch and pubkey), HyperLogLog node counting, differential-privacy noise, per-node bandwidth/degree clamps, and the hash-chained epoch snapshots gossiped between nodes. `mesh/node_stat.go` feeds it; the layer is inert until `telemetry.enabled`.
+
+### `internal/telemetry`
+
+`telemetry` is the opt-in, best-effort Axiom event sink: structured errors and host logs shipped asynchronously, drop-on-full by design. Entirely inert unless a host enables it with a token — a moss node never phones home on its own.
+
+### `internal/geo`
+
+`geo` maps peer IPs to coarse country/continent via the embedded GeoLite2-Country database, so relay selection can prefer a relay close to the peer it must reach. Offline, no runtime downloads.
+
+### `internal/webui`
+
+`webui` embeds the built MossScope bundle via `go:embed` so `moss-scope` serves the whole interface from one binary with no files on disk. `dist` is filled by `make scope`; when empty the handler serves the committed placeholder, keeping `go build ./...` working without Node installed.
+
 ## Import Direction
 
 Prefer one-way dependencies. The orchestration layer may depend on lower-level services, but lower-level packages must not import the orchestrator.
@@ -163,9 +225,22 @@ cmd/moss-ffi
   -> internal/mesh
       -> internal/bootstrap
       -> internal/crypto
+      -> internal/geo
       -> internal/gossip
       -> internal/nat
+      -> internal/overlay
+      -> internal/stat
+      -> internal/telemetry
       -> internal/transport
+      -> internal/tun (send function injected, never imported)
+```
+
+Periphery (no mesh dependency, wired from cmd/* or the browser):
+
+```text
+cmd/moss-scope -> internal/inspect, internal/observe, internal/webui
+internal/inspect <- mesh (mesh imports inspect: event bus emit)
+internal/observe, internal/webui, internal/telemetry: leaf packages, no internal deps
 ```
 
 Rules:
@@ -176,6 +251,11 @@ Rules:
 - `internal/gossip` must not know about sockets, NAT, trackers, or FFI.
 - `internal/bootstrap` must not know about `Node`, pubsub channels, relay sessions, or callbacks.
 - `cmd/moss-ffi` should translate C ABI calls into `mesh.Node` methods and avoid owning protocol behavior.
+
+- `internal/overlay` must stay a pure discovery structure; `mesh` orchestrates lookups and never lets it dial or own sockets.
+- `internal/tun` must not import `internal/mesh`; the binding injects the send function and packet callback instead.
+- `internal/stat` and `internal/observe` must not know about sockets or `Node`; the former is fed by `mesh`, the latter is pure/wasm-safe.
+- `internal/inspect` may be imported by `mesh` (event emit) but must never import it back.
 
 If a new dependency points upward, pass data or a narrow callback down instead.
 
@@ -248,6 +328,12 @@ internal/mesh/*_test.go                node behavior, integration scenarios, ben
 internal/nat/*_test.go                 NAT profiling, relay primitives, mapping helpers
 internal/transport/*_test.go           Noise, TCP/UDP sessions, multiplexing
 examples/python_chat/test_moss_chat.py Python integration wrapper behavior
+internal/overlay/*_test.go            routing table, record store, top-k queries
+internal/stat/*_test.go               EID rotation, HLL merge, DP noise, chain windows
+internal/observe/*_test.go            chain verification and simulation (wasm-safe)
+internal/inspect/*_test.go            bus emit/drop, WebSocket session, recorder
+internal/tun/*_test.go                router, IPv4 classification, TFRG fragmentation
+internal/geo/*_test.go                embedded database lookups
 ```
 
 For broad changes, run:
@@ -263,6 +349,27 @@ For fast compile checks on mesh or transport changes:
 go test ./internal/mesh -run '^$'
 go test ./internal/transport -run '^$'
 ```
+
+### CI gates (see .github/workflows/ci-dev.yml)
+
+Per push (dev):
+
+```bash
+go test ./... -count=1                        # full suite, both OSes
+go test -race -count=1 ./internal/gossip ./internal/transport ./internal/crypto ./internal/bootstrap ./internal/nat
+go test ./internal/mesh -count=1             # strict: a flake stays red
+go test ./internal/mesh -count=3             # soak: repetition, not retries
+go test ./internal/mesh -count=3 -run 'Test(TwentyFiveNode|RelayBurst|MixedTopology|StarTopology|TwelveNodeStar)'  # sustained load soak
+go test ./internal/mesh -run '^$' -bench BenchmarkTwoHundredPeerSteadyStateMemory -benchtime=1x  # heap gate: fail > baseline+20%
+```
+
+Nightly (schedule + manual dispatch):
+
+```bash
+go test -race -count=1 -timeout 3600s ./internal/mesh   # mesh race sweep
+```
+
+Local equivalents: `make test-fast`, `make test-race`, `make test-race-mesh`, `make soak` (SOAK_WINDOW_SEC adjusts the window), `make memory-gate`.
 
 ## Adding Or Changing Behavior
 

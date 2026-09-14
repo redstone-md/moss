@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/redstone-md/moss/internal/gossip"
@@ -220,13 +221,29 @@ func (n *Node) applyObservation(observed string, deadline time.Time, mapping boo
 
 	if mapping {
 		n.mu.Lock()
-		n.bindingHistory = appendObservation(n.bindingHistory, observed)
-		bindingHistory := append([]string(nil), n.bindingHistory...)
+		n.bindingHistory = appendBindingSample(n.bindingHistory, observed)
 		n.mu.Unlock()
-		profile = n.profiler.WithBindingObservations(profile, bindingHistory)
+		profile = n.profiler.WithBindingObservations(profile, n.recentBindingWindow())
 	}
-	if requiresReachabilityConfirmation(observed) && !profile.PublicReachable {
-		profile = n.profiler.WithReachability(profile, n.confirmReachability(observed, deadline))
+	if requiresReachabilityConfirmation(observed) {
+		if shouldRecheckPublicReachability(previous, profile) {
+			// The bindings drifted after inbound reachability was already
+			// confirmed — symmetric NATs jitter ports per mapping, so a lone
+			// symmetric verdict must not flap a working node to unreachable.
+			// Re-verify in parallel; without probe peers the confirmed state
+			// stays sticky rather than silently degrading to unreachable.
+			n.countInbound("__reach_recheck_attempt__")
+			reachable := false
+			if n.hasReachabilityProbePeers() {
+				reachable = n.confirmReachabilityParallel(observed, deadline)
+			} else {
+				n.countInbound("__reach_recheck_sticky__")
+				reachable = true
+			}
+			profile = n.profiler.WithReachability(profile, reachable)
+		} else if !profile.PublicReachable {
+			profile = n.profiler.WithReachability(profile, n.confirmReachabilityParallel(observed, deadline))
+		}
 	}
 	// Decide the public/CGNAT label from *confirmed inbound reachability*, never
 	// from address shape. A public reflexive address with no inbound reach and a
@@ -330,4 +347,70 @@ func (n *Node) requestReachabilityProbe(peerID, addr string, timeout time.Durati
 	case <-timer.C:
 		return false
 	}
+}
+
+// maxParallelReachabilityProbes bounds how many peers are asked in parallel
+// to confirm our external reachability.
+const maxParallelReachabilityProbes = 3
+
+// reachabilityProbeBudget caps the time a parallel confirmation spends before
+// the observation's own deadline takes over.
+const reachabilityProbeBudget = 900 * time.Millisecond
+
+// confirmReachabilityParallel confirms our external reachability by probing
+// up to maxParallelReachabilityProbes peers at once instead of walking them
+// one-by-one. A symmetric NAT's port churn can make sequential probes time out
+// one after another while a working path was available on the next peer; the
+// parallel fan takes the first answer that lands.
+func (n *Node) confirmReachabilityParallel(addr string, deadline time.Time) bool {
+	n.mu.RLock()
+	peerIDs := n.reachabilityProbePeerIDsLocked()
+	n.mu.RUnlock()
+	if len(peerIDs) > maxParallelReachabilityProbes {
+		peerIDs = peerIDs[:maxParallelReachabilityProbes]
+	}
+	remaining := time.Until(deadline)
+	if len(peerIDs) == 0 || remaining <= 0 {
+		return false
+	}
+	n.countInbound("__reach_confirm_attempt__")
+	budget := minDuration(remaining, reachabilityProbeBudget)
+	results := make(chan bool, len(peerIDs))
+	var wg sync.WaitGroup
+	for _, peerID := range peerIDs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results <- n.requestReachabilityProbe(peerID, addr, budget)
+		}()
+	}
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+	for reachable := range results {
+		if reachable {
+			n.countInbound("__reach_confirm_success__")
+			return true
+		}
+	}
+	n.countInbound("__reach_confirm_timeout__")
+	return false
+}
+
+// hasReachabilityProbePeers reports whether any connected peer can confirm
+// our external reachability.
+func (n *Node) hasReachabilityProbePeers() bool {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return len(n.reachabilityProbePeerIDsLocked()) > 0
+}
+
+// shouldRecheckPublicReachability reports whether a fresh symmetric verdict
+// should trigger a re-confirmation of inbound reachability rather than being
+// trusted outright. Reachability was already confirmed on `previous`; the
+// fresh profile says the mapping drifted, which symmetric NATs do per
+// mapping without the node actually losing inbound reach.
+func shouldRecheckPublicReachability(previous, profile nat.Profile) bool {
+	return previous.PublicReachable && !profile.PublicReachable && profile.Type == nat.TypeSymmetric
 }

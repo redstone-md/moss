@@ -322,8 +322,8 @@ var debugMetrics = map[string]func(*Node) any{
 	"geo":             func(n *Node) any { return n.debugGeo() },
 	"bootstrap":       func(n *Node) any { return n.debugBootstrap() },
 	"throughput":      func(n *Node) any { return n.debugThroughput() },
+	"drops":           func(n *Node) any { return n.debugDrops() },
 	"health":          func(n *Node) any { return n.debugHealth() },
-	"debug.recent":    func(n *Node) any { return n.debugBus.History(500, nil) },
 }
 
 // debugMetricNames lists what this node answers, so the UI can ask instead of

@@ -8,6 +8,11 @@ on:
     branches:
       - dev
   workflow_dispatch:
+  schedule:
+    # Nightly race sweep for the mesh package: ~5-7x slower than the plain
+    # run, so it stays off the per-push critical path (see the race-fast
+    # job for what DOES run on every push). 03:45 UTC, low CI-traffic hour.
+    - cron: "45 3 * * *"
 
 permissions:
   contents: read
@@ -66,6 +71,30 @@ jobs:
       - name: Run full test suite
         run: go test ./... -count=1 -timeout 1800s
 
+  race-fast:
+    name: Race (fast packages)
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The fast leaf packages (gossip, transport, crypto, bootstrap, nat)
+      # race in well under a minute combined, so they run under -race on
+      # every push. The mesh package is deliberately NOT here: its suite
+      # takes minutes even without -race and roughly triples under it,
+      # which would dominate every push — the nightly mesh-race job below
+      # covers it instead.
+      - name: Run fast packages under the race detector
+        run: go test -race -count=1 -timeout 900s ./internal/gossip ./internal/transport ./internal/crypto ./internal/bootstrap ./internal/nat
+
   mesh-strict:
     name: Mesh Strict (count=1)
     runs-on: ubuntu-latest
@@ -112,3 +141,73 @@ jobs:
       # failure here is investigated, never re-rolled.
       - name: Re-run mesh package under repetition
         run: go test ./internal/mesh -count=3 -timeout 1800s
+
+  load-soak:
+    name: Load Soak (25 nodes, sustained)
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Sustained-load gate, distinct from mesh-soak (whole-package
+      # repetition): this drives ONLY the multi-node load/topology
+      # scenarios but with repetition, catching convergence and
+      # connectivity degradation under sustained publish churn that a
+      # single short pass cannot see. Runs on push like the rest of the
+      # mesh gates because these tests take seconds each, not minutes.
+      - name: Load topology scenarios under repetition
+        run: go test ./internal/mesh -count=3 -timeout 1800s -run 'TestTwentyFiveNodePublishBurstPropagatesToAllSubscribers|TestRelayBurstDeliveryRemainsStable|TestMixedTopologyPubSubAndRelayRemainStable|TestMixedTopologySteadyStateSoakRetainsConnectivity|TestTwelveNodeStarSustainsRotatingPublishers|TestStarTopologyResumesDeliveryAfterLeafRestart|TestStarTopologyRecoversAfterPeerReplacement'
+
+  memory-gate:
+    name: Memory Gate (steady-state heap)
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Steady-state heap regression gate: the 201-node memory benchmark
+      # FAILS when heap_mb exceeds the baseline (see
+      # internal/mesh/memory_benchmark_test.go) by more than 20%. Set
+      # MOSS_HEAP_BASELINE_MB here to re-anchor the baseline after an
+      # intentional footprint change; never widen the allowed growth to
+      # make a regression pass.
+      - name: Run steady-state memory benchmark with heap budget
+        run: go test ./internal/mesh -run '^$' -bench 'BenchmarkTwoHundredPeerSteadyStateMemory' -benchtime=1x -timeout 900s
+
+  mesh-race:
+    name: Mesh Race (nightly)
+    # Nightly only (see `schedule` above): the mesh suite under -race takes
+    # several times longer than the plain strict run and must not slow the
+    # per-push path. Also runs when triggered manually.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run mesh package under the race detector
+        run: go test -race -count=1 -timeout 3600s ./internal/mesh

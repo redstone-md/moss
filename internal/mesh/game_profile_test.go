@@ -73,7 +73,7 @@ func TestDecodeSnapshotRejectsAndExtends(t *testing.T) {
 		t.Fatal("short payload decoded without error")
 	}
 	wrongVersion := EncodeSnapshot(GameSnapshot{EntityID: 1, Seq: 1})
-	wrongVersion[0] = 2
+	wrongVersion[0] = 3
 	if _, err := DecodeSnapshot(wrongVersion); err == nil {
 		t.Fatal("unknown version decoded without error")
 	}

@@ -147,49 +147,84 @@ func TestPeerDispatchQueueSurvivesStopWithPacketsInFlight(t *testing.T) {
 	rec := newRecordedSession(t)
 	farEnd := newCapturingCarrier()
 	farSess := cipherMatchedSession(t, farEnd)
-	peer := &peerConn{id: "stopping-source", session: rec.session}
+	peer := &peerConn{id: "stopping-source", session: rec.session, connectedAt: time.Now()}
 	node.scoring.Ensure("stopping-source")
+	// Registered on purpose: Stop only closes the sessions it finds in
+	// n.peers, so an unregistered peer would leave readPeer parked on
+	// ReadPacket forever and hang Stop's wg.Wait — the very hang this test
+	// exists to pin. Registered the same way registerPeerFrom does before
+	// launching readPeer, the peer dies by Stop's own hand: closeSession
+	// kills it mid-flight and the queue drains inside wg.Wait, exactly as
+	// for a production peer.
+	node.mu.Lock()
+	node.peers[peer.id] = peer
+	node.mu.Unlock()
 	node.wg.Add(1)
 	go node.readPeer(peer)
 	t.Cleanup(func() { rec.carrier.Close() })
-
-	// A burst the read loop may still be enqueueing when Stop lands. Ping
-	// packets need no subscription and produce a Pong write the carrier
+	// A burst the read loop may still be enqueueing when the session dies.
+	// Ping packets need no subscription and produce a Pong write the carrier
 	// absorbs, so the burst flows end to end. The feed races the loop's own
-	// lifetime: the session's teardown closes the carrier channel under the
-	// feeder, and a send to it panics — the channel equivalent of writing to
-	// a socket the peer just closed. That close mid-burst is part of what
-	// the test exercises, so the feeder recovers it and lets Stop prove the
-	// important half: nothing hangs, nothing panics inside the node.
+	// lifetime, in two steps: an offered ciphertext the read loop is too busy
+	// to take is dropped, and a dropped ciphertext leaves the noise nonces
+	// out of step, so the next one fails to decrypt and tears the session
+	// down — the carrier closing under the feeder is the channel equivalent
+	// of a socket the peer just closed. That close mid-burst is part of what
+	// the test exercises; offerReads serializes every offer against it under
+	// the carrier's own lock, so the feeder observes the close instead of
+	// racing it, and Stop still has to prove the important half: nothing
+	// hangs, nothing panics inside the node.
 	packet, err := json.Marshal(gossip.Envelope{Type: gossip.TypePing, RequestID: "probe"})
 	if err != nil {
 		t.Fatalf("marshal ping: %v", err)
 	}
 	feedBurst := func() (fed int) {
-		defer func() {
-			if recover() != nil {
-				// The carrier closed mid-send: the session's own teardown
-				// beat the feeder to it. A closed socket is a normal end.
-			}
-		}()
-		for i := 0; i < peerDispatchQueueDepth; i++ {
+		for range peerDispatchQueueDepth {
 			if err := farSess.WritePacket(packet); err != nil {
 				t.Fatalf("far-end ping write: %v", err)
 			}
-			select {
-			case rec.carrier.reads <- farEnd.lastWrite():
-				fed++
-			default:
-				// The read loop already drained what it could take; that
-				// too is fine — the assertion is that nothing panics or
-				// hangs inside the node.
+			delivered, closed := offerReads(rec.carrier, farEnd.lastWrite())
+			if closed {
+				// The session's own teardown beat the feeder to the
+				// carrier. A closed socket is a normal end to the burst.
+				return fed
 			}
+			if delivered {
+				fed++
+			}
+			// Undelivered: the read loop was mid-packet and the ciphertext
+			// was dropped — the loss that desyncs the nonces and kills the
+			// session. The next offer either feeds the dying session or
+			// observes its close.
 		}
 		return fed
 	}
 	feedBurst()
 	if code := node.Stop(); code != MOSS_OK {
 		t.Fatalf("Stop: %d", code)
+	}
+}
+
+// offerReads hands one ciphertext to the node's carrier without blocking,
+// serialized against the carrier's Close under its own lock. The session the
+// carrier serves can die mid-burst: a ciphertext the read loop cannot take is
+// dropped, the noise nonces fall out of step, and the failed decrypt that
+// follows tears the session down — closing the carrier while the burst is
+// still in flight. An unsynchronized offer races that close (and can panic on
+// a closed channel); under the lock the feeder observes the close instead.
+// The receiving side needs no lock of its own — channel send and receive are
+// their own synchronization.
+func offerReads(carrier *recordingCarrier, packet []byte) (delivered, closed bool) {
+	carrier.mu.Lock()
+	defer carrier.mu.Unlock()
+	if carrier.closed {
+		return false, true
+	}
+	select {
+	case carrier.reads <- packet:
+		return true, false
+	default:
+		return false, false
 	}
 }
 
