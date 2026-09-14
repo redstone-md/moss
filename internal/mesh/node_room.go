@@ -64,8 +64,11 @@ var errNotInRoom = errors.New("not in room")
 // roomAEADCacheMax bounds the room AEAD cache. Held rooms are the only
 // source of keys and each holds one entry, so a real node sits far below
 // this; the bound exists for the join/leave churn paths that outpace the
-// invalidation calls.
-const roomAEADCacheMax = 64
+// invalidation calls. 16, not 64: one node serving a handful of concurrent
+// conversations is the top of the real range, and a breach clears wholesale
+// (the next call re-constructs from the held key) — the cap is insurance
+// against churn, not a working-set size.
+const roomAEADCacheMax = 16
 
 // roomAEADCache memoizes the chacha20poly1305.New(key) construction per
 // room: a publish or delivery paid it on every message otherwise, and the

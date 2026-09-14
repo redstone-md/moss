@@ -64,7 +64,7 @@ var inboundDropFamilies = []string{
 //   - udp_accept_drops rising → the accept backlog is full: new sessions are
 //     being discarded at the door, so peers connect-and-vanish instead of
 //     flapping.
-//   - outbound_drops rising → a peer's own outbound queue (256 deep) is
+//   - outbound_drops rising → a peer's own outbound queue (32 deep) is
 //     overflowing: that peer is slower than the mesh is trying to feed it, or a
 //     single channel's fan-out is writing faster than its worker drains.
 //   - in___dispatch_dropped__ rising → one peer's dispatch queue is full: that
@@ -148,7 +148,7 @@ func axiomDropped(n *Node) uint64 {
 // dropGrowthWarnPerMin is how many drops per minute in one family before the
 // growth observer emits a warn event. 64 ≈ one drop per second: high enough
 // that a single lost packet or a stray duplicate snapshot stays silent, low
-// enough that a queue that is genuinely backing up (256-deep outbound queue,
+// enough that a queue that is genuinely backing up (32-deep outbound queue,
 // 1024-deep dispatch channel) fires within the first minute of the storm.
 const dropGrowthWarnPerMin = 64
 
