@@ -11,14 +11,29 @@ import (
 	"github.com/redstone-md/moss/internal/overlay"
 )
 
-// startOverlayNode builds a node with discovery disabled, so the only topology
-// is the one the test wires by hand. maxPeers <= 0 leaves the default.
-func startOverlayNode(t *testing.T, meshID string, maxPeers ...int) *Node {
-	t.Helper()
+// overlayTestConfig is the discovery-free topology every overlay test wires by
+// hand: no trackers, no LAN, no DHT, so the only peers are the ones the test
+// connects itself.
+func overlayTestConfig() Config {
 	cfg := DefaultConfig()
 	cfg.Trackers = nil
 	cfg.LANDiscoveryEnabled = false
 	cfg.DHTEnabled = false
+	return cfg
+}
+
+// startOverlayNode builds a node with discovery disabled, so the only topology
+// is the one the test wires by hand. maxPeers <= 0 leaves the default.
+func startOverlayNode(t *testing.T, meshID string, maxPeers ...int) *Node {
+	t.Helper()
+	return startOverlayNodeWithConfig(t, meshID, overlayTestConfig(), maxPeers...)
+}
+
+// startOverlayNodeWithConfig is startOverlayNode for a config the caller has
+// already tuned (base it on overlayTestConfig so the topology stays
+// hand-wired). The node is built and started from it verbatim.
+func startOverlayNodeWithConfig(t *testing.T, meshID string, cfg Config, maxPeers ...int) *Node {
+	t.Helper()
 	if len(maxPeers) > 0 && maxPeers[0] > 0 {
 		cfg.MaxPeers = maxPeers[0]
 	}
@@ -31,6 +46,27 @@ func startOverlayNode(t *testing.T, meshID string, maxPeers ...int) *Node {
 	}
 	t.Cleanup(func() { n.Stop() })
 	return n
+}
+
+// overlayUpgradeCeilingSec caps every direct-connect and direct-upgrade budget
+// inside the no-direct-path scenario. A promotion pass arms tryDirectUpgrade
+// with the handshake budget; on a CI runner where the binding observation
+// never answers, each such attempt parks on waits only its budget bounds — an
+// uncapped budget turned that park into the 29-minute stall this test once
+// shipped. Loopback handshakes need milliseconds, so the ceiling costs the
+// healthy path nothing.
+const overlayUpgradeCeilingSec = 2
+
+// startCappedOverlayNode builds the scenario's nodes with the upgrade ceiling
+// applied: the same discovery-free topology, but every dial, refresh and
+// upgrade budget the node arms for itself is capped at
+// overlayUpgradeCeilingSec. The overlay path under test runs on its own
+// constant timeouts, so only the background direct attempts shrink.
+func startCappedOverlayNode(t *testing.T, meshID string, maxPeers ...int) *Node {
+	t.Helper()
+	cfg := overlayTestConfig()
+	cfg.Security.HandshakeTimeoutSec = overlayUpgradeCeilingSec
+	return startOverlayNodeWithConfig(t, meshID, cfg, maxPeers...)
 }
 
 // makeCore forces the node to look publicly reachable. Only such a node holds
@@ -134,10 +170,16 @@ func TestOverlayLeavesFindEachOtherThroughCore(t *testing.T) {
 // the table. The only remaining path is the one under test. (Relayed peers do
 // not consume the direct-peer budget.) Disabling the overlay must fail this.
 func TestOverlayDeliversBetweenLeavesWithNoDirectPath(t *testing.T) {
-	core := startOverlayNode(t, "room")
+	// Capped nodes: once the relay session forms, every maintenance pass arms a
+	// direct upgrade against B — an attempt that on this topology can only ever
+	// fail (A's single direct slot is the core's). The ceiling bounds each such
+	// attempt to a short, bounded park instead of the full 5s handshake budget,
+	// which on a CI runner with no binding observation available is what turned
+	// this test into a 29-minute hang.
+	core := startCappedOverlayNode(t, "room")
 	makeCore(core)
-	a := startOverlayNode(t, "room", 1)
-	b := startOverlayNode(t, "room", 1)
+	a := startCappedOverlayNode(t, "room", 1)
+	b := startCappedOverlayNode(t, "room", 1)
 
 	received := make(chan []byte, 4)
 	b.SetMessageCallback(func(channel string, _ [32]byte, data []byte) {

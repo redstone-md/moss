@@ -11,6 +11,14 @@ import (
 	"github.com/redstone-md/moss/internal/transport"
 )
 
+// stopHangWatchdog bounds how long TestPeerDispatchQueueSurvivesStopWithPacketsInFlight
+// waits for Stop to return. Stop's contract is that it never hangs: it closes
+// every registered peer's session, which wakes every readPeer the node owns.
+// The ceiling is generous (Stop is sub-millisecond here) yet far below the CI
+// job timeout, so a regression in that contract fails this test by name in
+// seconds instead of stalling the whole suite until the global timeout.
+const stopHangWatchdog = 30 * time.Second
+
 // The read loop must keep draining the socket while an envelope's handler is
 // stuck, and a queue that cannot take more packets must say so in a counter.
 //
@@ -134,7 +142,10 @@ func nextPublish(t *testing.T, n *Node, channel string, sealed []byte, farEnd *c
 // The per-peer dispatch queue must be closed exactly once, by the sender — a
 // queue closed while the read loop can still send is a send-on-closed panic,
 // and moss runs inside the host process, so the test pins the teardown order:
-// Stop with packets in flight must neither panic nor hang.
+// Stop with packets in flight must neither panic nor hang. The hang half is
+// enforced with a watchdog, so a regression fails by name in seconds instead
+// of stalling the CI until the global timeout — which is how this test last
+// burned half an hour of CI.
 func TestPeerDispatchQueueSurvivesStopWithPacketsInFlight(t *testing.T) {
 	node, err := NewNode("mesh-readpeer-stop", nil, isolatedTestConfig("readpeer-stop"))
 	if err != nil {
@@ -200,8 +211,25 @@ func TestPeerDispatchQueueSurvivesStopWithPacketsInFlight(t *testing.T) {
 		return fed
 	}
 	feedBurst()
-	if code := node.Stop(); code != MOSS_OK {
-		t.Fatalf("Stop: %d", code)
+	// Stop's own run is sub-millisecond here, and nothing else in this test
+	// waits behind it, so a generous ceiling costs nothing and keeps the
+	// watchdog flake-proof on a loaded runner. Stop must never hang: its
+	// sweep closes every registered peer's session, which wakes this peer's
+	// parked ReadPacket — the registration block above is what puts it in
+	// the sweep's reach, so a regression there (or in the sweep) is a Stop
+	// that never returns, and the watchdog names it.
+	stopDone := make(chan int32, 1)
+	go func() { stopDone <- node.Stop() }()
+	select {
+	case code := <-stopDone:
+		if code != MOSS_OK {
+			t.Fatalf("Stop: %d", code)
+		}
+	case <-time.After(stopHangWatchdog):
+		// No leak past this failure: the cleanup closes the carrier after
+		// the Fatal, which wakes the parked readPeer and lets the wedged
+		// Stop finish in its goroutine.
+		t.Fatal("Stop never returned: a live readPeer was outside its session sweep — an unregistered peer parks on ReadPacket until its carrier closes (see the registration block above)")
 	}
 }
 
