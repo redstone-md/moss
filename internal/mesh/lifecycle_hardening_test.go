@@ -3,7 +3,9 @@ package mesh
 import (
 	"encoding/hex"
 	"net"
+	"runtime"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -429,6 +431,97 @@ func TestSupernodeReadyDeadbandHoldsStateAroundCapacity(t *testing.T) {
 			t.Fatal("active supernode at 1/1 sessions must demote (margin 0)")
 		}
 	})
+}
+
+// refreshSupernodeStatus must decide its transition from the profile that is
+// current at COMMIT time, not at call time. The old shape loaded the profile
+// and computed the verdict before taking the transition lock, so a
+// maintenance tick preempted between its snapshot and its lock committed a
+// STALE verdict after a fresher refresh had already flipped the state: the
+// node demoted and re-promoted with no profile change, consumers saw two
+// EventSupernodePromoted inside a couple of heartbeats (the CI flake in
+// TestSupernodeStatusAnnounceAndRevokePropagatesOnce), and each spurious flip
+// signed and broadcast a SupernodeAnnounce/Revoke to every peer.
+//
+// The choreography parks a refresh while the profile turns from
+// promotion-worthy to revocation-worthy underneath it. A refresh that
+// re-reads under the lock (the fix) finds no transition and emits nothing; a
+// refresh that commits its call-time snapshot (the bug) promotes on stale
+// data. GOMAXPROCS(1) makes the hand-off deterministic: the parked goroutine
+// only runs once the test yields the gate, so the interleaving is not
+// probabilistic.
+func TestRefreshSupernodeStatusUsesProfileAtCommitTime(t *testing.T) {
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
+
+	cfg := isolatedTestConfig("supernode-atomic-commit")
+	cfg.GossipSub.HeartbeatMS = 50
+	cfg.NAT.SuperNodeMinUptimeSec = 0
+	node, err := NewNode("mesh-supernode-atomic", nil, cfg)
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+	node.natProfile.Store(nat.Profile{Type: nat.TypeSymmetric, PublicReachable: false})
+	if code := node.Start(); code != MOSS_OK {
+		t.Fatalf("Start failed: %d", code)
+	}
+	defer node.Stop()
+
+	var eventMu sync.Mutex
+	promoted, revoked := 0, 0
+	node.SetEventCallback(func(eventType int32, detailJSON string) {
+		eventMu.Lock()
+		defer eventMu.Unlock()
+		if eventType == EventSupernodePromoted {
+			promoted++
+		}
+		if eventType == EventSupernodeRevoked {
+			revoked++
+		}
+	})
+
+	// Park a refresh inside the stale-snapshot window. The test holds n.mu
+	// exclusively while the profile briefly says PUBLIC; the refresher
+	// signals and enters refreshSupernodeStatus. On one P the refresher keeps
+	// the processor until it blocks on n.mu — after loading the profile in
+	// the call-time-snapshot shape, before loading it in the
+	// re-read-under-the-lock shape. Only then does the test resume, turn the
+	// profile symmetric, and release the lock. A refresh that re-reads under
+	// the lock sees symmetric and stays silent; a refresh that commits its
+	// call-time snapshot promotes a node whose profile is no longer public.
+	node.mu.Lock()
+	node.natProfile.Store(nat.Profile{
+		Type:            nat.TypePublic,
+		PublicReachable: true,
+		ExternalAddress: "203.0.113.10:40000",
+	})
+	entered := make(chan struct{})
+	committed := make(chan struct{})
+	go func() {
+		defer close(committed)
+		close(entered)
+		node.refreshSupernodeStatus()
+	}()
+	<-entered
+	node.natProfile.Store(nat.Profile{Type: nat.TypeSymmetric, PublicReachable: false})
+	node.mu.Unlock()
+	<-committed
+	time.Sleep(300 * time.Millisecond) // drain dispatch
+
+	eventMu.Lock()
+	p, r := promoted, revoked
+	eventMu.Unlock()
+	if p != 0 || r != 0 {
+		t.Fatalf("refresh committed a transition against a profile that no longer exists: promoted=%d revoked=%d, want 0/0 — the verdict must come from the profile current at commit time, not at call time", p, r)
+	}
+	// The current profile is symmetric: a fresh refresh must stay silent too.
+	node.refreshSupernodeStatus()
+	time.Sleep(300 * time.Millisecond)
+	eventMu.Lock()
+	p, r = promoted, revoked
+	eventMu.Unlock()
+	if p != 0 || r != 0 {
+		t.Fatalf("fresh refresh against the symmetric profile emitted promoted=%d revoked=%d, want 0/0", p, r)
+	}
 }
 
 // ---- GrowthHardener wiring ----

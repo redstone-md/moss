@@ -111,9 +111,16 @@ func (n *Node) makePublishEnvelope(channel string, data []byte) gossip.Envelope 
 
 func (n *Node) supernodeReady(profile nat.Profile) bool {
 	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.supernodeReadyLocked(profile)
+}
+
+// supernodeReadyLocked is supernodeReady for callers already holding n.mu.
+// refreshSupernodeStatus needs it because its verdict and its state
+// transition must commit inside one lock hold — see there.
+func (n *Node) supernodeReadyLocked(profile nat.Profile) bool {
 	overloaded := time.Now().Before(n.overloadedUntil)
 	active := n.supernodeActive
-	n.mu.RUnlock()
 	if overloaded {
 		return false
 	}
@@ -157,11 +164,26 @@ func (n *Node) ChannelSubscribers(channel string) []string {
 	return subscribers
 }
 
+// refreshSupernodeStatus re-evaluates this node's supernode role and, when the
+// verdict changed, flips supernodeActive, announces the new state to every
+// peer, and emits the matching event.
+//
+// The verdict and the transition must commit inside ONE lock hold: profile,
+// session count, and supernodeActive are a single consistent read. Computing
+// the verdict first and locking only to flip the state left a window where a
+// refresher that had snapshotted an OLDER profile (a maintenance tick
+// preempted between its snapshot and its lock) committed its stale verdict
+// AFTER a fresher refresher had already flipped the state — the state flipped
+// back, the next tick flipped it forward again, and peers received
+// back-to-back duplicate announcements and duplicate
+// EventSupernodePromoted within a heartbeat or two. Events are advisory and
+// drop-tolerant, but every spurious flip also signs and broadcasts a
+// SupernodeAnnounce/Revoke to every peer, so the transition itself must be
+// atomic, not just the flip of the boolean.
 func (n *Node) refreshSupernodeStatus() {
-	profile := n.natProfile.Load().(nat.Profile)
-	ready := n.supernodeReady(profile)
-
 	n.mu.Lock()
+	profile := n.natProfile.Load().(nat.Profile)
+	ready := n.supernodeReadyLocked(profile)
 	if n.supernodeActive == ready {
 		n.mu.Unlock()
 		return
