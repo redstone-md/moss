@@ -11,6 +11,61 @@ later. Nothing is deleted: the tags stay published because builds that already
 resolved them must keep resolving them.
 
 
+## [0.8.21] - 2026-09-14
+
+### Added
+- **MBRIDGE v1: a gateway from moss pub/sub to a Meshtastic-shaped outside
+  network.** One moss leg, one Link leg, glued by a pump. The codec rides one
+  moss message as 1..255 frames — a 46-byte header plus ≤191-byte chunks,
+  the 237-byte DATA ceiling — with reassembly on the far side; the table maps
+  Meshtastic node numbers to moss peer IDs, written only by explicit
+  registration and swept by keepalive liveness (GW_KEEPALIVE every 60s, a 3x
+  silence budget); the pump splices into the node's packet-callback chain in
+  both directions with gateway-ID anti-loop; and `cmd/moss-bridge` runs the
+  pump with graceful shutdown.
+- **moss-lan: an opt-in virtual LAN product over the mesh core.** OS TUN
+  drivers behind build tags — a real device on Linux, the utun kernel-control
+  socket on macOS, stubs elsewhere; presence discovery, where participants
+  heartbeat `{nick, peerID, virtualIP}` on the room's `lan:presence` topic
+  and keep a TTL-swept NickTable; invite links as printable, QR-encodable
+  `moss-lan://` strings over the core's room-invite crypto; and a `moss-lan`
+  node + CLI (`create`/`join`). The core is consumed read-only.
+- **The bridge's MQTT leg, spoken by hand.** MQTT 3.1.1 CONNECT/CONNACK,
+  PUBLISH, SUBSCRIBE/SUBACK and PINGREQ/PINGRESP over one TCP connection,
+  QoS 0 only — the paho dependency the project refuses to take is small
+  enough to inline for the subset the pump needs. `tls://` broker URLs are
+  rejected loudly rather than silently downgraded, and a fake broker drives
+  the tests.
+- **Windows TUN without cgo.** The wintun.dll ring-buffer adapter loads the
+  DLL via LoadLibrary and speaks its procs through golang.org/x/sys/windows
+  — the same calls wireguard-go makes. The DLL is not embedded: it ships
+  beside the binary, `MOSS_WINTUN_DLL` overrides the path, and a missing DLL
+  fails with a descriptive error rather than "not implemented".
+- **TUN packets cross the bridge end-to-end room-sealed.** TunBridge seals
+  each packet under the room AEAD at the near host; it then rides pump, Link
+  (ciphertext inside MBRIDGE frames), the far pump and the real mesh publish
+  path as a blob only a room-PSK holder can open.
+- **A hundred-node star stand.** One root and 99 loopback-pinned leaves
+  converge, then a burst of 10 publishes from the root reaches all 100 nodes
+  in 0.48 s, at ~40 MB measured steady-state heap for the fleet.
+
+### Changed
+- **The GeoLite2 database is behind a `geoip` build tag, off by default.**
+  Embedded it cost ~27% of the binary plus ~8 MB of RAM at the first lookup;
+  default builds are now 4.6 MB lighter, and relay selection does not
+  change: without the tag every Lookup degrades to "no location", which
+  callers already treat as "no preference" — exactly as for private/unknown
+  IPs. Build with `-tags geoip` to embed it again.
+
+### Fixed
+- **The 15s probe floor was dead code — a healthy peer was pinged every
+  conn-tick.** `handlePong` zeroed `pingSentAt` on every pong, wiping the
+  base `peerProbeIntervalFloor` counts from, so every connected peer was
+  re-pinged on the ~1s maintenance pass: almost all idle-session traffic on
+  a healthy mesh. The pong now re-bases the timestamp at its arrival — the
+  prune scan gates on `pingPending`, so no expired-ping miss can be
+  manufactured — and idle traffic drops 93%.
+
 ## [0.8.20] - 2026-09-14
 
 ### Changed
