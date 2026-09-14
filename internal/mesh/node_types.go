@@ -190,17 +190,18 @@ type Node struct {
 	// removePeer. Before that teardown, every peer the node EVER connected
 	// leaked its queue until Stop — ~110KB apiece on a gossiping node.
 	//
-	// Memory ceiling: outboundQueueDepth (256) envelopes per CONNECTED peer,
-	// an envelope being its header plus a payload up to
-	// Security.MaxMessageSizeBytes (64KB). Worst case per queue is therefore
-	// 256 × ~64KB ≈ 16MB, so N connected peers bound the total at ~16MB × N:
-	// a 500-peer relay caps at ~8GB IF every queue were simultaneously full
-	// of maximum-size frames — which gossip traffic never approaches, since
-	// queues fill with small control envelopes and overflow drops (counted,
+	// Memory ceiling: outboundQueueDepth (32) SLOTS per connected peer are
+	// allocated eagerly with the queue — a 488B slot each, ~15KB per peer
+	// resident for the connection's whole life — and the payloads they may
+	// reference are bounded by Security.MaxMessageSizeBytes (64KB) on the
+	// enqueueing paths, so the worst case per queue is 32 × ~64KB ≈ 2MB of
+	// referenced wire bytes and N connected peers bound the total at
+	// ~2MB × N — a ceiling gossip traffic never approaches, since queues
+	// fill with small control envelopes and overflow drops (counted,
 	// monotonic, in outboundDropped) rather than accumulating. A full queue
-	// costs only its own goroutine's next send, never the node. Reducing the
-	// depth or the frame cap shrinks the ceiling linearly; see
-	// outboundQueueDepth before touching either.
+	// costs only its own goroutine's next send, never the node. The slot
+	// cost is the flat, always-on one: see outboundQueueDepth before
+	// touching either number.
 	outboundMu      sync.Mutex
 	outboundQueues  map[string]chan outboundEnvelope
 	outboundDropped atomic.Uint64

@@ -14,7 +14,19 @@ import (
 // parked in the transport's write timeout — can only cost its own queue,
 // never the read loop, the maintenance pass, or the publish call that
 // happened to target it.
-const outboundQueueDepth = 256
+//
+// 32, not 256: the queue's job is to absorb a BURST, not to buffer a
+// backlog — the worker drains at wire speed, and the deepest real burst is
+// the join-time peer-exchange fan-out (one self-announce plus up to
+// snapshotCatalogCap catalog entries), ~25 envelopes. Everything past that
+// is a peer slower than the mesh feeds it, and gossip is re-announced on
+// later heartbeats anyway — a counted drop (outboundDropped) is the honest
+// signal there. The memory math is the other half: the channel buffer is
+// allocated eagerly with the queue (488B per slot × depth) for EVERY
+// connected peer for the node's whole life, so 256 was ~122KB of resident
+// heap per peer — 40MB on the 200-peer memory gate vs ~15KB at 32 — while
+// measured occupancy never left single digits.
+const outboundQueueDepth = 32
 
 // outboundEnvelope is one queued send: the envelope plus its marshaled wire
 // bytes. Carrying the wire form through the queue is what makes a broadcast

@@ -80,7 +80,13 @@ func (n *Node) sendRelayFrame(sessionID string, data []byte) bool {
 		RelaySession: sessionID,
 		RelaySource:  n.localPeerID(),
 		RelayTarget:  session.remotePeerID,
-		Payload:      append([]byte(nil), data...),
+		// No copy: `data` is a fresh AEAD Seal() product on every caller —
+		// sealed for this frame alone and never looked at again after this
+		// call — so the envelope takes ownership directly. A defensive copy
+		// here made three copies of every relayed frame (sealed input, the
+		// copy, and the marshaled wire) where the queue's single-shot
+		// lifetime needs two.
+		Payload: data,
 	})
 }
 
@@ -128,7 +134,16 @@ func (n *Node) openRelayGossipEnvelope(session relayLocalSession, sourcePeerID s
 // relay close, route GC) without ever notifying this cache, so keys
 // accumulate with session churn; the cap keeps the cache O(sessions) in
 // the working set rather than O(sessions ever seen).
-const relayAEADCacheMax = 1024
+//
+// 128, not 1024: the working set is one entry per ACTIVE relay direction
+// per session — a relay with dozens of live sessions stays far below this.
+// The cap exists for churn (dead sessions), where a miss costs one
+// re-derivation (~92µs measured), never correctness. Entries are not free
+// (AEAD construction plus key strings, ~1KB apiece), so a 1024 cap was a
+// ~1MB-per-relay ceiling against churn that a 128-entry window absorbs the
+// same way — the sweep inside already prefers idle entries and wholesale-
+// clears as a last resort.
+const relayAEADCacheMax = 128
 
 // relayAEADEntry is one cached AEAD plus the remote static it was derived
 // from. The static is re-checked on every hit (a 32-byte compare) because a
