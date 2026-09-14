@@ -590,6 +590,12 @@ func (n *Node) PublishRoom(meshID, channel string, data []byte) int32 {
 	return MOSS_ERR_NO_PEERS
 }
 
+// SetMessageCallback registers the callback invoked for every message locally
+// delivered on a subscribed channel. The callback runs synchronously on that
+// channel's localDeliveryWorker — a blocking cb stalls delivery for the whole
+// channel and, because the worker is tracked by the node's WaitGroup, can
+// hang Stop indefinitely. The contract is a non-blocking cb: drop, buffer, or
+// hand off to an application-side consumer. Pass nil to clear.
 func (n *Node) SetMessageCallback(cb MessageCallback) {
 	n.mu.Lock()
 	defer n.mu.Unlock()

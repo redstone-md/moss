@@ -182,9 +182,18 @@ func TestOverlayDeliversBetweenLeavesWithNoDirectPath(t *testing.T) {
 	b := startCappedOverlayNode(t, "room", 1)
 
 	received := make(chan []byte, 4)
+	// The callback runs synchronously on localDeliveryWorker, which Stop
+	// waits on. The test returns from inside the receive loop (Goexit on
+	// Fatalf included), leaving nobody to drain this channel — a blocking
+	// send here would park the worker forever and wedge b's cleanup. The
+	// cap-4 buffer plus A's 500ms republish keeps the freshest copies
+	// flowing, so dropping on a full buffer loses nothing the loop needs.
 	b.SetMessageCallback(func(channel string, _ [32]byte, data []byte) {
 		if channel == "sparse-channel" {
-			received <- append([]byte(nil), data...)
+			select {
+			case received <- append([]byte(nil), data...):
+			default:
+			}
 		}
 	})
 
