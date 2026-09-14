@@ -172,6 +172,16 @@ func (n *Node) evaluateMeshDeliveryDeficits(now time.Time) {
 	}
 }
 
+// handlePong records the round-trip of the answered probe and re-bases the
+// probe floor at the pong's arrival: pingSentAt is set to now and, unlike
+// pingPending, deliberately NOT zeroed. A non-zero timestamp is the base the
+// probe floor (peerProbeInterval) counts from, so a healthy peer is re-pinged
+// a full interval after its last pong, not on the very next conn-tick.
+// Zeroing it here used to wipe that base on every pong, making
+// peerProbeIntervalFloor dead code and pinging every connected peer once per
+// ~1s maintenance pass — almost all idle-session traffic on a healthy mesh.
+// The prune scan gates on pingPending, not on the zero value, so the retained
+// timestamp cannot manufacture an expired-ping miss.
 func (n *Node) handlePong(peer *peerConn, env gossip.Envelope) {
 	if peer == nil || env.RequestID == "" {
 		return
@@ -182,13 +192,14 @@ func (n *Node) handlePong(peer *peerConn, env gossip.Envelope) {
 	if current == nil || current.pingPending != env.RequestID || current.pingSentAt.IsZero() {
 		return
 	}
-	rtt := time.Since(current.pingSentAt)
+	now := time.Now()
+	rtt := now.Sub(current.pingSentAt)
 	if rtt <= 0 {
 		rtt = time.Nanosecond
 	}
 	current.lastRTT = rtt
 	current.pingPending = ""
-	current.pingSentAt = time.Time{}
+	current.pingSentAt = now
 	current.pingMisses = 0
 }
 
