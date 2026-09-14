@@ -368,16 +368,32 @@ func (n *Node) teardownOutboundQueue(peerID string) {
 
 // sweepOrphanOutboundQueues reclaims queues whose peer is gone from n.peers
 // — the eviction and relay-removal paths delete peers without removePeer.
-// Runs on the maintenance loop's conn-tick; lock order is outboundMu →
-// n.mu.RLock, which nothing nests the other way around (enqueueOutbound
-// never holds n.mu).
+// Runs on the maintenance loop's conn-tick.
+//
+// Lock order is n.mu → outboundMu, NEVER the reverse: sendOrEnqueueWire
+// holds n.mu.RLock across enqueueOutboundWire, so nothing here may take n.mu
+// while holding outboundMu. The old per-queue RLock inside the outboundMu
+// section inverted that order and deadlocked the mesh: a pending writer
+// (registerPeerFrom) blocks the sweep's RLock — Go's RWMutex parks new
+// readers behind a waiting writer — while the sweep holds outboundMu
+// against every enqueue, each of which holds the RLock the writer needs.
+// Instead the connected set is snapshotted under n.mu.RLock with no other
+// lock held, and the orphan queues are closed under outboundMu alone.
+// A peer deleted between snapshot and close is reclaimed by the next pass;
+// a peer that returns in that window loses only the current queue — the
+// worker delivers what is buffered, and the next enqueue lazily spawns a
+// fresh one. Sends and closes both happen under outboundMu, which is what
+// makes closing safe.
 func (n *Node) sweepOrphanOutboundQueues() {
+	n.mu.RLock()
+	connected := make(map[string]struct{}, len(n.peers))
+	for peerID := range n.peers {
+		connected[peerID] = struct{}{}
+	}
+	n.mu.RUnlock()
 	n.outboundMu.Lock()
 	for peerID, queue := range n.outboundQueues {
-		n.mu.RLock()
-		_, connected := n.peers[peerID]
-		n.mu.RUnlock()
-		if connected {
+		if _, live := connected[peerID]; live {
 			continue
 		}
 		delete(n.outboundQueues, peerID)
