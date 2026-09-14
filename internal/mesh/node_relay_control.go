@@ -27,8 +27,23 @@ func (n *Node) handleRelayRequest(peer *peerConn, env gossip.Envelope) {
 		}
 		n.mu.Lock()
 		n.relayLocals[env.RelaySession] = session
-		relayPeer := n.registerRelayedPeerLocked(session)
+		relayPeer, capped := n.registerRelayedPeerLocked(session)
+		if capped {
+			delete(n.relayLocals, env.RelaySession)
+		}
 		n.mu.Unlock()
+		if capped {
+			// No slot for another relayed peer: refuse with a close, not an
+			// accept that would leave the opener holding a half-open
+			// session. The opener's handleRelayClose tears it down.
+			n.sendEnvelope(peer, gossip.Envelope{
+				Type:         gossip.TypeRelayClose,
+				RelaySession: env.RelaySession,
+				RelaySource:  env.RelayTarget,
+				RelayTarget:  env.RelaySource,
+			})
+			return
+		}
 		n.sendEnvelope(peer, n.signRelayAcceptEnvelope(gossip.Envelope{
 			Type:         gossip.TypeRelayAccept,
 			RelaySession: env.RelaySession,
@@ -66,19 +81,31 @@ func (n *Node) handleRelayAccept(peer *peerConn, env gossip.Envelope) {
 			return
 		}
 		var relayPeer *peerConn
+		capped := false
 		n.mu.Lock()
 		session, ok := n.relayLocals[env.RelaySession]
 		if ok && session.viaPeerID == peer.id && session.remotePeerID == env.RelaySource {
 			session.established = true
-			n.relayLocals[env.RelaySession] = session
-			relayPeer = n.registerRelayedPeerLocked(session)
-			if session.wait != nil {
-				close(session.wait)
-				session.wait = nil
+			relayPeer, capped = n.registerRelayedPeerLocked(session)
+			if !capped {
 				n.relayLocals[env.RelaySession] = session
+				if session.wait != nil {
+					close(session.wait)
+					session.wait = nil
+					n.relayLocals[env.RelaySession] = session
+				}
 			}
 		}
 		n.mu.Unlock()
+		if capped {
+			// The via-peer already registered a forwarding route on our
+			// behalf, so a capped target must tear the whole session down or
+			// that route outlives its endpoint. session.wait stays open on
+			// purpose: OpenRelaySession's select times out honestly instead
+			// of reporting success with no peer behind it.
+			n.closeRelaySession(session)
+			return
+		}
 		n.activateRelayedPeer(relayPeer)
 		return
 	}
@@ -337,15 +364,50 @@ func newRelaySessionID() (string, error) {
 	return hex.EncodeToString(raw[:]), nil
 }
 
-func (n *Node) registerRelayedPeerLocked(session relayLocalSession) *peerConn {
+// relayedPeerCap bounds how many relayed peers may occupy n.peers. Relayed
+// peers deliberately do not count toward MaxPeers — a leaf at MaxPeers=1
+// holds its one direct hop plus the peers it reaches through it — but
+// "uncounted" must not mean "uncapped": relayed peers entered the map with
+// no ceiling at all, so a node fed relay sessions by an eager supernode
+// grew without bound. The floor keeps tiny/test nodes (MaxPeers=1 relay
+// leaves) holding their relay fan-out.
+func relayedPeerCap(maxPeers int) int {
+	if maxPeers < 2 {
+		return 2
+	}
+	return maxPeers
+}
+
+func (n *Node) relayedPeerCountLocked() int {
+	count := 0
+	for _, peer := range n.peers {
+		if peer != nil && peer.relayed {
+			count++
+		}
+	}
+	return count
+}
+
+// registerRelayedPeerLocked adds a relayed peer to n.peers. The bool return
+// reports CAPACITY: the caller must tear the relay session down rather than
+// treat the nil peer as a silent no-op, or a capped node would half-ack the
+// opener and leave it holding a session nobody answers.
+func (n *Node) registerRelayedPeerLocked(session relayLocalSession) (*peerConn, bool) {
 	if session.remotePeerID == "" || session.viaPeerID == "" || session.sessionID == "" {
-		return nil
+		return nil, false
 	}
 	if len(n.knownPeers[session.remotePeerID].noiseStatic) != 32 {
-		return nil
+		return nil, false
 	}
-	if existing := n.peers[session.remotePeerID]; existing != nil && !existing.relayed {
-		return nil
+	existing := n.peers[session.remotePeerID]
+	if existing != nil && !existing.relayed {
+		return nil, false
+	}
+	// A session migration (same remote, new sessionID) replaces the old
+	// entry and nets no growth; only a genuinely new remote consumes cap.
+	if existing == nil && n.relayedPeerCountLocked() >= relayedPeerCap(n.config.MaxPeers) {
+		n.countInbound("__relay_peer_capped__")
+		return nil, true
 	}
 	peer := &peerConn{
 		id:             session.remotePeerID,
@@ -362,7 +424,7 @@ func (n *Node) registerRelayedPeerLocked(session relayLocalSession) *peerConn {
 	info.lastSeen = time.Now()
 	n.knownPeers[session.remotePeerID] = info
 	n.scoring.Ensure(session.remotePeerID)
-	return peer
+	return peer, false
 }
 
 func (n *Node) activateRelayedPeer(peer *peerConn) {

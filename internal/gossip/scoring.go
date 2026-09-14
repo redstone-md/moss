@@ -12,6 +12,15 @@ const (
 	GraylistThreshold           = -10000.0
 	OpportunisticGraftThreshold = 1.0
 	ipColocationPenaltyWeight   = -5.0
+
+	// maxTimeInMeshSeconds caps the mesh-time component of a peer's score.
+	// Score is meant to rank CURRENT peers against each other; without a cap
+	// it grows by 0.03/second forever (2.6/day, ~950/year), so a long-lived
+	// node outranks every fresh peer on time alone no matter how badly it
+	// behaves — and Tick(), which recomputes it every second, walks an
+	// unbounded map of never-evicted peers forever. libp2p caps the same
+	// component for the same reason.
+	maxTimeInMeshSeconds = 3600
 )
 
 type PeerScore struct {
@@ -31,10 +40,24 @@ func (p PeerScore) Total() float64 {
 type Engine struct {
 	mu    sync.Mutex
 	peers map[string]*PeerScore
+	// onRemove is invoked (under mu) for every peer dropped by Remove —
+	// the eviction hook, so a node can release peer-keyed state it owns
+	// without gossip importing it. Optional; set via SetOnRemove.
+	onRemove func(peerID string)
 }
 
 func NewEngine() *Engine {
 	return &Engine{peers: make(map[string]*PeerScore)}
+}
+
+// SetOnRemove registers the eviction callback invoked for each peer Remove
+// drops. It exists so peer-keyed state living outside this package can be
+// released on disconnect without an import cycle: the mesh layer registers a
+// closure, gossip never learns who implements it.
+func (e *Engine) SetOnRemove(fn func(peerID string)) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.onRemove = fn
 }
 
 func (e *Engine) Ensure(peerID string) {
@@ -82,14 +105,56 @@ func (e *Engine) Tick() {
 	defer e.mu.Unlock()
 	now := time.Now()
 	for _, peer := range e.peers {
-		peer.TimeInMesh = now.Sub(peer.ConnectedAt).Seconds() * 0.03
+		peer.TimeInMesh = timeInMeshLocked(peer.ConnectedAt, now)
 	}
 }
 
+// timeInMeshLocked returns the capped mesh-time contribution: 0.03/second up
+// to maxTimeInMeshSeconds, then flat.
+func timeInMeshLocked(connectedAt, now time.Time) float64 {
+	seconds := now.Sub(connectedAt).Seconds()
+	if seconds < 0 {
+		seconds = 0
+	}
+	if seconds > maxTimeInMeshSeconds {
+		seconds = maxTimeInMeshSeconds
+	}
+	return seconds * 0.03
+}
+
+// Score returns the peer's current total. The fast path — every scoring
+// comparison in the mesh sorts through this — never writes: an unknown peer
+// starts at zero, which is exactly what ensureLocked would charge into the
+// map to compute. On a node with hundreds of peers, the sorts behind
+// maintenance, dialing and mesh selection hammered this engine's single
+// write lock; the read-only path no longer serializes against the writers
+// that actually mutate scores.
 func (e *Engine) Score(peerID string) float64 {
 	e.mu.Lock()
+	peer, ok := e.peers[peerID]
+	e.mu.Unlock()
+	if !ok {
+		return 0
+	}
+	return peer.Total()
+}
+
+// Remove evicts a disconnected peer from the engine and reports whether it was
+// present. Score() recreates an evicted peer at zero on first use, so eviction
+// costs nothing beyond releasing the entry — but without it the map grew by
+// one entry per peer the node had EVER connected to, alive or not, and Tick()
+// walked all of them every second forever.
+func (e *Engine) Remove(peerID string) bool {
+	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.ensureLocked(peerID).Total()
+	if _, ok := e.peers[peerID]; !ok {
+		return false
+	}
+	delete(e.peers, peerID)
+	if e.onRemove != nil {
+		e.onRemove(peerID)
+	}
+	return true
 }
 
 func (e *Engine) ensureLocked(peerID string) *PeerScore {

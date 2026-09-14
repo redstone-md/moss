@@ -8,7 +8,7 @@ import (
 )
 
 func (n *Node) handleBindingRequest(peer *peerConn, env gossip.Envelope) {
-	if env.RequestID == "" {
+	if peer == nil || env.RequestID == "" {
 		return
 	}
 	observedAddr := peer.addr
@@ -90,7 +90,7 @@ func normalizeHolePunchCoordAt(coordAtMillis int64, now time.Time) time.Time {
 }
 
 func (n *Node) handleHolePunchCoord(peer *peerConn, env gossip.Envelope) {
-	if env.RelaySource == "" || env.RelayTarget == "" || env.AdvertisedAddr == "" {
+	if peer == nil || env.RelaySource == "" || env.RelayTarget == "" || env.AdvertisedAddr == "" {
 		return
 	}
 	coordAt := normalizeHolePunchCoordAt(env.CoordAt, time.Now())

@@ -80,6 +80,7 @@ func (n *Node) announceLocalSubscription(channel string) {
 	if !validChannel(channel) {
 		return
 	}
+	now := time.Now()
 	n.mu.RLock()
 	peers := make([]*peerConn, 0, len(n.peers))
 	for _, peer := range n.peers {
@@ -87,10 +88,24 @@ func (n *Node) announceLocalSubscription(channel string) {
 	}
 	n.mu.RUnlock()
 	for _, peer := range peers {
-		if !n.canGossipWithPeer(peer.id) {
+		if !n.canGossipWithPeer(peer.id) || !n.eligibleForMeshCandidate(peer.id) {
+			continue
+		}
+		// An announce-graft is a REAL graft, not a speculative one, but it
+		// still costs a packet and a PRUNE from a peer that is not on the
+		// channel. Record it in graftedAt exactly like the maintenance path
+		// does: without the marker, a PRUNE answering this GRAFT was never
+		// recognized as join choreography (meshGraftedWithin only consults
+		// graftedAt and the peer's own claim), the short 2s block never
+		// applied, and two strangers locked each other out for the full 30s
+		// backoff — and since every connected node re-announces to every
+		// peer on each refresh pass, the mesh runs a standing GRAFT/PRUNE
+		// cycle with strangers instead of ever forming.
+		if !n.meshGraftEligible(peer.id, channel, now) {
 			continue
 		}
 		n.sendOrEnqueue(peer, gossip.Envelope{Type: gossip.TypeGraft, Channel: channel})
+		n.markMeshGrafted(peer.id, channel, now)
 	}
 }
 
@@ -129,15 +144,29 @@ func (n *Node) announceLocalSubscriptionsToPeer(peer *peerConn) {
 	if peer == nil || !n.canGossipWithPeer(peer.id) {
 		return
 	}
+	now := time.Now()
 	for _, channel := range n.pubsub.SnapshotLocal() {
 		if !validChannel(channel) {
 			continue
 		}
+		// Same contract as announceLocalSubscription: a joiner gets one
+		// GRAFT per channel per retry window, never a burst it will answer
+		// with PRUNEs, and the markers recorded here are what let the
+		// two-tier PRUNE logic recognize its own choreography. The meshBlocked
+		// gate (eligibleForMeshCandidate) keeps a refusing peer quiet.
+		if !n.eligibleForMeshCandidate(peer.id) || !n.meshGraftEligible(peer.id, channel, now) {
+			continue
+		}
 		n.sendOrEnqueue(peer, gossip.Envelope{Type: gossip.TypeGraft, Channel: channel})
+		n.markMeshGrafted(peer.id, channel, now)
 	}
 }
 
 func (n *Node) refreshLocalSubscriptions() {
+	// The safety net re-announces to every peer on the same cadence.
+	// announceLocalSubscriptionsToPeer applies the graft retry throttle and
+	// the meshBlocked gate, so this pass converges to one GRAFT per channel
+	// per peer per window instead of re-flooding all channels to all peers.
 	n.mu.RLock()
 	peers := make([]*peerConn, 0, len(n.peers))
 	for _, peer := range n.peers {
@@ -289,10 +318,14 @@ func (n *Node) shouldForwardAnnounce(advertisedPeerID string) bool {
 }
 
 // sweepStalePeerStateLocked prunes peer-keyed dedup maps that no maintenance
-// pass owns: announceForwards entries past their cooldown, and iwantAsks
-// entries past their cooldown. Callers hold n.mu. The sweep itself runs at
-// most once per announceForwardsSweepInterval, so the prune cost amortizes to
-// a map walk once a minute instead of charging every announcement.
+// pass owns: announceForwards entries past their cooldown, and iwantAsks /
+// iwantServes entries past their cooldown — for peers still connected; a peer
+// that has left takes its ask and serve dedup with it, so a churn-heavy mesh
+// does not grow one map entry per peer it has ever gossiped with, and a peer
+// that returns is neither throttled by a stale entry nor served one for free.
+// Callers hold n.mu. The sweep itself runs at most once per
+// announceForwardsSweepInterval, so the prune cost amortizes to a map walk
+// once a minute instead of charging every announcement.
 func (n *Node) sweepStalePeerStateLocked(now time.Time) {
 	if now.Sub(n.announceSwept) < announceForwardsSweepInterval {
 		return
@@ -304,6 +337,10 @@ func (n *Node) sweepStalePeerStateLocked(now time.Time) {
 		}
 	}
 	for peerID, asks := range n.iwantAsks {
+		if n.peers[peerID] == nil {
+			delete(n.iwantAsks, peerID)
+			continue
+		}
 		for id, ts := range asks {
 			if now.Sub(ts) > iwantAskCooldown {
 				delete(asks, id)
@@ -311,6 +348,20 @@ func (n *Node) sweepStalePeerStateLocked(now time.Time) {
 		}
 		if len(asks) == 0 {
 			delete(n.iwantAsks, peerID)
+		}
+	}
+	for peerID, served := range n.iwantServes {
+		if n.peers[peerID] == nil {
+			delete(n.iwantServes, peerID)
+			continue
+		}
+		for id, ts := range served {
+			if now.Sub(ts) > iwantServeCooldown {
+				delete(served, id)
+			}
+		}
+		if len(served) == 0 {
+			delete(n.iwantServes, peerID)
 		}
 	}
 }

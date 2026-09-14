@@ -205,23 +205,94 @@ func (t *Table) lenLocked() int {
 // Closest returns up to n contacts ordered by XOR distance to target. With few
 // contacts it simply returns all of them, which is why a small core behaves as
 // a full mesh with no special case.
+//
+// The whole table is never sorted. On a core node at capacity — 256 buckets x
+// k=20 contacts, up to 5120 entries — sorting every copy of every FIND_NODE
+// was O(table · log(table)) per query with the entire table copied under the
+// lock. The query wants the k nearest, so we walk the buckets keeping a
+// bounded max-heap of size n instead: O(table · log(n)) work, O(n) extra
+// memory, and no allocation at all when the table already fits in n.
 func (t *Table) Closest(target NodeID, n int) []Contact {
 	if n <= 0 {
 		return nil
 	}
 	t.mu.Lock()
-	all := make([]Contact, 0, t.lenLocked())
+	total := t.lenLocked()
+	if total == 0 {
+		t.mu.Unlock()
+		return nil
+	}
+	if total <= n {
+		all := make([]Contact, 0, total)
+		for i := range t.buckets {
+			all = append(all, t.buckets[i]...)
+		}
+		t.mu.Unlock()
+		sort.Slice(all, func(i, j int) bool {
+			return Closer(target, all[i].ID, all[j].ID)
+		})
+		return all
+	}
+	// Top-n by nearness. heap[0] is the FARTHEST of the n kept so far: a new
+	// contact only enters if it is closer than that, and each insert costs
+	// O(log n) sift-down instead of a full-table sort.
+	heap := make([]Contact, 0, n)
 	for i := range t.buckets {
-		all = append(all, t.buckets[i]...)
+		for _, c := range t.buckets[i] {
+			if len(heap) < n {
+				heap = append(heap, c)
+				if len(heap) == n {
+					buildFarthestHeap(target, heap)
+				}
+				continue
+			}
+			if !Closer(target, c.ID, heap[0].ID) {
+				continue
+			}
+			heap[0] = c
+			siftDownFarthest(target, heap, 0)
+		}
 	}
 	t.mu.Unlock()
-	sort.Slice(all, func(i, j int) bool {
-		return Closer(target, all[i].ID, all[j].ID)
+	sort.Slice(heap, func(i, j int) bool {
+		return Closer(target, heap[i].ID, heap[j].ID)
 	})
-	if len(all) > n {
-		all = all[:n]
+	return heap
+}
+
+// farthestLess reports whether a is FARTHER from the target than b — the
+// strict order a max-on-farthest heap uses, so the root of the heap is the
+// farthest contact among those kept. It is the mirror of Closer.
+func farthest(target NodeID, a, b Contact) bool {
+	return Closer(target, b.ID, a.ID)
+}
+
+// buildFarthestHeap re-heapifies a full slice, bottom-up: O(n).
+func buildFarthestHeap(target NodeID, heap []Contact) {
+	for i := len(heap)/2 - 1; i >= 0; i-- {
+		siftDownFarthest(target, heap, i)
 	}
-	return all
+}
+
+// siftDownFarthest moves heap[i] toward the leaves until the max-on-farthest
+// heap property (parent farther than children) holds again.
+func siftDownFarthest(target NodeID, heap []Contact, i int) {
+	for {
+		left := 2*i + 1
+		if left >= len(heap) {
+			return
+		}
+		farthestChild := left
+		right := left + 1
+		if right < len(heap) && farthest(target, heap[right], heap[left]) {
+			farthestChild = right
+		}
+		if !farthest(target, heap[farthestChild], heap[i]) {
+			return
+		}
+		heap[i], heap[farthestChild] = heap[farthestChild], heap[i]
+		i = farthestChild
+	}
 }
 
 // Contacts returns every contact, unordered.

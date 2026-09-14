@@ -141,7 +141,17 @@ func (l *UDPListener) finishDial(key string, pending *udpClientHandshake, result
 		delete(l.clients, key)
 	}
 	l.mu.Unlock()
-	pending.result <- result
+	// Non-blocking on purpose. The channel holds exactly one result and the
+	// dialer reads at most one, so a full channel means the answer is
+	// already in it: Close delivers io.EOF to every pending dial before
+	// clearing the map, and a resp that raced past the map lookup can
+	// arrive after that EOF. A blocking send would then park the read loop
+	// forever on a channel nobody will receive from again — freezing every
+	// session on the socket. Drop the late result instead.
+	select {
+	case pending.result <- result:
+	default:
+	}
 }
 
 func (l *UDPListener) writeDatagram(remote *net.UDPAddr, kind byte, payload []byte) error {

@@ -112,7 +112,13 @@ func (l *UDPListener) Close() error {
 			sessions = append(sessions, carrier)
 		}
 		for _, client := range l.clients {
-			client.result <- udpDialResult{err: io.EOF}
+			// Non-blocking: a result already in the channel means the dialer
+			// has its answer; blocking here would hold l.mu hostage to a
+			// goroutine that may already have gone home.
+			select {
+			case client.result <- udpDialResult{err: io.EOF}:
+			default:
+			}
 		}
 		l.clients = make(map[string]*udpClientHandshake)
 		l.servers = make(map[string]*udpServerHandshake)

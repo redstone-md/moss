@@ -139,6 +139,11 @@ type Node struct {
 	overloadedUntil  time.Time
 	bindingHistory   []string
 	knownPeers       map[string]knownPeer
+	// knownPeersSwept throttles sweepKnownPeers (see node_peer_discovery.go):
+	// the sweep walks the whole directory under mu, so the maintenance loop
+	// calls it every conn-tick and the timestamp keeps the walk to at most
+	// one per knownPeerSweepEvery.
+	knownPeersSwept  time.Time
 	trackerSeeds     map[string]time.Time
 	bindingWait      map[string]chan string
 	reachabilityWait map[string]chan bool
@@ -154,10 +159,23 @@ type Node struct {
 	// send path blocks the caller (GossipFixer's non-blocking announce work).
 	// Lazy-init on first use; an unstarted node with no workers falls back to
 	// synchronous sends. Workers are wg-tracked and exit with rootCtx.
+	//
+	// Memory ceiling: outboundQueueDepth (256) envelopes per connected peer,
+	// an envelope being its header plus a payload up to
+	// Security.MaxMessageSizeBytes (64KB). Worst case per queue is therefore
+	// 256 × ~64KB ≈ 16MB, so N connected peers bound the total at ~16MB × N:
+	// a 500-peer relay caps at ~8GB IF every queue were simultaneously full
+	// of maximum-size frames — which gossip traffic never approaches, since
+	// queues fill with small control envelopes and overflow drops (counted,
+	// monotonic, in outboundDropped) rather than accumulating. A full queue
+	// costs only its own goroutine's next send, never the node. Reducing the
+	// depth or the frame cap shrinks the ceiling linearly; see
+	// outboundQueueDepth before touching either.
 	outboundMu      sync.Mutex
 	outboundQueues  map[string]chan gossip.Envelope
 	outboundDropped atomic.Uint64
 	iwantAsks       map[string]map[string]time.Time
+	iwantServes     map[string]map[string]time.Time
 	announceSwept   time.Time
 	// Per-channel delivery queues, each drained by its own worker.
 	//
