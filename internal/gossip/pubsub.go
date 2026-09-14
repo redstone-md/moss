@@ -7,6 +7,12 @@ type Manager struct {
 	localSubscriptions map[string]struct{}
 	peerSubscriptions  map[string]map[string]struct{}
 	meshPeers          map[string]map[string]struct{}
+	// channelSubs is the channel → subscribers inverse of
+	// peerSubscriptions, maintained on the same writes. Subscribers(channel)
+	// — called per overlay query — reads it instead of walking every
+	// peer's subscription map: O(subscribers of the channel), not
+	// O(peers × their subscriptions).
+	channelSubs map[string]map[string]struct{}
 }
 
 func NewManager() *Manager {
@@ -14,6 +20,7 @@ func NewManager() *Manager {
 		localSubscriptions: make(map[string]struct{}),
 		peerSubscriptions:  make(map[string]map[string]struct{}),
 		meshPeers:          make(map[string]map[string]struct{}),
+		channelSubs:        make(map[string]map[string]struct{}),
 	}
 }
 
@@ -57,8 +64,20 @@ func (m *Manager) SetPeerSubscription(peerID, channel string, subscribed bool) {
 	}
 	if subscribed {
 		subscriptions[channel] = struct{}{}
+		subs, ok := m.channelSubs[channel]
+		if !ok {
+			subs = make(map[string]struct{})
+			m.channelSubs[channel] = subs
+		}
+		subs[peerID] = struct{}{}
 	} else {
 		delete(subscriptions, channel)
+		if subs, ok := m.channelSubs[channel]; ok {
+			delete(subs, peerID)
+			if len(subs) == 0 {
+				delete(m.channelSubs, channel)
+			}
+		}
 		if peers, ok := m.meshPeers[channel]; ok {
 			delete(peers, peerID)
 			if len(peers) == 0 {
@@ -71,6 +90,14 @@ func (m *Manager) SetPeerSubscription(peerID, channel string, subscribed bool) {
 func (m *Manager) RemovePeer(peerID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	for channel := range m.peerSubscriptions[peerID] {
+		if subs, ok := m.channelSubs[channel]; ok {
+			delete(subs, peerID)
+			if len(subs) == 0 {
+				delete(m.channelSubs, channel)
+			}
+		}
+	}
 	delete(m.peerSubscriptions, peerID)
 	for channel, peers := range m.meshPeers {
 		delete(peers, peerID)
@@ -83,13 +110,19 @@ func (m *Manager) RemovePeer(peerID string) {
 func (m *Manager) Subscribers(channel string) []string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	out := make([]string, 0)
-	for peerID, subscriptions := range m.peerSubscriptions {
-		if _, ok := subscriptions[channel]; ok {
+	// O(1) fast path: a channel with no claimed subscriber is the common
+	// case on the shared substrate (most peers are strangers to most
+	// channels), and Subscribers is called per overlay query. The inverse
+	// index below answers in O(subscribers(channel)) instead of walking
+	// every peer's full subscription map.
+	if subs, ok := m.channelSubs[channel]; ok {
+		out := make([]string, 0, len(subs))
+		for peerID := range subs {
 			out = append(out, peerID)
 		}
+		return out
 	}
-	return out
+	return nil
 }
 
 // HasPeerSubscription reports whether peerID has itself claimed the channel

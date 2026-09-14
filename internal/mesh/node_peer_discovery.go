@@ -127,6 +127,112 @@ func (n *Node) discoveredPeerTargets() []discoveredPeerTarget {
 	return picked
 }
 
+// ---- known-peers directory bounding ----
+
+// knownPeerStaleTTL is how long a non-LAN known peer survives without a
+// refresh before the sweep drops it. Announcements refresh lastSeen, and a
+// live peer on the network is re-announced well inside this window (announce
+// cadences run 10-120s); an entry this stale belongs to a peer nobody has
+// mentioned for a quarter hour.
+const knownPeerStaleTTL = 15 * time.Minute
+
+// knownPeerSweepEvery is how often sweepKnownPeers actually walks the
+// directory. The maintenance loop calls it every conn-tick; this throttle
+// keeps the walk — a lock-guarded map scan — to a lazy cadence.
+const knownPeerSweepEvery = 15 * time.Second
+
+// knownPeerSweepCapFactor sizes the non-LAN directory cap against MaxPeers.
+// The dial pass needs candidates to choose from, but every entry beyond a
+// couple of windows of candidates is a rumor that outlived its usefulness —
+// mirroring the LAN cap factor. The floor keeps tiny/test nodes working.
+const (
+	knownPeerSweepCapFactor = 2
+	knownPeerSweepMinCap    = 16
+)
+
+// knownPeerSweepCap returns the directory ceiling for sweepable entries.
+func knownPeerSweepCap(maxPeers int) int {
+	if limit := maxPeers * knownPeerSweepCapFactor; limit > knownPeerSweepMinCap {
+		return limit
+	}
+	return knownPeerSweepMinCap
+}
+
+// sweepableKnownPeer reports whether the non-LAN sweep owns this entry:
+// not LAN (pruneLANPeersLocked already owns those), not a configured
+// bootstrap seed, no live direct session. Verified entries age out on the
+// same TTL as rumors — a returning peer re-verifies on the next dial.
+func sweepableKnownPeer(info knownPeer, connected bool) bool {
+	return !info.lan && !info.bootstrap && !info.direct && !connected
+}
+
+// sweepKnownPeers bounds the knownPeers directory, which had NO cap outside
+// the LAN path: every peer announcement ever relayed through this node left
+// a permanent entry, and discoveredPeerTargets walked all of them on every
+// dial pass (~3s), each walk scoring and sorting the full catalog.
+//
+// Two phases, cheapest first: TTL expiry (no sort — a scan drops everything
+// past knownPeerStaleTTL), then the cap — only if still over it, the oldest
+// sweepable entries go until the directory is within knownPeerSweepCap.
+// Fresh entries are never evicted by the cap unless the whole directory is
+// sweepable and over it, and then what goes is oldest-first, which is also
+// soonest-to-lapse-first.
+//
+// Self-throttled: the maintenance loop calls it every conn-tick and the
+// knownPeersSwept timestamp limits the walk to once per
+// knownPeerSweepEvery.
+func (n *Node) sweepKnownPeers(now time.Time) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if !n.knownPeersSwept.IsZero() && now.Sub(n.knownPeersSwept) < knownPeerSweepEvery {
+		return
+	}
+	n.knownPeersSwept = now
+	capLimit := knownPeerSweepCap(n.config.MaxPeers)
+	type candidate struct {
+		peerID   string
+		lastSeen time.Time
+	}
+	fresh := make([]candidate, 0, 16)
+	for peerID, info := range n.knownPeers {
+		_, connected := n.peers[peerID]
+		if !sweepableKnownPeer(info, connected) {
+			continue
+		}
+		if now.Sub(info.lastSeen) > knownPeerStaleTTL {
+			n.removeKnownPeerLocked(peerID)
+			continue
+		}
+		fresh = append(fresh, candidate{peerID: peerID, lastSeen: info.lastSeen})
+	}
+	if len(fresh) <= capLimit {
+		return
+	}
+	// Sort oldest-first and drop the surplus beyond the cap: with capLimit
+	// entries to keep, the FIRST (len-capLimit) are what goes — the head
+	// of the oldest-first slice, not the tail.
+	sort.Slice(fresh, func(i, j int) bool {
+		return fresh[i].lastSeen.Before(fresh[j].lastSeen)
+	})
+	drop := len(fresh) - capLimit
+	for _, c := range fresh[:drop] {
+		n.removeKnownPeerLocked(c.peerID)
+	}
+}
+
+// removeKnownPeerLocked drops one known-peers entry and the peer-keyed
+// bookkeeping tied to it, so an evicted rumor leaves no orphan state
+// behind. Callers hold n.mu.
+func (n *Node) removeKnownPeerLocked(peerID string) {
+	delete(n.knownPeers, peerID)
+	delete(n.peerDials, peerID)
+	delete(n.peerDialFailures, peerID)
+	delete(n.directProbes, peerID)
+	delete(n.suppress, peerID)
+	delete(n.iwantAsks, peerID)
+	delete(n.announceForwards, peerID)
+}
+
 // relayDialQuota is how many relay-capable connections a node keeps alive for
 // the relay fallback path (and relay_ready); beyond it, relay-capable peers
 // are dialed only when no plain candidate is available.
@@ -383,8 +489,9 @@ func (n *Node) meshGraftEligible(peerID, channel string, now time.Time) bool {
 //     declining one premature mesh slot, and blocking it for the full backoff
 //     would refuse its own GRAFT seconds later — the mesh then cannot form at
 //     all (measured: one peer of three hit this and the mesh stalled at 1).
-//     Subscribe-path GRAFTs (announceLocalSubscription) do not record
-//     graftedAt, so the "recent GRAFT of ours" check alone cannot see them.
+//     Subscribe-path GRAFTs (announceLocalSubscription) record graftedAt
+//     like every other GRAFT we send, so the "recent GRAFT of ours" check
+//     sees them too.
 //
 // The long TTL still applies to a peer that never claimed the channel and is
 // just answering our maintenance grafts with PRUNEs — that is the loop the

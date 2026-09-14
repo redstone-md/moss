@@ -26,6 +26,18 @@ const (
 	maxIWantAsksPerResponse = 64
 )
 
+// Serve-side mirror of the ask-side caps above: one IWANT per id per peer per
+// cooldown, and a hard ceiling on how many payloads one request may pull. The
+// ask side is already capped (64 fresh asks / 10s per peer), but that assumes
+// the ASKING node runs this code — an old build, a broken client, or a
+// malicious peer can send IWANTs at line rate with 256 ids each, and every id
+// that hits the cache replays a full envelope (up to the 64KB frame cap).
+// Dedup + budget bound what one peer can extract to the same shape it may ask.
+const (
+	iwantServeCooldown   = 10 * time.Second
+	maxIWantServesPerReq = 64
+)
+
 func (n *Node) sendRecentIHave(peer *peerConn, channel string) {
 	if peer == nil || !n.canGossipWithPeer(peer.id) {
 		return
@@ -108,12 +120,54 @@ func (n *Node) handleIWant(peer *peerConn, env gossip.Envelope) {
 	if len(ids) > maxInboundControlMessageIDs {
 		ids = ids[:maxInboundControlMessageIDs]
 	}
+	now := time.Now()
+	n.mu.Lock()
+	n.sweepStalePeerStateLocked(now)
+	if n.iwantServes == nil {
+		n.iwantServes = make(map[string]map[string]time.Time)
+	}
+	served := n.iwantServes[peer.id]
+	if served == nil {
+		served = make(map[string]time.Time)
+		n.iwantServes[peer.id] = served
+	}
+	fresh := make([]string, 0, len(ids))
+	throttled := 0
 	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		if last, ok := served[id]; ok && now.Sub(last) < iwantServeCooldown {
+			throttled++
+			continue
+		}
+		if _, recorded := served[id]; !recorded && len(served) >= maxSuppressionEntriesPerPeer {
+			throttled++
+			continue
+		}
+		served[id] = now
+		fresh = append(fresh, id)
+		if len(fresh) >= maxIWantServesPerReq {
+			throttled += len(ids) - len(fresh)
+			break
+		}
+	}
+	n.mu.Unlock()
+	if len(fresh) == 0 {
+		if throttled > 0 {
+			n.countInbound("__iwant_throttled__")
+		}
+		return
+	}
+	for _, id := range fresh {
 		if n.isSuppressed(peer.id, id) {
 			continue
 		}
 		cached, ok := n.cache.Get(id)
 		if !ok {
+			// The id expired or was never held: ordinary gossip churn, not a
+			// drop — the asker's IHAVE ran ahead of the message, and asking
+			// again later is the protocol working.
 			continue
 		}
 		n.sendOrEnqueue(peer, cached)

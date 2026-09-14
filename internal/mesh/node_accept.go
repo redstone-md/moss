@@ -20,14 +20,28 @@ import (
 
 func (n *Node) acceptLoop(ctx context.Context) {
 	defer n.wg.Done()
+	// Same contract as acceptUDPLoop: a transient Accept error must not end
+	// the loop, and a persistent one must not spin hot. `continue` with no
+	// pause turned an EMFILE/ENFILE storm into a 100% CPU loop that never
+	// recovered on its own.
+	backoff := time.Millisecond
 	for {
 		conn, err := n.listener.Accept()
 		if err != nil {
-			if ctx.Err() != nil {
+			if ctx.Err() != nil || errors.Is(err, io.EOF) {
 				return
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			if backoff *= 2; backoff > time.Second {
+				backoff = time.Second
 			}
 			continue
 		}
+		backoff = time.Millisecond
 		n.wg.Add(1)
 		go n.handleInbound(ctx, conn)
 	}
@@ -413,14 +427,25 @@ func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origi
 			}
 		}
 	}
+	// Capacity: ONE outcome, not two. The old branch evicted a prune victim
+	// AND rejected the newcomer, so every inbound at capacity cost a live
+	// session for nothing — and because the victim stayed in n.peers until
+	// its own teardown goroutine noticed the closed session, the next
+	// inbound at capacity evicted ANOTHER peer: a churn cascade where each
+	// newcomer killed a peer and then left. Now the victim's slot is freed
+	// synchronously under this same lock hold and the newcomer registers in
+	// it, so n.peers never exceeds MaxPeers and exactly one peer pays for
+	// one newcomer. With nothing prunable the newcomer alone is rejected,
+	// the way TestInboundConnectionsRespectMaxPeers expects.
 	if replacedPeer == nil && n.directPeerCountLocked() >= n.config.MaxPeers {
-		overflowPeer = n.selectOverflowPrunePeerLocked()
-		n.mu.Unlock()
-		if overflowPeer != nil {
-			overflowPeer.closeSession()
+		victim := n.selectOverflowPrunePeerLocked()
+		if victim == nil {
+			n.mu.Unlock()
+			_ = session.Close()
+			return
 		}
-		_ = session.Close()
-		return
+		overflowPeer = victim
+		n.evictPeerLocked(victim)
 	}
 	bootstrapSeed := !n.trackerSeeds[addr].IsZero()
 	peer := &peerConn{
@@ -453,8 +478,21 @@ func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origi
 	}
 	n.scoring.Ensure(peerID)
 	n.mu.Unlock()
+	// Teardown of the replaced/pruned sessions happens outside the node lock.
+	// The overflow victim's map entry and bookkeeping were already removed
+	// under the lock (evictPeerLocked), so its own peerDispatchWorker's
+	// deferred removePeer finds nothing and no-ops — this is the single
+	// source of truth for the eviction. enqueueEvent blocks on dispatchCh,
+	// so it must never run under n.mu: Stop() cancels dispatchLoop while an
+	// inbound could still be holding the lock here.
 	if replacedPeer != nil && replacedPeer.session != nil {
 		replacedPeer.closeSession()
+	}
+	if overflowPeer != nil {
+		overflowPeer.closeSession()
+		n.pubsub.RemovePeer(overflowPeer.id)
+		n.scoring.Remove(overflowPeer.id)
+		n.enqueueEvent(EventPeerLeft, map[string]string{"peer": overflowPeer.id, "addr": overflowPeer.addr})
 	}
 	n.recalculateIPColocationPenalties()
 	n.wg.Add(1)
@@ -490,6 +528,41 @@ func (n *Node) selectOverflowPrunePeerLocked() *peerConn {
 		}
 	}
 	return selected
+}
+
+// evictPeerLocked removes a peer from the node's bookkeeping under the
+// caller-held n.mu. It is the locked half of an eviction: everything needed
+// for n.peers, relay state, and knownPeers to be immediately consistent with
+// "this peer is gone". Transport close, pubsub removal, scoring eviction and
+// the PeerLeft event run in the caller after it drops n.mu — see
+// registerPeerFrom — because enqueueEvent blocks on dispatchCh and Stop()
+// cancels its drain.
+func (n *Node) evictPeerLocked(victim *peerConn) {
+	if victim == nil {
+		return
+	}
+	delete(n.peers, victim.id)
+	delete(n.suppress, victim.id)
+	delete(n.relayBuckets, victim.id)
+	delete(n.directProbes, victim.id)
+	for sessionID, relaySession := range n.relayLocals {
+		if relaySession.viaPeerID == victim.id || relaySession.remotePeerID == victim.id {
+			n.removeRelayedPeerLocked(relaySession)
+			delete(n.relayLocals, sessionID)
+			delete(n.directProbes, relaySession.remotePeerID)
+		}
+	}
+	for sessionID, route := range n.relayRoutes {
+		if route.initiator == victim.id || route.target == victim.id {
+			delete(n.relayRoutes, sessionID)
+			n.relaySessions.Release(sessionID)
+		}
+	}
+	if info, ok := n.knownPeers[victim.id]; ok {
+		info.direct = false
+		info.lastSeen = time.Now()
+		n.knownPeers[victim.id] = info
+	}
 }
 
 func comparePrunePriority(a, b *peerConn, node *Node) int {

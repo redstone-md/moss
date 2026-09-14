@@ -72,12 +72,29 @@ func (n *Node) makePublishEnvelope(channel string, data []byte) gossip.Envelope 
 func (n *Node) supernodeReady(profile nat.Profile) bool {
 	n.mu.RLock()
 	overloaded := time.Now().Before(n.overloadedUntil)
+	active := n.supernodeActive
 	n.mu.RUnlock()
 	if overloaded {
 		return false
 	}
-	if n.config.NAT.RelayMaxSessions > 0 && n.relaySessions.Count() >= n.config.NAT.RelayMaxSessions {
-		return false
+	// Asymmetric deadband against session-count flapping. Sessions hover
+	// around RelayMaxSessions in production; at the boundary one closing
+	// while another opens flipped supernodeReady on every maintenance
+	// heartbeat, and each flip broadcast a signed SupernodeAnnounce or
+	// SupernodeRevoke to every peer — a revoke storm at exactly full
+	// capacity. An active supernode demotes only at the hard cap; a demoted
+	// one re-promotes only below the cap minus a margin, so traffic between
+	// the two thresholds holds the current state. Margin is 10% of the cap;
+	// caps of 10 or fewer (tests use 1) keep the exact old boundary.
+	if max := n.config.NAT.RelayMaxSessions; max > 0 {
+		sessions := n.relaySessions.Count()
+		if active {
+			if sessions >= max {
+				return false
+			}
+		} else if sessions >= max-max/10 {
+			return false
+		}
 	}
 	switch profile.Type {
 	case nat.TypePublic, nat.TypeFullCone:

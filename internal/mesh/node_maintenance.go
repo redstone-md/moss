@@ -92,7 +92,13 @@ func (n *Node) removePeer(peerID string, session *transport.Session) {
 	n.pubsub.RemovePeer(peerID)
 	for _, relayedPeerID := range removedRelayed {
 		n.pubsub.RemovePeer(relayedPeerID)
+		n.scoring.Remove(relayedPeerID)
 	}
+	// The scoring engine outlives the peer: without eviction every peer the
+	// node EVER connected kept its entry (and Tick walked them all, every
+	// second, forever) — an unbounded map on a long-running node. Score()
+	// recreates an evicted peer at zero on first use, so this costs nothing.
+	n.scoring.Remove(peerID)
 	n.recalculateIPColocationPenalties()
 	if peer != nil {
 		n.enqueueEvent(EventPeerLeft, map[string]string{"peer": peerID, "addr": peer.addr})
@@ -313,6 +319,12 @@ func (n *Node) maintenanceLoop(ctx context.Context) {
 			n.pruneLowScoringPeers()
 			n.pruneHighLatencyPeers()
 			n.pruneStaleRelayRoutes()
+			// The known-peers directory sweep self-throttles internally
+			// (knownPeersSwept, once per knownPeerSweepEvery), so calling it on
+			// every conn-tick is a timestamp check — the walk only runs on its
+			// own cadence. Bounding the directory here is what keeps the dial
+			// pass's candidate scan O(catalog) instead of O(ever-grown).
+			n.sweepKnownPeers(time.Now())
 			// Dials (known peers, explicit targets, bootstrap seeds): every
 			// maintenancePhaseDialEvery conn-ticks. A dial pass costs a
 			// lock-guarded snapshot plus up to DOut asynchronous handshakes;

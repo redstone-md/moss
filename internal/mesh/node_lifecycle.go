@@ -168,6 +168,14 @@ func (n *Node) Start() int32 {
 	n.startedAt = time.Now()
 	n.cancel = cancel
 	n.rootCtx = ctx
+	// Per-channel local delivery queues hold no state worth carrying across a
+	// restart: each is bound to a worker goroutine from the PREVIOUS run,
+	// whose rootCtx is cancelled. Reusing them would enqueue messages into a
+	// queue nobody drains — every delivery after Stop/Start silently
+	// dropped. Start fresh so the first Publish spawns a live worker.
+	n.localMu.Lock()
+	n.localQueues = nil
+	n.localMu.Unlock()
 	// ln is nil in UDP-only mode (TCP couldn't bind — e.g. under Wine/Proton).
 	// Fall back to the UDP listener's address for NAT profiling and port mapping.
 	listenAddrStr := udpListener.Addr().String()
@@ -281,6 +289,20 @@ func (n *Node) Stop() int32 {
 	}
 	n.peers = make(map[string]*peerConn)
 	n.explicitTargets = make(map[string]time.Time)
+	// Relay session state is tied to the cancelled rootCtx: workers and
+	// transports that could ever use it are gone. Stale relayLocals made
+	// establishedRelaySession() != "" after a restart, so dialExplicitTarget
+	// skipped its direct dial forever; stale relayRoutes were Acquire'd
+	// against n.relaySessions, so phantom sessions kept Count() at the cap
+	// and supernodeReady refused to re-promote until the TTL purged them.
+	// Release routes so the limiter matches the empty maps.
+	for sessionID := range n.relayRoutes {
+		n.relaySessions.Release(sessionID)
+	}
+	n.relayRoutes = make(map[string]relayRoute)
+	n.relayLocals = make(map[string]relayLocalSession)
+	n.relayBuckets = make(map[string]*nat.TokenBucket)
+	n.suppress = make(map[string]map[string]time.Time)
 	n.mu.Unlock()
 	cancel()
 	if listener != nil {

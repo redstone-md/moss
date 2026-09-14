@@ -34,6 +34,19 @@ func isAnnounceType(t gossip.EnvelopeType) bool {
 	return false
 }
 
+// isChannelBearingControlType reports whether an envelope carries a channel
+// claim we would record in a peer-keyed map (subscriptions, mesh membership).
+// Publishing validates its own channel (it must be one we can address), and
+// data-plane envelope handlers ignore unknown channels, so this is the set
+// whose malformed channel would otherwise become persistent map state.
+func isChannelBearingControlType(t gossip.EnvelopeType) bool {
+	switch t {
+	case gossip.TypeGraft, gossip.TypePrune, gossip.TypeIHave, gossip.TypeIWant, gossip.TypeIDontWant:
+		return true
+	}
+	return false
+}
+
 func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 	if peer != nil && n.isPeerGraylisted(peer.id) {
 		return
@@ -57,6 +70,14 @@ func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 		n.countInbound("__announce_throttled__")
 		return
 	}
+	// Control traffic that claims a channel must actually carry one: an empty
+	// or oversized channel cannot be subscribed to, grafted into, or pruned
+	// from, and recording it anyway grows the peer-subscription and mesh maps
+	// under keys no valid subscriber can ever produce.
+	if isChannelBearingControlType(env.Type) && !validChannel(env.Channel) {
+		n.countInbound("__malformed_channel__")
+		return
+	}
 	n.emitInbound(peer, env)
 	switch env.Type {
 	case gossip.TypeOverlayFindNode:
@@ -68,6 +89,9 @@ func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 	case gossip.TypeOverlayNodes, gossip.TypeOverlayValues:
 		n.handleOverlayResponse(env)
 	case gossip.TypeGraft:
+		if peer == nil {
+			return
+		}
 		n.pubsub.SetPeerSubscription(peer.id, env.Channel, true)
 		// An inbound GRAFT is proof positive the peer is ON the channel, so a
 		// standing PRUNE-block contradicts it: the peer answered our early GRAFT
@@ -89,10 +113,13 @@ func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 		if n.pubsub.IsLocalSubscriber(env.Channel) && n.eligibleForMeshCandidate(peer.id) {
 			n.pubsub.SetMeshPeer(env.Channel, peer.id, true)
 			n.sendRecentIHave(peer, env.Channel)
-		} else if peer != nil {
+		} else {
 			n.sendEnvelope(peer, gossip.Envelope{Type: gossip.TypePrune, Channel: env.Channel})
 		}
 	case gossip.TypePrune:
+		if peer == nil {
+			return
+		}
 		// The peer has decided it wants out of this channel's mesh. Record the
 		// refusal on the peerConn, not just in the pubsub table: the mesh
 		// maintenance pass runs as often as every heartbeat, and without a
@@ -130,7 +157,7 @@ func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 	case gossip.TypeIWant:
 		n.handleIWant(peer, env)
 	case gossip.TypeIDontWant:
-		if !n.canGossipWithPeer(peer.id) {
+		if peer == nil || !n.canGossipWithPeer(peer.id) {
 			return
 		}
 		n.rememberSuppression(peer.id, env.MessageIDs, env.MessageID)
@@ -159,6 +186,9 @@ func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 	case gossip.TypeRelayClose:
 		n.handleRelayClose(peer, env)
 	case gossip.TypePublish:
+		if peer == nil {
+			return
+		}
 		if n.isPeerBelowPublishThreshold(peer.id) {
 			return
 		}

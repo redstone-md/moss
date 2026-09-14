@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -127,6 +128,113 @@ func TestHandleIHaveCapsAsksPerResponse(t *testing.T) {
 		t.Fatalf("expected at most %d asks recorded for one IHAVE, got %d",
 			maxIWantAsksPerResponse, got)
 	}
+}
+
+// The serve side mirrors the ask side: one IWANT per id per peer per cooldown.
+// A peer re-asking for the same ids inside the window — an old build, a broken
+// client, or malice — gets one replay, not one per heartbeat.
+func TestHandleIWantServesOncePerCooldown(t *testing.T) {
+	node, err := NewNode("mesh-iwant-dedup", nil, DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+
+	node.cache.Store(gossip.Envelope{
+		Type:      gossip.TypePublish,
+		Channel:   "alpha",
+		MessageID: "msg-1",
+		Payload:   []byte("payload"),
+	})
+
+	asker := newRecordedSession(t)
+	peer := &peerConn{id: "peer-asking", session: asker.session}
+	env := gossip.Envelope{Type: gossip.TypeIWant, MessageIDs: []string{"msg-1"}}
+
+	node.handleIWant(peer, env)
+	if got := asker.writeCount(); got != 1 {
+		t.Fatalf("expected one replay for a fresh IWANT, got %d packets", got)
+	}
+
+	// The same ask again, immediately: the id is inside the serve cooldown.
+	node.handleIWant(peer, env)
+	if got := asker.writeCount(); got != 1 {
+		t.Fatalf("expected a repeat IWANT inside the cooldown to produce no new replay, got %d packets total", got)
+	}
+}
+
+// One IWANT must not pull more than maxIWantServesPerReq payloads out of the
+// cache, whatever the id list claims — a peer that asks for the whole cache
+// would otherwise dictate our outbound traffic from its request alone.
+func TestHandleIWantCapsServesPerRequest(t *testing.T) {
+	node, err := NewNode("mesh-iwant-cap", nil, DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+
+	for i := range maxIWantServesPerReq + 50 {
+		node.cache.Store(gossip.Envelope{
+			Type:      gossip.TypePublish,
+			Channel:   "alpha",
+			MessageID: fmt.Sprintf("msg-%03d", i),
+			Payload:   []byte("payload"),
+		})
+	}
+
+	asker := newRecordedSession(t)
+	peer := &peerConn{id: "peer-hungry", session: asker.session}
+	ids := make([]string, 0, maxIWantServesPerReq+50)
+	for i := range maxIWantServesPerReq + 50 {
+		ids = append(ids, fmt.Sprintf("msg-%03d", i))
+	}
+	node.handleIWant(peer, gossip.Envelope{Type: gossip.TypeIWant, MessageIDs: ids})
+
+	if got := asker.writeCount(); got > maxIWantServesPerReq {
+		t.Fatalf("expected at most %d replays for one IWANT, got %d", maxIWantServesPerReq, got)
+	}
+}
+
+// An IWANT for ids we do not hold is a bounded miss, not a drop worth a
+// counter: the asking peer learns from the silence and moves on. The counter
+// only grows when the ask was suppressed by our own dedup or budget, so the
+// pressure stays visible without counting ordinary cache misses.
+func TestHandleIWantCountsThrottledAsk(t *testing.T) {
+	node, err := NewNode("mesh-iwant-drop", nil, DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+
+	node.cache.Store(gossip.Envelope{
+		Type:      gossip.TypePublish,
+		Channel:   "alpha",
+		MessageID: "msg-known",
+		Payload:   []byte("payload"),
+	})
+
+	asker := newRecordedSession(t)
+	peer := &peerConn{id: "peer-mixed", session: asker.session}
+	// One id in the cache, one not: the miss costs no counter.
+	node.handleIWant(peer, gossip.Envelope{Type: gossip.TypeIWant, MessageIDs: []string{"msg-known", "msg-unknown"}})
+	if got := asker.writeCount(); got != 1 {
+		t.Fatalf("expected exactly one replay for one known id, got %d", got)
+	}
+
+	// The same id inside the serve cooldown: throttled by our dedup, so the
+	// re-ask is counted — visible pressure, not silent loss.
+	node.handleIWant(peer, gossip.Envelope{Type: gossip.TypeIWant, MessageIDs: []string{"msg-known"}})
+	if got := asker.writeCount(); got != 1 {
+		t.Fatalf("expected a deduped re-ask to produce no new replay, got %d packets total", got)
+	}
+	if got := counterValue(node, "__iwant_throttled__"); got != 1 {
+		t.Fatalf("expected one throttled IWANT to be counted, got %d", got)
+	}
+}
+
+// counterValue reads one named inbound counter for tests. The counter is
+// created on demand, matching countInbound's LoadOrStore, so a zero count
+// reads as 0 rather than a missing entry.
+func counterValue(node *Node, name string) uint64 {
+	v, _ := node.inboundByType.LoadOrStore(name, new(atomic.Uint64))
+	return v.(*atomic.Uint64).Load()
 }
 
 // The per-peer outbound queue is the backpressure point: a peer whose session
