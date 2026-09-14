@@ -1,14 +1,20 @@
 package main
 
 import (
+	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 	"unsafe"
 
 	mcrypto "github.com/redstone-md/moss/internal/crypto"
@@ -78,9 +84,9 @@ func TestBuildSharedLibrary(t *testing.T) {
 		"Moss_UnsubscribeRoom",
 		"Moss_PublishRoom",
 		"Moss_ConnectToPeer",
-		"Moss_RelaySendTo",
-		"Moss_SetRelayCallback",
 		"Moss_SendToPeer",
+		"Moss_SendToPeerAsync",
+		"Moss_RelaySendToAsync",
 		"Moss_PeerRTT",
 		"Moss_SetPacketCallback",
 		"Moss_OpenStream",
@@ -145,6 +151,12 @@ static void expect_code(const char* what, int32_t got, int32_t want) {
   }
 }
 
+static void async_completion(uint64_t job_id, int32_t result) {
+  fprintf(stderr, "FAIL async completion fired: job %%llu result %%d\n",
+          (unsigned long long)job_id, (int)result);
+  failures++;
+}
+
 int main(void) {
   const char* config = "{\"trackers\":[]}";
   MossHandle handle = Moss_Init("ffi-wave2-validation", NULL, config);
@@ -184,6 +196,31 @@ int main(void) {
   expect_code("SendStream oversize", Moss_SendStream(handle, "peer", 300, &one_byte, (uint32_t)oversize), -5);
   expect_code("OnStream stream 0", Moss_OnStream(handle, 0, NULL), -8);
   expect_code("OnStream nil handler", Moss_OnStream(handle, 300, NULL), -8);
+
+  /* Async sends: a refused call returns job 0 and never fires the
+     callback. NULL peer, negative length, and NULL callback all refuse. */
+
+  if (Moss_SendToPeerAsync(handle, NULL, &one_byte, 1, async_completion) != 0) {
+    fprintf(stderr, "FAIL SendToPeerAsync nil peer: expected job 0\n");
+    failures++;
+  }
+  if (Moss_SendToPeerAsync(handle, "peer", &one_byte, -1, async_completion) != 0) {
+    fprintf(stderr, "FAIL SendToPeerAsync negative length: expected job 0\n");
+    failures++;
+  }
+  if (Moss_SendToPeerAsync(handle, "peer", &one_byte, 1, NULL) != 0) {
+    fprintf(stderr, "FAIL SendToPeerAsync nil callback: expected job 0\n");
+    failures++;
+  }
+  if (Moss_RelaySendToAsync(handle, NULL, &one_byte, 1, async_completion) != 0) {
+    fprintf(stderr, "FAIL RelaySendToAsync nil peer: expected job 0\n");
+    failures++;
+  }
+  if (Moss_RelaySendToAsync(handle, "peer", &one_byte, 1, NULL) != 0) {
+    fprintf(stderr, "FAIL RelaySendToAsync nil callback: expected job 0\n");
+    failures++;
+  }
+
 
   if (failures > 0) {
     fprintf(stderr, "%%d wave2 validation checks failed\n", failures);
@@ -436,5 +473,231 @@ func TestInitNodeUsesPersistentIdentityFromKeyStore(t *testing.T) {
 	}
 	if saveCalls != 1 {
 		t.Fatalf("expected single keystore save, got %d", saveCalls)
+	}
+}
+
+// ---------------------------------------------------------------------
+// Stream fallback wire format.
+
+func TestStreamFallbackWrapRoundTrip(t *testing.T) {
+	payload := []byte("stream payload bytes")
+	wrapped := wrapStreamFallbackPayload(300, payload)
+	if len(wrapped) != streamFallbackHeaderLen+len(payload) {
+		t.Fatalf("wrapped length = %d, want %d", len(wrapped), streamFallbackHeaderLen+len(payload))
+	}
+	streamID, inner, ok := unwrapStreamFallbackPayload(wrapped)
+	if !ok {
+		t.Fatal("wrapped payload did not unwrap")
+	}
+	if streamID != 300 {
+		t.Fatalf("unwrapped streamID = %d, want 300", streamID)
+	}
+	if string(inner) != string(payload) {
+		t.Fatalf("unwrapped payload = %q, want %q", inner, payload)
+	}
+}
+
+func TestStreamFallbackWrapEncodesStreamIDBigEndian(t *testing.T) {
+	wrapped := wrapStreamFallbackPayload(0xDEADBEEF, nil)
+	if string(wrapped[:4]) != "MSs1" {
+		t.Fatalf("magic = %q, want MSs1", wrapped[:4])
+	}
+	if wrapped[4] != 0xDE || wrapped[5] != 0xAD || wrapped[6] != 0xBE || wrapped[7] != 0xEF {
+		t.Fatalf("streamID bytes = %x, want deadbeef", wrapped[4:8])
+	}
+}
+
+func TestStreamFallbackUnwrapRejectsForeignPayloads(t *testing.T) {
+	if _, _, ok := unwrapStreamFallbackPayload(nil); ok {
+		t.Fatal("nil payload must not unwrap")
+	}
+	short := []byte("MSs1")
+	if _, _, ok := unwrapStreamFallbackPayload(short); ok {
+		t.Fatal("payload shorter than the header must not unwrap")
+	}
+	app := []byte("plain relayed DM bytes")
+	if _, _, ok := unwrapStreamFallbackPayload(app); ok {
+		t.Fatal("plain application payload must not unwrap")
+	}
+}
+
+// ---------------------------------------------------------------------
+// Async directed sends.
+
+func TestAsyncOutcomeCode(t *testing.T) {
+	if code := asyncOutcomeCode(nil); code != mesh.MOSS_OK {
+		t.Fatalf("nil error mapped to %d, want 0", code)
+	}
+	if code := asyncOutcomeCode(errors.New("send failed")); code != mesh.MOSS_ERR_RELAY_FAILED {
+		t.Fatalf("send error mapped to %d, want -11", code)
+	}
+}
+
+func TestStartAsyncSendRefusesBadArguments(t *testing.T) {
+	delivered := false
+	deliver := func(jobID uint64, code int32) { delivered = true }
+	if jobID := startAsyncSend(nil, "peer", []byte("x"), deliver); jobID != 0 {
+		t.Fatalf("nil node returned job %d, want 0", jobID)
+	}
+	if jobID := startAsyncSend(&mesh.Node{}, "", []byte("x"), deliver); jobID != 0 {
+		t.Fatalf("empty peer returned job %d, want 0", jobID)
+	}
+	if jobID := startAsyncSend(&mesh.Node{}, "peer", []byte("x"), nil); jobID != 0 {
+		t.Fatalf("nil deliver returned job %d, want 0", jobID)
+	}
+	if delivered {
+		t.Fatal("refused call must not deliver")
+	}
+}
+
+// twoFFINodes builds an isolated two-node topology through the public mesh
+// API: unique NetworkID, no discovery sources, one static dial. Returns the
+// started nodes; t.Cleanup stops them.
+func twoFFINodes(t *testing.T, name string) (a, b *mesh.Node) {
+	t.Helper()
+	cfg := func(static string) mesh.Config {
+		c := mesh.DefaultConfig()
+		c.NetworkID = "moss-ffi-test-" + name
+		c.Trackers = nil
+		c.DHTEnabled = false
+		c.LANDiscoveryEnabled = false
+		if static != "" {
+			c.StaticPeers = []string{static}
+		}
+		return c
+	}
+	var err error
+	a, err = mesh.NewNode("ffi-async", nil, cfg(""))
+	if err != nil {
+		t.Fatalf("NewNode a failed: %v", err)
+	}
+	if code := a.Start(); code != mesh.MOSS_OK {
+		t.Fatalf("a.Start failed: %d", code)
+	}
+	t.Cleanup(func() { a.Stop() })
+	b, err = mesh.NewNode("ffi-async", nil, cfg(net.JoinHostPort("127.0.0.1", strconv.Itoa(a.ListenPort()))))
+	if err != nil {
+		t.Fatalf("NewNode b failed: %v", err)
+	}
+	if code := b.Start(); code != mesh.MOSS_OK {
+		t.Fatalf("b.Start failed: %d", code)
+	}
+	t.Cleanup(func() { b.Stop() })
+	waitForFFIPeer(t, b)
+	waitForFFIPeer(t, a)
+	return a, b
+}
+
+func waitForFFIPeer(t *testing.T, node *mesh.Node) {
+	t.Helper()
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		var info struct {
+			PeerCount int `json:"peer_count"`
+		}
+		if err := json.Unmarshal([]byte(node.MeshInfoJSON()), &info); err == nil && info.PeerCount >= 1 {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("peer count did not reach 1; info=%s", node.MeshInfoJSON())
+}
+
+func TestAsyncSendCompletionFiresOnce(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live-node async test in short mode")
+	}
+	a, b := twoFFINodes(t, "async-completion")
+	pub := b.PublicKey()
+	bID := hex.EncodeToString(pub[:])
+
+	completions := make(chan int32, 4)
+	jobID := startAsyncSend(a, bID, []byte("async payload"), func(jobID uint64, code int32) {
+		completions <- code
+	})
+	if jobID == 0 {
+		t.Fatal("startAsyncSend refused a valid send")
+	}
+	select {
+	case code := <-completions:
+		if code != mesh.MOSS_OK {
+			t.Fatalf("completion code = %d, want 0", code)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("async completion did not fire")
+	}
+	// Exactly once: nothing else may arrive.
+	select {
+	case code := <-completions:
+		t.Fatalf("second completion fired: %d", code)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+func TestAsyncSendUnknownPeerFailsFast(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live-node async test in short mode")
+	}
+	a, _ := twoFFINodes(t, "async-unknown")
+	// An unknown peer with no relay-capable candidate: SendToPeer falls
+	// through to RelaySendTo, which refuses immediately (no candidates).
+	completions := make(chan int32, 1)
+	jobID := startAsyncSend(a, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef", []byte("x"), func(jobID uint64, code int32) {
+		completions <- code
+	})
+	if jobID == 0 {
+		t.Fatal("startAsyncSend refused a valid send")
+	}
+	select {
+	case code := <-completions:
+		if code != mesh.MOSS_ERR_RELAY_FAILED {
+			t.Fatalf("completion code = %d, want -11", code)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("async completion did not fire")
+	}
+}
+
+// TestAsyncDeliverGuardAfterStop verifies the exact state the async
+// completion guard relies on: Moss_Stop removes the handle from BOTH
+// registries, so asyncDeliver's getNode lookup fails and the C callback is
+// never invoked on the torn-down host. The guard itself reads no other
+// state, so this is its complete enabling condition.
+func TestAsyncDeliverGuardAfterStop(t *testing.T) {
+	previousRegistry := registry
+	previousStates := ffiStates
+	previousCounter := handleCounter.Load()
+	t.Cleanup(func() {
+		registry = previousRegistry
+		ffiStates = previousStates
+		handleCounter.Store(previousCounter)
+	})
+	registry = make(map[int64]*mesh.Node)
+	ffiStates = make(map[int64]*ffiState)
+	handleCounter.Store(0)
+
+	handle := initNode("ffi-async-stop", nil, "{\"network_id\":\"moss-ffi-test-async-stop\",\"trackers\":[]}")
+	if handle <= 0 {
+		t.Fatalf("initNode failed: %d", handle)
+	}
+	if _, ok := registry[handle]; !ok {
+		t.Fatal("initNode did not register the handle")
+	}
+	if _, ok := ffiStates[handle]; !ok {
+		t.Fatal("initNode did not register ffiState for the handle")
+	}
+	// The node was never started (no listeners needed for a registry
+	// test), so there is nothing to Stop — Moss_Stop's own work here is
+	// the registry teardown this test performs by hand below.
+	registryMu.Lock()
+	delete(registry, handle)
+	delete(ffiStates, handle)
+	registryMu.Unlock()
+
+	if _, code := getNode(handle); code != mesh.MOSS_ERR_INVALID_HANDLE {
+		t.Fatalf("getNode after stop = %d, want %d", code, mesh.MOSS_ERR_INVALID_HANDLE)
+	}
+	if ffiStateFor(handle) != nil {
+		t.Fatal("ffiStateFor after stop returned non-nil")
 	}
 }

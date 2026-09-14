@@ -3,6 +3,7 @@ package nat
 import (
 	"net"
 	"net/netip"
+	"sort"
 	"strconv"
 )
 
@@ -113,26 +114,29 @@ func isCarrierGradeAddr(addr netip.Addr) bool {
 	return addr.Is4() && addr.Compare(netip.MustParseAddr("100.64.0.0")) >= 0 && addr.Compare(netip.MustParseAddr("100.127.255.255")) <= 0
 }
 
+// predictPortStep estimates how many ports the peer's NAT advances per new
+// mapping. Per-NAT deltas jitter (a few mappings agree, then one jumps), so a
+// majority vote over exact equality collapses on the first outlier; the median
+// consecutive difference tolerates a bad sample on either side and still lands
+// on the fleet-typical stride.
 func predictPortStep(observations []string) int {
 	ports := observedPorts(observations)
 	if len(ports) < 2 {
 		return 0
 	}
-	stepCounts := make(map[int]int)
-	bestStep := 0
-	bestCount := 0
+	diffs := make([]int, 0, len(ports)-1)
 	for i := 1; i < len(ports); i++ {
 		step := ports[i] - ports[i-1]
 		if step == 0 {
 			continue
 		}
-		stepCounts[step]++
-		if stepCounts[step] > bestCount {
-			bestCount = stepCounts[step]
-			bestStep = step
-		}
+		diffs = append(diffs, step)
 	}
-	return bestStep
+	if len(diffs) == 0 {
+		return 0
+	}
+	sort.Ints(diffs)
+	return diffs[(len(diffs)-1)/2]
 }
 
 func observedPorts(observations []string) []int {

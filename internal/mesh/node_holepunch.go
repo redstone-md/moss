@@ -9,6 +9,54 @@ import (
 	"github.com/redstone-md/moss/internal/nat"
 )
 
+// holePunchCoordGrace is how long after a coordination timestamp a punch waits
+// for the target to connect before re-sending the offer through the relay.
+// The target's coordinator blocks on its own address observation (up to
+// 750ms) before it dials, so a retry landing that late is coordination noise,
+// not failure — re-sending keeps the punch alive across a missed offer.
+const holePunchCoordGrace = 750 * time.Millisecond
+
+// holePunchCoordRetryLimit bounds offer re-sends per punch attempt. The
+// target re-dials idempotently on a duplicate offer, so a retry only
+// re-coordinates; beyond this the relay path itself is presumed broken.
+const holePunchCoordRetryLimit = 2
+
+// bindingSampleHistoryCap bounds the raw observed-binding history kept for
+// classification. Raw means consecutive duplicates survive: "the last three
+// mappings were identical" is exactly the evidence that walks a symmetric
+// verdict back down to a cone once the NAT's mappings stabilise, and a
+// collapsing writer would erase it.
+const bindingSampleHistoryCap = 8
+
+// classifierBindingWindow is how many raw binding samples the NAT classifier
+// is handed: enough for WithBindingObservations to see stability, few enough
+// that a stale symmetric era cannot outweigh a freshly settled cone.
+const classifierBindingWindow = 3
+
+// appendBindingSample records a raw observed binding address, keeping
+// consecutive duplicates and capping the history at bindingSampleHistoryCap.
+func appendBindingSample(history []string, observed string) []string {
+	if observed == "" {
+		return history
+	}
+	history = append(history, observed)
+	if len(history) > bindingSampleHistoryCap {
+		history = history[len(history)-bindingSampleHistoryCap:]
+	}
+	return history
+}
+
+// recentBindingWindow copies out the newest raw binding samples for the
+// profiler. Callers must not hold n.mu.
+func (n *Node) recentBindingWindow() []string {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	if len(n.bindingHistory) <= classifierBindingWindow {
+		return append([]string(nil), n.bindingHistory...)
+	}
+	return append([]string(nil), n.bindingHistory[len(n.bindingHistory)-classifierBindingWindow:]...)
+}
+
 // attemptHolePunch honours the relay preference; attemptHolePunchPolicy with
 // force=true is the upgrade path, where a relayed peer is retried for a direct
 // path with nobody waiting on the result.
@@ -44,7 +92,8 @@ func (n *Node) attemptHolePunchPolicy(targetPeerID string, timeout time.Duration
 		return false
 	}
 	sourceAddr := n.freshObservedUDPAddr(viaPeerID, minDuration(750*time.Millisecond, timeout/3))
-	coordAt := time.Now().Add(750 * time.Millisecond)
+	coordAt := time.Now().Add(holePunchCoordGrace)
+	coordRetries := 0
 	go n.tryHolePunchDialAt(targetPeerID, targetInfo.addr, coordAt)
 	n.mu.Lock()
 	n.holePunchWait[requestID] = holePunchRequest{targetPeerID: targetPeerID, relayPeerID: viaPeerID}
@@ -54,6 +103,7 @@ func (n *Node) attemptHolePunchPolicy(targetPeerID string, timeout time.Duration
 		delete(n.holePunchWait, requestID)
 		n.mu.Unlock()
 	}()
+	n.countInbound("__punch_attempt__")
 	n.sendEnvelope(viaPeer, gossip.Envelope{
 		Type:           gossip.TypeHolePunchCoord,
 		RequestID:      requestID,
@@ -69,8 +119,37 @@ func (n *Node) attemptHolePunchPolicy(targetPeerID string, timeout time.Duration
 	triedAddr := targetInfo.addr
 	for time.Now().Before(deadline) {
 		if n.directPeerConnected(targetPeerID) {
+			n.countInbound("__punch_success__")
 			n.emitPunchResult(targetPeerID, targetInfo.natType, true, time.Since(punchStarted))
 			return true
+		}
+		if coordRetries < holePunchCoordRetryLimit && time.Now().After(coordAt.Add(holePunchCoordGrace)) {
+			n.mu.RLock()
+			_, waitAlive := n.holePunchWait[requestID]
+			viaNow := n.peers[viaPeerID]
+			n.mu.RUnlock()
+			if !waitAlive || viaNow == nil {
+				coordRetries = holePunchCoordRetryLimit
+			} else {
+				// The offer can be lost in relay transit or the target can miss
+				// its coordination window: it blocks on its own address
+				// observation (up to holePunchCoordGrace) before dialling, so
+				// it may dial after the coordinated moment. Re-send the offer
+				// under the same request ID — the target re-dials idempotently
+				// and a duplicate reply is discarded by request validation.
+				coordAt = time.Now().Add(holePunchCoordGrace)
+				coordRetries++
+				n.countInbound("__punch_coord_retry__")
+				n.sendEnvelope(viaNow, gossip.Envelope{
+					Type:           gossip.TypeHolePunchCoord,
+					RequestID:      requestID,
+					CoordStage:     "offer",
+					CoordAt:        coordAt.UnixMilli(),
+					RelaySource:    n.localPeerID(),
+					RelayTarget:    targetPeerID,
+					AdvertisedAddr: sourceAddr,
+				})
+			}
 		}
 		n.mu.RLock()
 		updated := n.knownPeers[targetPeerID].addr
@@ -85,6 +164,11 @@ func (n *Node) attemptHolePunchPolicy(targetPeerID string, timeout time.Duration
 	// the whole NAT layer: it is what fills in which pairs of NAT types never
 	// work, and that cannot be inferred from successes alone.
 	ok = n.directPeerConnected(targetPeerID)
+	if ok {
+		n.countInbound("__punch_success__")
+	} else {
+		n.countInbound("__punch_timeout__")
+	}
 	n.emitPunchResult(targetPeerID, targetInfo.natType, ok, time.Since(punchStarted))
 	return ok
 }
@@ -135,10 +219,9 @@ func (n *Node) freshObservedUDPAddr(peerID string, timeout time.Duration) string
 			previous := n.natProfile.Load().(nat.Profile)
 			profile := n.profiler.WithExternalAddress(previous, observed)
 			n.mu.Lock()
-			n.bindingHistory = appendObservation(n.bindingHistory, observed)
-			bindingHistory := append([]string(nil), n.bindingHistory...)
+			n.bindingHistory = appendBindingSample(n.bindingHistory, observed)
 			n.mu.Unlock()
-			profile = n.profiler.WithBindingObservations(profile, bindingHistory)
+			profile = n.profiler.WithBindingObservations(profile, n.recentBindingWindow())
 			n.natProfile.Store(profile)
 			return observed
 		}

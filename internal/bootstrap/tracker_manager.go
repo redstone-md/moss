@@ -42,12 +42,13 @@ type AnnounceRequest struct {
 }
 
 type Manager struct {
-	HTTP          trackerAnnouncer
-	UDP           trackerAnnouncer
-	maxConcurrent int
-	nextBatch     atomic.Uint64
-	mu            sync.Mutex
-	state         map[string]trackerState
+	HTTP             trackerAnnouncer
+	UDP              trackerAnnouncer
+	maxConcurrent    int
+	nextBatch        atomic.Uint64
+	skippedUnhealthy atomic.Uint64
+	mu               sync.Mutex
+	state            map[string]trackerState
 }
 
 const defaultTrackerConcurrency = 5
@@ -57,6 +58,19 @@ const defaultTrackerConcurrency = 5
 // remaining (slow/blocked) trackers. Fast trackers still merge; dead trackers
 // no longer gate the whole announce on the bootstrap timeout.
 const trackerEarlyReturnGrace = 500 * time.Millisecond
+
+// trackerSkipFailures is how many consecutive failed announces put a tracker
+// on the skip list: AnnounceAll stops dialing it until the skip window
+// expires. Three keeps one bad round (a lost datagram, a slow page) from
+// hiding a tracker that may still work.
+const trackerSkipFailures = 3
+
+// trackerSkipWindow is how long a chronically failing tracker stays skipped.
+// It is a var so tests can shorten it. While a tracker is skipped its state
+// is frozen — nothing dials it, so nothing can change its standing — which
+// makes the window self-rearming: once the last failure ages out, the next
+// AnnounceAll dials the tracker again and a success brings it back for good.
+var trackerSkipWindow = 10 * time.Minute
 
 func NewManager(timeout time.Duration) *Manager {
 	return NewManagerWithBind(timeout, 0)
@@ -89,7 +103,45 @@ func (m *Manager) AnnounceAll(ctx context.Context, trackers []string, req Announ
 	if len(ordered) == 0 {
 		return nil, errors.New("no trackers configured")
 	}
-	return m.announceTrackers(ctx, ordered, req)
+	dialable, skipped := m.dialableTrackers(ordered)
+	if len(dialable) == 0 {
+		// Every tracker on the list is chronically failing. Skipping them all
+		// would turn "the network is down" into "no trackers configured" — a
+		// silent lie — so dial them all anyway: the error they return is the
+		// honest answer, and a tracker that recovered while nobody was
+		// looking gets its chance instead of waiting out the window. The
+		// would-be skips are not counted: nothing was actually saved.
+		dialable = ordered
+	} else {
+		m.skippedUnhealthy.Add(uint64(skipped))
+	}
+	return m.announceTrackers(ctx, dialable, req)
+}
+
+// dialableTrackers drops trackers whose recent history says they are dead:
+// trackerSkipFailures consecutive failures, the latest inside the skip
+// window. Trackers with no recorded history always stay — "not tried" is not
+// "does not answer".
+func (m *Manager) dialableTrackers(trackers []string) (dialable []string, skipped int) {
+	now := time.Now()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, tracker := range trackers {
+		state := m.state[tracker]
+		if state.consecutiveFailures >= trackerSkipFailures && now.Sub(state.lastFailure) < trackerSkipWindow {
+			skipped++
+			continue
+		}
+		dialable = append(dialable, tracker)
+	}
+	return dialable, skipped
+}
+
+// SkippedUnhealthyTrackers reports how many announce dials were saved by the
+// health skip: one count per unhealthy tracker per AnnounceAll round. Only
+// grows.
+func (m *Manager) SkippedUnhealthyTrackers() uint64 {
+	return m.skippedUnhealthy.Load()
 }
 
 func (m *Manager) orderedTrackers(trackers []string) []string {

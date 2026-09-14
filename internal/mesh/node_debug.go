@@ -60,6 +60,13 @@ func (n *Node) startDebugPlane() {
 	// Fill the ring from now on, subscriber or not.
 	n.debugBus.SetRecording(true)
 
+	// The drop-growth observer: one warn event per minute when a drop family
+	// grows past the threshold. Lives on rootCtx (set by Start under the
+	// same lock, so it is non-nil here); Stop's cancel() drains it and
+	// wg.Wait collects it.
+	n.wg.Add(1)
+	go n.dropGrowthLoop(n.rootCtx)
+
 	if path := n.config.Debug.RecordPath; path != "" {
 		rec, recErr := inspect.NewRecorder(path, n.config.Debug.RecordMaxMB)
 		if recErr != nil {
