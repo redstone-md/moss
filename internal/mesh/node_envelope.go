@@ -1,6 +1,8 @@
 package mesh
 
 import (
+	"time"
+
 	"github.com/redstone-md/moss/internal/gossip"
 	"github.com/redstone-md/moss/internal/inspect"
 )
@@ -15,6 +17,12 @@ const (
 	announceRatePerSecond = 20
 	announceBurst         = 60
 )
+
+// pruneAnswerShortTTL bounds the meshBlocked cooldown when an inbound PRUNE is
+// an answer to a GRAFT we sent within the graft retry window — join
+// choreography, not war. It must clear before the peer's own GRAFT lands, but
+// stay ≥1s so a tightly-looped peer cannot ping-pong us either.
+const pruneAnswerShortTTL = 2 * time.Second
 
 // isAnnounceType reports whether an envelope is announcement traffic — the kind
 // that is redundant by design, so discarding a surplus one costs nothing.
@@ -61,6 +69,23 @@ func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 		n.handleOverlayResponse(env)
 	case gossip.TypeGraft:
 		n.pubsub.SetPeerSubscription(peer.id, env.Channel, true)
+		// An inbound GRAFT is proof positive the peer is ON the channel, so a
+		// standing PRUNE-block contradicts it: the peer answered our early GRAFT
+		// or our subscription announce with a PRUNE before it had subscribed,
+		// that PRUNE set meshBlocked, and the peer's own GRAFT now arrives to
+		// find itself locked out — refused and PRUNE'd back, the mesh forming
+		// only after the whole cooldown lapses. The claim one line above is
+		// already recorded, so the block was join choreography with certainty:
+		// clamp it to expired. The clamp still only ever shortens a standing
+		// block (never extends one, never writes when nothing is blocked), and
+		// a peer mid-refusal on another channel is not helped here — meshBlocked
+		// is not channel-keyed, but the claim IS, so the contradiction stands.
+		now := time.Now()
+		n.mu.Lock()
+		if until := now.Add(-time.Nanosecond); until.Before(peer.meshBlocked) {
+			peer.meshBlocked = until
+		}
+		n.mu.Unlock()
 		if n.pubsub.IsLocalSubscriber(env.Channel) && n.eligibleForMeshCandidate(peer.id) {
 			n.pubsub.SetMeshPeer(env.Channel, peer.id, true)
 			n.sendRecentIHave(peer, env.Channel)
@@ -68,6 +93,37 @@ func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 			n.sendEnvelope(peer, gossip.Envelope{Type: gossip.TypePrune, Channel: env.Channel})
 		}
 	case gossip.TypePrune:
+		// The peer has decided it wants out of this channel's mesh. Record the
+		// refusal on the peerConn, not just in the pubsub table: the mesh
+		// maintenance pass runs as often as every heartbeat, and without a
+		// cooldown it re-grafts the very peer that just said no — each GRAFT
+		// answered by another PRUNE, forever, on both ends.
+		//
+		// The TTL is two-tier, because two very different messages both look
+		// like a PRUNE. A peer that answers OUR recent GRAFT with a PRUNE is
+		// join choreography — our maintenance shot first and it had not
+		// subscribed yet — so blocking it for the full backoff would refuse
+		// the peer's own GRAFT microseconds later and the mesh would never
+		// form (measured: an opportunistic-graft test failed exactly that
+		// way). A PRUNE with no recent GRAFT of ours is a genuine refusal, and
+		// the long TTL — matching prunePeerFromAllMeshes, our own prune
+		// backoff — buys the quiet period that ends a graft war.
+		now := time.Now()
+		until := now.Add(n.peerPruneBackoff())
+		if n.meshGraftedWithin(peer.id, env.Channel, meshGraftRetryInterval, now) {
+			until = now.Add(pruneAnswerShortTTL)
+			// The matching sender-side half: our retry layer would otherwise sit
+			// out the full graft interval before re-offering, while the receiver
+			// clears in pruneAnswerShortTTL — each side waiting for a cooldown the
+			// other's state cannot satisfy. Backdate our graft marker so the next
+			// retry lands as the receiver's block expires.
+			n.markMeshGraftRefused(peer.id, env.Channel, pruneAnswerShortTTL, now)
+		}
+		n.mu.Lock()
+		if until.After(peer.meshBlocked) {
+			peer.meshBlocked = until
+		}
+		n.mu.Unlock()
 		n.pubsub.SetMeshPeer(env.Channel, peer.id, false)
 	case gossip.TypeIHave:
 		n.handleIHave(peer, env)
@@ -175,12 +231,13 @@ const localDeliveryQueueDepth = 4096
 // enqueueLocal hands a message to its channel's delivery worker and never
 // blocks the caller.
 //
-// The read loop calls this. Blocking here stops that loop, and a stopped read
-// loop overflows the transport's inbound buffer, which discards whatever
-// arrives next — including the pings a session dies without. A dropped message
-// on one channel is a bounded, counted loss; a stalled reader is an unbounded,
-// invisible one. The first is strictly better, so the send is non-blocking and
-// the overflow is recorded.
+// The per-peer dispatch worker calls this from outside the socket read loop.
+// Blocking here used to stop that loop, and a stopped read loop overflows the
+// transport's inbound buffer, which discards whatever arrives next — including
+// the pings a session dies without. A dropped message on one channel is a
+// bounded, counted loss (`__local_delivery_dropped__`); a stalled reader is an
+// unbounded, invisible one. The first is strictly better, so the send is
+// non-blocking and the overflow is recorded.
 func (n *Node) enqueueLocal(msg dispatchMessage) {
 	n.localMu.Lock()
 	queue, ok := n.localQueues[msg.channel]

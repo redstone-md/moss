@@ -11,6 +11,25 @@ later. Nothing is deleted: the tags stay published because builds that already
 resolved them must keep resolving them.
 
 
+## [Unreleased]
+
+### Changed
+- **Telemetry is off by default.** v0.6.16 turned it on, putting background
+  gossip on nodes that never asked for it; a plain node now joins none. Opt
+  in with `telemetry.enabled=true` (DefaultConfig, docs/API.md).
+- **Stat-delta gossip is bounded fan-out: O(N·F·hops), not O(N²).** A delta
+  used to go to the whole mesh and every forwarder repeated that; it now
+  reaches at most `GossipSub.D` peers per hop under a 3-hop budget.
+- **No send path blocks the caller.** Outbound envelopes queue per peer,
+  drained by dedicated workers, and `readPeer` dispatches through a per-peer
+  queue of its own — one stalled peer costs its bounded queue and a counted
+  drop, not a head-of-line block that stalls the read loop and takes the
+  session with it.
+
+### Added
+- Visible drop counters in network stats: `stream_drops`, `udp_carrier_drops`,
+  `udp_accept_drops`, `outbound_drops` — losses that were invisible before.
+
 ## [0.8.19] - 2026-07-29
 
 ### Added

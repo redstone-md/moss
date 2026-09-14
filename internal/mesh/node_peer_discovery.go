@@ -24,82 +24,107 @@ func (n *Node) discoveredPeerTargets() []discoveredPeerTarget {
 		cooldown = time.Second
 	}
 
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	if n.directPeerCountLocked() >= n.config.MaxPeers {
+	// Fast path under the read lock: filter to the candidates that are legal
+	// to dial right now and snapshot them. Scoring and sorting the whole
+	// catalog used to happen under the WRITE lock — O(K log K) with a scoring
+	// callback per comparison, on every maintenance pass — which blocked
+	// envelope handling for the entire node.
+	n.mu.RLock()
+	full := n.directPeerCountLocked() >= n.config.MaxPeers
+	localID := n.localPeerID()
+	localPublic := n.natProfile.Load().(nat.Profile).PublicReachable
+	candidates := make([]discoveredPeerTarget, 0, min(len(n.knownPeers), n.config.MaxPeers))
+	if !full {
+		for peerID, info := range n.knownPeers {
+			if peerID == localID || info.addr == "" {
+				continue
+			}
+			if !info.verified && !info.thirdPartyDialable {
+				continue
+			}
+			if _, connected := n.peers[peerID]; connected {
+				continue
+			}
+			// Glare avoidance: when both ends are publicly dialable, only the
+			// lower-id node initiates. Otherwise both dial each other's listen port,
+			// producing two duplicate sessions; the direction-based dedup then closes
+			// the redundant one on each side, which empties that peer slot and
+			// triggers an immediate redial — a self-sustaining connect/disconnect
+			// oscillation that got worse with round-trip latency between the pair.
+			// The higher-id node relies on the lower-id node's inbound dial instead.
+			// If either end is not publicly reachable the inbound dial may not land,
+			// so we keep dialing regardless to preserve connectivity.
+			if localPublic && info.publicReachable && localID > peerID {
+				continue
+			}
+			lastDial := n.peerDials[peerID]
+			if !lastDial.IsZero() && now.Sub(lastDial) < peerDialBackoff(cooldown, n.peerDialFailures[peerID]) {
+				continue
+			}
+			candidates = append(candidates, discoveredPeerTarget{
+				peerID: peerID,
+				addr:   info.addr,
+				info:   info,
+			})
+		}
+	}
+	n.mu.RUnlock()
+	if full || len(candidates) == 0 {
 		return nil
 	}
 
-	localID := n.localPeerID()
-	localPublic := n.natProfile.Load().(nat.Profile).PublicReachable
-
-	targets := make([]discoveredPeerTarget, 0, min(len(n.knownPeers), n.config.MaxPeers))
-	for peerID, info := range n.knownPeers {
-		if peerID == localID || info.addr == "" {
-			continue
+	// Sort outside any node lock. peerScore takes no n.mu (the scoring engine
+	// has its own mutex), so a scoring callback that blocks cannot stall
+	// envelope handling.
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].info.bootstrap != candidates[j].info.bootstrap {
+			return candidates[i].info.bootstrap
 		}
-		if !info.verified && !info.thirdPartyDialable {
-			continue
-		}
-		if _, connected := n.peers[peerID]; connected {
-			continue
-		}
-		// Glare avoidance: when both ends are publicly dialable, only the
-		// lower-id node initiates. Otherwise both dial each other's listen port,
-		// producing two duplicate sessions; the direction-based dedup then closes
-		// the redundant one on each side, which empties that peer slot and
-		// triggers an immediate redial — a self-sustaining connect/disconnect
-		// oscillation that got worse with round-trip latency between the pair.
-		// The higher-id node relies on the lower-id node's inbound dial instead.
-		// If either end is not publicly reachable the inbound dial may not land,
-		// so we keep dialing regardless to preserve connectivity.
-		if localPublic && info.publicReachable && localID > peerID {
-			continue
-		}
-		lastDial := n.peerDials[peerID]
-		if !lastDial.IsZero() && now.Sub(lastDial) < peerDialBackoff(cooldown, n.peerDialFailures[peerID]) {
-			continue
-		}
-		targets = append(targets, discoveredPeerTarget{
-			peerID: peerID,
-			addr:   info.addr,
-			info:   info,
-		})
-	}
-
-	// Neutral ordering: bootstrap seeds first (they are how the node joins at
-	// all), then score / recency. Relay-capable peers get NO blanket priority —
-	// when every node dials supernodes first the mesh degrades into a star that
-	// funnels the whole network's gossip through them. Relay availability is
-	// covered by the small quota in selectDialTargets instead.
-	sort.Slice(targets, func(i, j int) bool {
-		if targets[i].info.bootstrap != targets[j].info.bootstrap {
-			return targets[i].info.bootstrap
-		}
-		scoreI := n.peerScore(targets[i].peerID)
-		scoreJ := n.peerScore(targets[j].peerID)
+		scoreI := n.peerScore(candidates[i].peerID)
+		scoreJ := n.peerScore(candidates[j].peerID)
 		if scoreI != scoreJ {
 			return scoreI > scoreJ
 		}
-		if !targets[i].info.lastSeen.Equal(targets[j].info.lastSeen) {
-			return targets[i].info.lastSeen.After(targets[j].info.lastSeen)
+		if !candidates[i].info.lastSeen.Equal(candidates[j].info.lastSeen) {
+			return candidates[i].info.lastSeen.After(candidates[j].info.lastSeen)
 		}
-		return targets[i].peerID < targets[j].peerID
+		return candidates[i].peerID < candidates[j].peerID
 	})
 
 	limit := n.config.GossipSub.DOut
 	if limit <= 0 {
 		limit = 2
 	}
+	n.mu.Lock()
+	// Selection under the write lock: the relay deficit and free slot count
+	// are read against the same snapshot the in-flight markers are written
+	// to, so a pass can never select more than the node actually has room
+	// for, and the relay reservation is computed from the relay-capable
+	// connections that exist right now (peers may have connected while we
+	// were sorting).
 	available := n.config.MaxPeers - n.directPeerCountLocked()
 	if available < limit {
 		limit = available
 	}
-	selected := selectDialTargets(targets, limit, relayDialQuota-n.relayCapableConnectedLocked())
-	for _, target := range selected {
-		n.peerDials[target.peerID] = now
+	if limit <= 0 {
+		n.mu.Unlock()
+		return nil
 	}
-	return selected
+	selected := selectDialTargets(candidates, limit, relayDialQuota-n.relayCapableConnectedLocked())
+	// A peer may have connected while we were sorting (an inbound dial lands
+	// whenever it wants). The single-lock version of this pass could never
+	// select a connected peer; keep that invariant here by re-checking under
+	// the write lock before the in-flight marker is set.
+	picked := selected[:0]
+	for _, target := range selected {
+		if _, connected := n.peers[target.peerID]; connected {
+			continue
+		}
+		n.peerDials[target.peerID] = now
+		picked = append(picked, target)
+	}
+	n.mu.Unlock()
+	return picked
 }
 
 // relayDialQuota is how many relay-capable connections a node keeps alive for
@@ -302,6 +327,104 @@ func (n *Node) maintainTopicMesh(channel string) {
 	n.maybeDiscoverTopicPeers(channel)
 }
 
+// markMeshGrafted records that we just grafted this peer on channel, so the
+// maintenance path does not re-send the same GRAFT on the next heartbeat.
+// The mesh loop runs as low as every 250ms in chat clients; without this, a
+// peer that ignores the envelope was re-grafted 4x a second, forever — the
+// graft→prune→graft churn NetScout measured. It lives on the peerConn, so it
+// dies with the connection and needs no separate reaping.
+func (n *Node) markMeshGrafted(peerID, channel string, now time.Time) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	peer := n.peers[peerID]
+	if peer == nil {
+		return
+	}
+	// Lazy-init: peerConns are built in several places (including tests) and
+	// an ungrafted peer has no entry to write.
+	if peer.graftedAt == nil {
+		peer.graftedAt = make(map[string]time.Time)
+	}
+	if now.After(peer.graftedAt[channel]) {
+		peer.graftedAt[channel] = now
+	}
+}
+
+// meshGraftEligible reports whether peerID may be (re)grafted on channel: no
+// GRAFT sent to it within meshGraftRetryInterval. A peer that has itself
+// claimed the channel (its GRAFT/announce reached us) is always eligible: the
+// retry throttle exists to stop poking peers that ignore or refuse GRAFTs, and
+// a claimed subscription is the opposite signal — a PRUNE answering our
+// premature graft used to block the mesh from forming for the whole window
+// while the peer was in fact already on the channel.
+func (n *Node) meshGraftEligible(peerID, channel string, now time.Time) bool {
+	n.mu.RLock()
+	peer := n.peers[peerID]
+	if peer == nil {
+		n.mu.RUnlock()
+		return false
+	}
+	last := peer.graftedAt[channel]
+	n.mu.RUnlock()
+	if n.pubsub.HasPeerSubscription(peerID, channel) {
+		return true
+	}
+	return now.Sub(last) >= meshGraftRetryInterval
+}
+
+// meshGraftedWithin reports whether an inbound PRUNE from this peer should get
+// the SHORT meshBlocked TTL (join choreography) rather than the long one
+// (genuine refusal, graft-war spacing). Two signals qualify:
+//
+//   - WE sent the peer a GRAFT on this channel within the window — our
+//     maintenance shot first and its PRUNE is the answer.
+//   - The peer has itself claimed the channel (its GRAFT/announce reached us).
+//     A claimed subscriber that PRUNEs is not refusing the channel, it is
+//     declining one premature mesh slot, and blocking it for the full backoff
+//     would refuse its own GRAFT seconds later — the mesh then cannot form at
+//     all (measured: one peer of three hit this and the mesh stalled at 1).
+//     Subscribe-path GRAFTs (announceLocalSubscription) do not record
+//     graftedAt, so the "recent GRAFT of ours" check alone cannot see them.
+//
+// The long TTL still applies to a peer that never claimed the channel and is
+// just answering our maintenance grafts with PRUNEs — that is the loop the
+// two-tier block exists to break.
+func (n *Node) meshGraftedWithin(peerID, channel string, within time.Duration, now time.Time) bool {
+	if n.pubsub.HasPeerSubscription(peerID, channel) {
+		return true
+	}
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	peer := n.peers[peerID]
+	if peer == nil {
+		return false
+	}
+	last := peer.graftedAt[channel]
+	return !last.IsZero() && now.Sub(last) < within
+}
+
+// markMeshGraftRefused backdates our graft marker when the far end answers a
+// recent GRAFT of ours with a PRUNE — join choreography, not a refusal to
+// ever mesh. Without this the sender side of the two-tier PRUNE handling
+// (node_envelope.go) would sit out the full meshGraftRetryInterval after one
+// premature GRAFT, and a room whose members subscribe a few seconds apart
+// could not form its mesh for 30s: each side waiting out its own cooldown
+// while the other side's short meshBlocked has long expired. Backdating
+// makes the next retry fall one retryIn after the PRUNE, matching the short
+// TTL the receiver recorded.
+func (n *Node) markMeshGraftRefused(peerID, channel string, retryIn time.Duration, now time.Time) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	peer := n.peers[peerID]
+	if peer == nil || peer.graftedAt == nil {
+		return
+	}
+	backdated := now.Add(retryIn - meshGraftRetryInterval)
+	if backdated.Before(peer.graftedAt[channel]) {
+		peer.graftedAt[channel] = backdated
+	}
+}
+
 func (n *Node) ensureTopicMeshMinimum(channel string) {
 	// Confirmed members decide whether the mesh still needs filling. Grafting
 	// marks a peer in-mesh before it has said anything about the channel, so
@@ -319,7 +442,11 @@ func (n *Node) ensureTopicMeshMinimum(channel string) {
 	// mesh gave `D - 6 = 0` slots whenever six strangers were already grafted,
 	// so even a peer known to subscribe could never be selected.
 	candidates := n.selectMeshCandidates(channel, n.config.GossipSub.D-confirmed)
+	now := time.Now()
 	for _, peerID := range candidates {
+		if !n.meshGraftEligible(peerID, channel, now) {
+			continue
+		}
 		n.mu.RLock()
 		peer := n.peers[peerID]
 		n.mu.RUnlock()
@@ -329,6 +456,7 @@ func (n *Node) ensureTopicMeshMinimum(channel string) {
 		n.pubsub.SetMeshPeer(channel, peerID, true)
 		n.sendEnvelope(peer, gossip.Envelope{Type: gossip.TypeGraft, Channel: channel})
 		n.sendRecentIHave(peer, channel)
+		n.markMeshGrafted(peerID, channel, now)
 	}
 }
 
@@ -429,7 +557,11 @@ func (n *Node) opportunisticGraft(channel string) {
 		return
 	}
 	candidates := n.selectHighScoringCandidates(channel, 2, 1.0)
+	now := time.Now()
 	for _, peerID := range candidates {
+		if !n.meshGraftEligible(peerID, channel, now) {
+			continue
+		}
 		n.mu.RLock()
 		peer := n.peers[peerID]
 		n.mu.RUnlock()
@@ -439,6 +571,7 @@ func (n *Node) opportunisticGraft(channel string) {
 		n.pubsub.SetMeshPeer(channel, peerID, true)
 		n.sendEnvelope(peer, gossip.Envelope{Type: gossip.TypeGraft, Channel: channel})
 		n.sendRecentIHave(peer, channel)
+		n.markMeshGrafted(peerID, channel, now)
 	}
 }
 

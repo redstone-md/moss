@@ -93,6 +93,17 @@ func (s *AxiomSink) Close() {
 	s.wg.Wait()
 }
 
+// Dropped reports how many events have been discarded because the queue was
+// full. Zero on a nil sink. The counter is monotonic and never resets; a host
+// reads it to surface "telemetry is lossy right now" instead of the drops
+// staying invisible — the sink itself must never block to avoid them.
+func (s *AxiomSink) Dropped() uint64 {
+	if s == nil {
+		return 0
+	}
+	return s.dropped.Load()
+}
+
 func (s *AxiomSink) run(ctx context.Context) {
 	defer s.wg.Done()
 	ticker := time.NewTicker(defaultFlushInterval)

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net"
 	"net/netip"
+	"sort"
 	"time"
 
 	"github.com/redstone-md/moss/internal/gossip"
@@ -34,11 +35,19 @@ func (n *Node) sendDirectEnvelope(peer *peerConn, env gossip.Envelope) bool {
 	return peer.session.WritePacket(payload) == nil
 }
 
+// snapshotCatalogCap bounds how much of the directory a joining peer is handed
+// in one shot. The snapshot fires once per new session, but on a 100-peer mesh
+// the full catalog is a hundred announcements back to back on the accept path
+// — the join storm, paid by every node a newcomer attaches to. Two DHigh
+// worth of fresh contacts is enough to bootstrap from (the joiner grafts and
+// gossips for the rest); the cap turns the storm into a bounded burst.
+const snapshotCatalogCap = 24
+
 func (n *Node) sendKnownPeerSnapshot(peer *peerConn) {
 	if peer == nil || !n.canSharePeerExchangeWithPeer(peer.id) {
 		return
 	}
-	n.sendEnvelope(peer, n.peerAnnouncementEnvelope(n.localKnownPeer()))
+	n.sendOrEnqueue(peer, n.peerAnnouncementEnvelope(n.localKnownPeer()))
 
 	n.mu.RLock()
 	known := make([]knownPeer, 0, len(n.knownPeers))
@@ -46,11 +55,23 @@ func (n *Node) sendKnownPeerSnapshot(peer *peerConn) {
 		known = append(known, info)
 	}
 	n.mu.RUnlock()
+	// Freshest first — lastSeen desc, id as the tie-break — so a joiner gets
+	// the contacts most likely to still be there rather than the first hundred
+	// a map walk happened to yield.
+	sort.Slice(known, func(i, j int) bool {
+		if !known[i].lastSeen.Equal(known[j].lastSeen) {
+			return known[i].lastSeen.After(known[j].lastSeen)
+		}
+		return known[i].id < known[j].id
+	})
+	if len(known) > snapshotCatalogCap {
+		known = known[:snapshotCatalogCap]
+	}
 	for _, info := range known {
 		if info.id == peer.id || info.addr == "" {
 			continue
 		}
-		n.sendEnvelope(peer, n.peerAnnouncementEnvelope(info))
+		n.sendOrEnqueue(peer, n.peerAnnouncementEnvelope(info))
 	}
 	n.announceLocalSubscriptionsToPeer(peer)
 }
@@ -69,7 +90,7 @@ func (n *Node) announceLocalSubscription(channel string) {
 		if !n.canGossipWithPeer(peer.id) {
 			continue
 		}
-		n.sendEnvelope(peer, gossip.Envelope{Type: gossip.TypeGraft, Channel: channel})
+		n.sendOrEnqueue(peer, gossip.Envelope{Type: gossip.TypeGraft, Channel: channel})
 	}
 }
 
@@ -94,7 +115,7 @@ func (n *Node) introduceSelfTo(peer *peerConn) {
 	if info.id == "" || info.addr == "" || !info.relayCapable {
 		return // nothing trustworthy to say yet
 	}
-	n.sendEnvelope(peer, n.signSupernodeEnvelope(gossip.Envelope{
+	n.sendOrEnqueue(peer, n.signSupernodeEnvelope(gossip.Envelope{
 		Type:                   gossip.TypeSupernodeAnnounce,
 		AdvertisedPeerID:       info.id,
 		AdvertisedAddr:         info.addr,
@@ -112,7 +133,7 @@ func (n *Node) announceLocalSubscriptionsToPeer(peer *peerConn) {
 		if !validChannel(channel) {
 			continue
 		}
-		n.sendEnvelope(peer, gossip.Envelope{Type: gossip.TypeGraft, Channel: channel})
+		n.sendOrEnqueue(peer, gossip.Envelope{Type: gossip.TypeGraft, Channel: channel})
 	}
 }
 
@@ -226,6 +247,13 @@ func sameHostIP(a, b string) bool {
 // announceForwardCooldown bounds how often one peer's state may be re-flooded.
 const announceForwardCooldown = 10 * time.Second
 
+// announceForwardsSweepInterval is how often a forwarding pass prunes expired
+// announceForwards entries. Without it the throttle map grows by one entry per
+// peer this node has ever heard an announcement about, alive or not — a slow
+// leak on a mesh with churn, and a peer that returns is throttled by a stale
+// entry it left behind on its last visit.
+const announceForwardsSweepInterval = 60 * time.Second
+
 // shouldForwardAnnounce caps re-flooding at one message per advertised peer per
 // cooldown, and reports whether this one may go.
 //
@@ -252,11 +280,39 @@ func (n *Node) shouldForwardAnnounce(advertisedPeerID string) bool {
 	now := time.Now()
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	n.sweepStalePeerStateLocked(now)
 	if last, ok := n.announceForwards[advertisedPeerID]; ok && now.Sub(last) < announceForwardCooldown {
 		return false
 	}
 	n.announceForwards[advertisedPeerID] = now
 	return true
+}
+
+// sweepStalePeerStateLocked prunes peer-keyed dedup maps that no maintenance
+// pass owns: announceForwards entries past their cooldown, and iwantAsks
+// entries past their cooldown. Callers hold n.mu. The sweep itself runs at
+// most once per announceForwardsSweepInterval, so the prune cost amortizes to
+// a map walk once a minute instead of charging every announcement.
+func (n *Node) sweepStalePeerStateLocked(now time.Time) {
+	if now.Sub(n.announceSwept) < announceForwardsSweepInterval {
+		return
+	}
+	n.announceSwept = now
+	for id, ts := range n.announceForwards {
+		if now.Sub(ts) > announceForwardCooldown {
+			delete(n.announceForwards, id)
+		}
+	}
+	for peerID, asks := range n.iwantAsks {
+		for id, ts := range asks {
+			if now.Sub(ts) > iwantAskCooldown {
+				delete(asks, id)
+			}
+		}
+		if len(asks) == 0 {
+			delete(n.iwantAsks, peerID)
+		}
+	}
 }
 
 func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forwardType gossip.EnvelopeType, verifiedEnvelope bool) {

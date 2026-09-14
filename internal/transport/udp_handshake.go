@@ -236,9 +236,28 @@ func (l *UDPListener) handleHandshakeDone(remote *net.UDPAddr, payload []byte) {
 	if err != nil {
 		return
 	}
+	// Non-blocking by necessity: this runs on the listener's single read
+	// loop goroutine, so a blocking send on a full backlog would freeze
+	// datagram processing for the whole node — every other session's
+	// packets, handshakes, and STUN responses included — until the mesh's
+	// Accept loop drained. The closed-check and the send sit under one l.mu
+	// critical section so they cannot race Close's shutdown (which takes
+	// the same lock before touching the channel set). A full backlog drops
+	// the session and counts it. Closing happens after the unlock:
+	// udpCarrier.Close re-enters l.mu via removeSession, so closing under it
+	// would deadlock the read loop on itself.
+	l.mu.Lock()
+	var overflowed bool
 	select {
-	case l.acceptC <- session:
 	case <-l.closed:
+		overflowed = true
+	case l.acceptC <- session:
+	default:
+		overflowed = true
+		udpAcceptDrops.Add(1)
+	}
+	l.mu.Unlock()
+	if overflowed {
 		_ = session.Close()
 	}
 }

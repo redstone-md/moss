@@ -3,6 +3,7 @@ package mesh
 import (
 	"context"
 	"encoding/hex"
+	"sort"
 	"time"
 
 	"github.com/redstone-md/moss/internal/gossip"
@@ -93,6 +94,65 @@ func statDeltaMessageID(payload []byte) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// statDeltaHops is the hop budget a stat delta carries: how many times it may
+// be re-broadcast before it dies. Telemetry epochs refresh every epochSec/4 and
+// the aggregate is a CRDT (missing one refresh is invisible), so a small budget
+// covers the mesh while capping the worst-case fan-out tree at F^hops sends.
+const statDeltaHops = 3
+
+// fanoutStatDelta sends env to at most GossipSub.D peers, chosen by a
+// deterministic hash of (MessageID, peerID) — the same shape as lazy gossip's
+// heartbeat rotation, but keyed per message so consecutive deltas fan out to
+// different peers and coverage self-heals over the epoch's four refreshes.
+//
+// This replaces the old flood: stat deltas used to go to every peer on every
+// hop, which at 100 nodes meant each of the ~1.3 deltas a node emits per 75s
+// became ~100 sends, and each forwarder repeated that — O(N²) envelope traffic
+// from telemetry alone. Bounded fan-out turns that into O(N·F·hops).
+func (n *Node) fanoutStatDelta(env gossip.Envelope, excludePeerID string) {
+	fanout := n.config.GossipSub.D
+	if fanout <= 0 {
+		fanout = 1
+	}
+	n.mu.RLock()
+	peerIDs := make([]string, 0, len(n.peers))
+	for peerID, peer := range n.peers {
+		if peer == nil || peerID == excludePeerID {
+			continue
+		}
+		peerIDs = append(peerIDs, peerID)
+	}
+	n.mu.RUnlock()
+	// Same trust policy the flood used, applied before selection so an
+	// untrusted peer never spends one of the fan-out slots.
+	peerIDs = filterPeerIDs(peerIDs, n.canSharePeerExchangeWithPeer)
+	if len(peerIDs) <= fanout {
+		// The whole eligible mesh fits inside the budget.
+		n.sendToPeers(peerIDs, env)
+		return
+	}
+	sort.Slice(peerIDs, func(i, j int) bool {
+		ki := statDeltaPeerKey(env.MessageID, peerIDs[i])
+		kj := statDeltaPeerKey(env.MessageID, peerIDs[j])
+		if ki == kj {
+			return peerIDs[i] < peerIDs[j]
+		}
+		return ki < kj
+	})
+	n.sendToPeers(peerIDs[:fanout], env)
+}
+
+// statDeltaPeerKey ranks a forwarding target for one specific delta, so every
+// delta picks its own pseudo-random subset instead of always the same slice of
+// the mesh.
+func statDeltaPeerKey(messageID, peerID string) string {
+	h, _ := blake2s.New256(nil)
+	_, _ = h.Write([]byte(messageID))
+	_, _ = h.Write([]byte("|"))
+	_, _ = h.Write([]byte(peerID))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 func (n *Node) broadcastStatDelta(d stat.Delta) {
 	payload, err := d.Encode()
 	if err != nil {
@@ -102,15 +162,19 @@ func (n *Node) broadcastStatDelta(d stat.Delta) {
 		Type:      gossip.TypeStatDelta,
 		MessageID: statDeltaMessageID(payload),
 		Payload:   payload,
+		Sequence:  statDeltaHops, // hop budget: forwarding decrements, 0 stops it
 	}
 	n.cache.Add(env.MessageID) // mark our own as seen so echoes don't loop back
-	n.broadcastToAll(env, "")
+	n.fanoutStatDelta(env, "")
 }
 
 // handleStatDelta validates, dedups, applies, and propagates a peer's telemetry
 // contribution. The contribution carries no address or identity — only an
 // unlinkable per-epoch eid and DP-noised metrics — so forwarding it leaks
-// nothing about the originating node.
+// nothing about the originating node. Forwarding is bounded: each hop consumes
+// one unit of the delta's hop budget and re-fans-out to at most GossipSub.D
+// peers, with the mesh cache deduplicating loops; a delta that arrives with no
+// budget left dies here, counted.
 func (n *Node) handleStatDelta(peer *peerConn, env gossip.Envelope) {
 	if n.statAgg == nil || peer == nil || !n.canGossipWithPeer(peer.id) {
 		return
@@ -133,7 +197,15 @@ func (n *Node) handleStatDelta(peer *peerConn, env gossip.Envelope) {
 	if err := n.statAgg.ApplyDelta(delta); err != nil {
 		return
 	}
-	n.broadcastToAll(env, peer.id) // propagate to the rest of the mesh
+	if env.Sequence == 0 {
+		// Out of hop budget: the delta stops here rather than being re-flooded.
+		// Monotonic, surfaced as in___stat_forward_dropped__ next to
+		// in_stat_delta in node stats.
+		n.countInbound("__stat_forward_dropped__")
+		return
+	}
+	env.Sequence-- // one hop consumed; the rest of the budget travels on
+	n.fanoutStatDelta(env, peer.id)
 }
 
 // StatsJSON returns the current self-verifying network telemetry report, or an

@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/flynn/noise"
@@ -39,6 +41,48 @@ var errUDPObserveRequiresSession = errors.New("udp observe requires established 
 const maxPendingUDPServerHandshakes = 1024
 
 var pendingUDPServerHandshakeTTL = 5 * time.Second
+
+// Retransmission schedule for an unanswered UDP handshake init: the first
+// retry leaves after ~75ms, then the delay doubles per retry with ±50%
+// jitter, capped at 1s. A fixed 75ms tick synchronized the whole fleet's
+// retries onto one beat — every node's maintenance dial pass fires together,
+// so at 100 peers each unanswered dial cost ~66 sealed inits inside a 5s
+// handshake window, all landing in lockstep on whichever listener was
+// already buried.
+const (
+	udpDialRetryBaseDelay = 75 * time.Millisecond
+	udpDialRetryCapDelay  = 1 * time.Second
+)
+
+// acceptBacklogSize bounds the queue of inbound sessions that have finished
+// their handshake but not yet been picked up by the mesh's Accept loop. It
+// must absorb a full dial wave (at 100 peers every maintenance pass lands
+// within the same second) without the datagram read loop ever blocking on
+// it — enqueueing is non-blocking, and whatever does not fit is counted and
+// closed rather than stalling every other session on the socket.
+const acceptBacklogSize = 256
+
+var (
+	// udpAcceptDrops counts inbound sessions discarded because the accept
+	// backlog was full when their handshake completed. Monotonic and
+	// process-wide, like streamDrops: the fact that matters is that
+	// sessions are being lost at the accept boundary, not which one.
+	udpAcceptDrops atomic.Uint64
+)
+
+// UDPAcceptDrops reports how many inbound UDP sessions have been discarded
+// because the accept backlog was full. Wire it next to stream_drops in
+// telemetry.
+func UDPAcceptDrops() uint64 {
+	return udpAcceptDrops.Load()
+}
+
+// jitteredDialDelay spreads one retransmission slot by a uniform ±50% around
+// base, so a fleet of peers retrying the same unreachable listener does not
+// share a wake-up beat.
+func jitteredDialDelay(base time.Duration) time.Duration {
+	return time.Duration(float64(base) * (0.5 + rand.Float64()))
+}
 
 // udpPacketConn is the tiny slice of *net.UDPConn the listener actually uses.
 // Abstracting it lets a raw blocking-socket implementation stand in when Go's
@@ -139,10 +183,10 @@ func ListenUDP(port int, cfg HandshakeConfig) (*UDPListener, int, error) {
 		}
 	}
 	listener := &UDPListener{
-		conn:     conn,
+		acceptC:  make(chan *Session, acceptBacklogSize),
 		cfg:      cfg,
 		buffers:  cfg.Buffers,
-		acceptC:  make(chan *Session, 16),
+		conn:     conn,
 		closed:   make(chan struct{}),
 		sessions: make(map[string]*udpCarrier),
 		clients:  make(map[string]*udpClientHandshake),
@@ -164,15 +208,24 @@ func (l *UDPListener) Addr() net.Addr {
 	return l.conn.LocalAddr()
 }
 
+// Accept returns one inbound session, draining any that finished their
+// handshake before Close, then io.EOF once the listener is closed. The
+// accept channel is never closed (see Close); l.closed is the end signal.
 func (l *UDPListener) Accept() (*Session, error) {
 	select {
-	case session, ok := <-l.acceptC:
-		if !ok {
+	case <-l.closed:
+		// Sessions may have completed their handshake and queued while
+		// Close ran; deliver what is left rather than report EOF with
+		// live sessions still in the backlog. None of them are readable
+		// by anybody else.
+		select {
+		case session := <-l.acceptC:
+			return session, nil
+		default:
 			return nil, io.EOF
 		}
+	case session := <-l.acceptC:
 		return session, nil
-	case <-l.closed:
-		return nil, io.EOF
 	}
 }
 
@@ -238,19 +291,31 @@ func (l *UDPListener) DialPeerContext(ctx context.Context, addr string, remoteSt
 		l.mu.Unlock()
 	}()
 
-	ticker := time.NewTicker(75 * time.Millisecond)
-	defer ticker.Stop()
+	// Jittered exponential backoff instead of a fixed 75ms tick: the
+	// fleet's dial passes fire together, and a shared tick put every
+	// retry wave on the same beat — ~66 synchronized inits per unanswered
+	// dial in a 5s handshake window at the old pace. The initial send is
+	// immediate; every retry slot is jittered so the fleet's retries
+	// decorrelate.
+	timer := time.NewTimer(jitteredDialDelay(udpDialRetryBaseDelay))
+	defer timer.Stop()
 	if err := l.writeDatagram(remote, udpMessageHandshakeInit, msg1); err != nil {
 		return nil, err
 	}
+	retryDelay := udpDialRetryBaseDelay
 	for {
 		select {
 		case res := <-result:
 			return res.session, res.err
-		case <-ticker.C:
+		case <-timer.C:
 			if err := l.writeDatagram(remote, udpMessageHandshakeInit, msg1); err != nil {
 				return nil, err
 			}
+			retryDelay *= 2
+			if retryDelay > udpDialRetryCapDelay {
+				retryDelay = udpDialRetryCapDelay
+			}
+			timer.Reset(jitteredDialDelay(retryDelay))
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-l.closed:

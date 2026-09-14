@@ -92,6 +92,19 @@ func (m *Manager) Subscribers(channel string) []string {
 	return out
 }
 
+// HasPeerSubscription reports whether peerID has itself claimed the channel
+// (via its GRAFT/announce reaching us), as opposed to merely being grafted by
+// us on spec. The mesh maintenance path uses it as the positive signal that
+// makes a peer graft-eligible regardless of the graft retry throttle: a PRUNE
+// answering our premature graft must not block a peer that has already said
+// it is on the channel.
+func (m *Manager) HasPeerSubscription(peerID, channel string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, ok := m.peerSubscriptions[peerID][channel]
+	return ok
+}
+
 func (m *Manager) SetMeshPeer(channel, peerID string, inMesh bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

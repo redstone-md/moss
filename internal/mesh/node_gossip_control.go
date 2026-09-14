@@ -1,10 +1,29 @@
 package mesh
 
 import (
-	"sync"
-	"sync/atomic"
+	"context"
+	"time"
 
 	"github.com/redstone-md/moss/internal/gossip"
+)
+
+// outboundQueueDepth bounds how many envelopes may sit pending for one peer.
+// Every send on a running node goes through a per-peer bounded queue drained
+// by a dedicated worker, so a peer whose session stalled — its WritePacket
+// parked in the transport's write timeout — can only cost its own queue,
+// never the read loop, the maintenance pass, or the publish call that
+// happened to target it.
+const outboundQueueDepth = 256
+
+// One IHAVE must not fan out an unbounded burst of IWANTs. Gossip re-sends
+// the same message list every heartbeat, so without a per-peer cooldown one
+// missing id becomes an IWANT per heartbeat per peer, and a peer that
+// re-announces its whole cache turns into an IWANT flood in the other
+// direction. Ask at most once per cooldown, and cap what one IHAVE may
+// trigger.
+const (
+	iwantAskCooldown        = 10 * time.Second
+	maxIWantAsksPerResponse = 64
 )
 
 func (n *Node) sendRecentIHave(peer *peerConn, channel string) {
@@ -15,7 +34,7 @@ func (n *Node) sendRecentIHave(peer *peerConn, channel string) {
 	if len(ids) == 0 {
 		return
 	}
-	n.sendEnvelope(peer, gossip.Envelope{
+	n.sendOrEnqueue(peer, gossip.Envelope{
 		Type:       gossip.TypeIHave,
 		Channel:    channel,
 		MessageIDs: ids,
@@ -42,10 +61,42 @@ func (n *Node) handleIHave(peer *peerConn, env gossip.Envelope) {
 	if len(missing) == 0 {
 		return
 	}
-	n.sendEnvelope(peer, gossip.Envelope{
+	// Ask-side dedup: record each fresh ask under the node lock so a repeat
+	// IHAVE from the same peer inside the cooldown costs a map lookup, not
+	// another IWANT — and cap what a single envelope may trigger.
+	now := time.Now()
+	n.mu.Lock()
+	n.sweepStalePeerStateLocked(now)
+	if n.iwantAsks == nil {
+		n.iwantAsks = make(map[string]map[string]time.Time)
+	}
+	asks := n.iwantAsks[peer.id]
+	if asks == nil {
+		asks = make(map[string]time.Time)
+		n.iwantAsks[peer.id] = asks
+	}
+	fresh := make([]string, 0, len(missing))
+	for _, id := range missing {
+		if last, ok := asks[id]; ok && now.Sub(last) < iwantAskCooldown {
+			continue
+		}
+		if _, recorded := asks[id]; !recorded && len(asks) >= maxSuppressionEntriesPerPeer {
+			continue
+		}
+		asks[id] = now
+		fresh = append(fresh, id)
+		if len(fresh) >= maxIWantAsksPerResponse {
+			break
+		}
+	}
+	n.mu.Unlock()
+	if len(fresh) == 0 {
+		return
+	}
+	n.sendOrEnqueue(peer, gossip.Envelope{
 		Type:       gossip.TypeIWant,
 		Channel:    env.Channel,
-		MessageIDs: missing,
+		MessageIDs: fresh,
 	})
 }
 
@@ -65,7 +116,7 @@ func (n *Node) handleIWant(peer *peerConn, env gossip.Envelope) {
 		if !ok {
 			continue
 		}
-		n.sendEnvelope(peer, cached)
+		n.sendOrEnqueue(peer, cached)
 	}
 }
 
@@ -106,30 +157,6 @@ func (n *Node) broadcastToAll(env gossip.Envelope, excludePeerID string) bool {
 	return n.sendToPeers(targets, env)
 }
 
-func (n *Node) broadcastToNonMesh(channel string, env gossip.Envelope, excludePeerID string) bool {
-	targets := n.pubsub.NonMeshSubscribers(channel)
-	n.mu.RLock()
-	peers := make([]*peerConn, 0, len(targets))
-	for _, peerID := range targets {
-		if peerID == excludePeerID {
-			continue
-		}
-		peer := n.peers[peerID]
-		if peer == nil {
-			continue
-		}
-		peers = append(peers, peer)
-	}
-	n.mu.RUnlock()
-	sent := false
-	for _, peer := range peers {
-		if n.sendEnvelope(peer, env) {
-			sent = true
-		}
-	}
-	return sent
-}
-
 func (n *Node) sendToPeers(peerIDs []string, env gossip.Envelope) bool {
 	if len(peerIDs) == 0 {
 		return false
@@ -143,35 +170,103 @@ func (n *Node) sendToPeers(peerIDs []string, env gossip.Envelope) bool {
 	n.mu.RLock()
 	peers := make([]*peerConn, 0, len(peerIDs))
 	for _, peerID := range peerIDs {
-		peer := n.peers[peerID]
-		if peer == nil {
-			continue
+		if peer := n.peers[peerID]; peer != nil {
+			peers = append(peers, peer)
 		}
-		peers = append(peers, peer)
 	}
 	n.mu.RUnlock()
 	if len(peers) == 0 {
 		return false
 	}
-	workerCount := min(len(peers), sendToPeersConcurrency)
-	jobs := make(chan *peerConn, len(peers))
-	var sent atomic.Bool
-	var wg sync.WaitGroup
-	wg.Add(workerCount)
-	for range workerCount {
-		go func() {
-			defer wg.Done()
-			for peer := range jobs {
-				if n.sendEnvelope(peer, env) {
-					sent.Store(true)
-				}
-			}
-		}()
-	}
+	sent := false
 	for _, peer := range peers {
-		jobs <- peer
+		if n.sendOrEnqueue(peer, env) {
+			sent = true
+		}
 	}
-	close(jobs)
-	wg.Wait()
-	return sent.Load()
+	return sent
+}
+
+// sendOrEnqueue is the send point for everything this node tells a peer: on a
+// running node it hands the envelope to the peer's outbound queue and returns
+// immediately; on a node that never started (unit tests drive sends directly)
+// or one that is stopping, it falls back to the synchronous send so the
+// observable behavior of an unstarted node is unchanged.
+func (n *Node) sendOrEnqueue(peer *peerConn, env gossip.Envelope) bool {
+	if peer == nil {
+		return false
+	}
+	// One RLock section covers the started-check AND the worker spawn. Stop
+	// flips `started` and swaps the peer table under the WRITE lock before it
+	// cancels and waits, so a worker registered here is n.wg-counted before
+	// wg.Wait can run — wg.Add can never race Stop's Wait — and a node that
+	// already stopped takes the synchronous path instead. That path releases
+	// the RLock first: a relayed peer's sendEnvelope re-enters n.mu, and
+	// Go's RWMutex does not admit a writer that is already holding a read.
+	n.mu.RLock()
+	if !n.started || n.rootCtx == nil || n.rootCtx.Err() != nil {
+		n.mu.RUnlock()
+		return n.sendEnvelope(peer, env)
+	}
+	queued := n.enqueueOutbound(n.rootCtx, peer, env)
+	n.mu.RUnlock()
+	return queued
+}
+
+// enqueueOutbound hands one envelope to a peer's queue, lazily starting its
+// worker on first use. Non-blocking by design: gossip traffic is redundant and
+// re-announced on later heartbeats, so an overfull queue drops — silently
+// costing one redundant copy — where the old code blocked the caller
+// network-wide. The drop counter only grows, keeping the pressure visible.
+func (n *Node) enqueueOutbound(ctx context.Context, peer *peerConn, env gossip.Envelope) bool {
+	n.outboundMu.Lock()
+	if n.outboundQueues == nil {
+		n.outboundQueues = make(map[string]chan gossip.Envelope)
+	}
+	queue, ok := n.outboundQueues[peer.id]
+	if !ok {
+		queue = make(chan gossip.Envelope, outboundQueueDepth)
+		n.outboundQueues[peer.id] = queue
+		n.wg.Add(1)
+		go n.outboundWorker(ctx, peer.id, queue)
+	}
+	n.outboundMu.Unlock()
+	select {
+	case queue <- env:
+		return true
+	default:
+		n.outboundDropped.Add(1)
+		return false
+	}
+}
+
+// outboundWorker drains one peer's queue until the node stops. The peer is
+// looked up at SEND time rather than captured at enqueue time: a peer that
+// vanished, or was replaced by a redial between enqueue and send, must not
+// receive the envelope — but its replacement may. Deregistration runs before
+// wg.Done so a Stop→Start cycle can never find a queue whose worker is
+// already gone.
+func (n *Node) outboundWorker(ctx context.Context, peerID string, queue chan gossip.Envelope) {
+	defer n.wg.Done()
+	defer func() {
+		n.outboundMu.Lock()
+		if n.outboundQueues[peerID] == queue {
+			delete(n.outboundQueues, peerID)
+		}
+		n.outboundMu.Unlock()
+	}()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case env := <-queue:
+			n.mu.RLock()
+			peer := n.peers[peerID]
+			n.mu.RUnlock()
+			if peer == nil {
+				continue
+			}
+			n.sendEnvelope(peer, env)
+		}
+	}
 }

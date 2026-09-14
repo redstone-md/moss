@@ -130,8 +130,12 @@ func (l *UDPListener) Close() error {
 			}
 		}
 		l.stunTx = make(map[string]chan string)
+		// l.acceptC stays open: the read loop enqueues finished sessions
+		// into it, and closing it here while a send is in flight is the
+		// send-on-closed-channel panic that once took the host process
+		// down (see #19). Accept() reports EOF via l.closed instead; the
+		// channel itself is collected once the listener is.
 		close(l.closed)
-		close(l.acceptC)
 		l.mu.Unlock()
 		for _, carrier := range sessions {
 			carrier.closeFromListener()
