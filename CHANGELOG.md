@@ -11,6 +11,62 @@ later. Nothing is deleted: the tags stay published because builds that already
 resolved them must keep resolving them.
 
 
+## [0.8.22] - 2026-09-15
+
+### Fixed
+- **The bridge's MQTT leg dialed the broker on the routing table's word.**
+  The mesh leg honors `bind_interface`; the broker leg opened its TCP
+  connection with a raw `net.DialTimeout`. A bridge advertises itself as a
+  gateway for the mesh it sits on, so under a VPN that the mesh bypasses the
+  broker leg left through the tunnel while the mesh spoke from the physical
+  WAN — the advertisement named one network and the traffic left through
+  another, the same two-addresses-one-node split that `bind_interface`
+  exists to close. The dial now goes through `transport.DialerWithBind`
+  with the node's `bindIfIndex`, and `moss-bridge` grows a
+  `--bind-interface` flag resolved once at startup: it feeds the same
+  `cfg.BindInterface` the mesh honors and the broker dial, so both legs
+  leave through one NIC and an unusable interface spec is a startup error,
+  not a silent split. The raw dial was exactly what
+  `TestNoUnboundSocketCallSites` walks `internal/` to catch; the bound
+  dialer satisfies it with no new exemption.
+- **A stale maintenance tick could revert a fresh supernode transition.**
+  `refreshSupernodeStatus` computed its verdict from the profile it had
+  snapshotted before taking the lock, so a tick preempted between the
+  snapshot and the lock committed its stale verdict after a fresher refresh
+  had already flipped the state: the node demoted and re-promoted with no
+  profile change, consumers saw back-to-back `EventSupernodePromoted`
+  within a heartbeat or two, and every spurious flip signed and broadcast
+  a SupernodeAnnounce/Revoke to every peer. The verdict and the transition
+  now commit inside one lock hold — profile, session count and
+  `supernodeActive` read as a single consistent snapshot — so a stale tick
+  finds no transition and emits nothing.
+- **Lazy announce covered non-mesh subscribers only by lottery.** A
+  subscriber outside the topic mesh learns a payload id from an IHAVE
+  naming it and nothing else. The publish-side announcement reaches DLazy
+  of those peers by hash sampling — with replacement, so a hub fan-out (24
+  subscribers, a 6-wide announce) leaves every payload a constant miss
+  probability — and the heartbeat sweep, the safety net that exists to
+  close that gap, sampled the same way: the same peers could be re-drawn
+  tick after tick while one of them never saw an id before it aged out of
+  the announce ring and became permanently unrequestable. The sweep now
+  rotates a cursor over the sorted non-mesh subscriber list — DLazy peers
+  per tick, advancing by the number served, so ceil(N/DLazy) ticks cover
+  every subscriber exactly once — and announces twice DLazy recent ids
+  instead of DLazy, so a payload keeps a recoverable window measured in
+  multiple publish intervals, not one. Soak convergence is now a
+  bounded-cover guarantee, not a draw.
+- **IWANT cooldowns stood for envelopes that never left the node.** The 10s
+  ask and serve markers were recorded before the send, so a failed enqueue
+  — a full outbound queue, a session racing teardown — claimed an ask was
+  in flight that was not: the next IHAVE naming the id found the stale
+  marker and never re-asked, silencing the only recovery path a fresh
+  payload has for the rest of a cooldown longer than most convergence
+  budgets. A failed enqueue now rolls its markers back on both sides — the
+  ask in `handleIHave` and the serve in `handleIWant`, each touching only
+  the ids that attempt owned, so a concurrent delivery of the same id
+  legitimately keeps its marker. The cooldown is a property of what was
+  actually sent.
+
 ## [0.8.21] - 2026-09-14
 
 ### Added
