@@ -541,6 +541,24 @@ func (n *Node) Publish(channel string, data []byte) int32 {
 // PublishRoom publishes inside a named room; an empty room means this node's
 // own.
 func (n *Node) PublishRoom(meshID, channel string, data []byte) int32 {
+	return n.publishRoomTrace(meshID, channel, data, "")
+}
+
+// PublishTrace publishes like PublishRoom but stamps the message with an
+// end-to-end trace id: every node that forwards or delivers the message
+// appends its peer id to the hop list (capped at 16 hops), and the
+// delivering node emits a gossip.trace event on the debug plane so an
+// operator can answer "where did this message actually go?". The trace
+// rides the publish envelope as two optional fields — old peers ignore
+// them, and a publish without a trace id pays nothing.
+func (n *Node) PublishTrace(meshID, channel string, data []byte, traceID string) int32 {
+	if traceID == "" {
+		return n.PublishRoom(meshID, channel, data)
+	}
+	return n.publishRoomTrace(meshID, channel, data, traceID)
+}
+
+func (n *Node) publishRoomTrace(meshID, channel string, data []byte, traceID string) int32 {
 	if !validChannel(channel) {
 		return MOSS_ERR_INVALID_CHANNEL
 	}
@@ -567,6 +585,10 @@ func (n *Node) PublishRoom(meshID, channel string, data []byte) int32 {
 		return MOSS_ERR_NOT_IN_ROOM
 	}
 	env := n.makePublishEnvelope(topic, sealed)
+	env.TraceID = traceID
+	if traceID != "" {
+		env.TraceHops = []string{n.localPeerID()}
+	}
 	n.debugBus.Emit(func() inspect.Event {
 		return inspect.Event{
 			Kind:   inspect.KindPublish,

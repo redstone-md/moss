@@ -223,8 +223,18 @@ func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 			n.emitDrop(inspect.KindDedup, peer, env, "already seen this message")
 			return
 		}
-		n.scoring.RewardFirstDelivery(peer.id)
+		n.appendTraceHop(&env)
 		n.deliverLocal(env)
+		if env.TraceID != "" {
+			n.debugBus.Emit(func() inspect.Event {
+				return inspect.Event{
+					Kind:   inspect.KindTrace,
+					Trace:  env.TraceID,
+					Topic:  env.Channel,
+					Fields: map[string]any{"hops": append([]string(nil), env.TraceHops...), "message_id": env.MessageID},
+				}
+			})
+		}
 		n.broadcastEnvelope(env, peer.id)
 		n.broadcastIHave(env.Channel, []string{env.MessageID}, peer.id)
 		if len(env.Payload) > 1024 {
@@ -239,6 +249,25 @@ func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 	case gossip.TypeDirect:
 		n.handleDirectPacket(peer, env)
 	}
+}
+
+// traceHopCap bounds the recorded path: a publish that already walked 16
+// hops is not going anywhere an operator cares about, and an unbounded hop
+// list would let the publisher's message size grow with the mesh diameter.
+const traceHopCap = 16
+
+// appendTraceHop records this node on a traced publish. A node past the cap
+// stops appending and counts it — the message still forwards, the trace just
+// stops growing. Untagged publishes pay two nil-checks and nothing else.
+func (n *Node) appendTraceHop(env *gossip.Envelope) {
+	if env.TraceID == "" {
+		return
+	}
+	if len(env.TraceHops) >= traceHopCap {
+		n.countInbound("__trace_hops_capped__")
+		return
+	}
+	env.TraceHops = append(env.TraceHops, n.localPeerID())
 }
 
 func (n *Node) deliverLocal(env gossip.Envelope) {

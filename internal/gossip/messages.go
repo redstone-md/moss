@@ -96,7 +96,13 @@ type Envelope struct {
 	// it, a legacy receiver ignores it, and a present-but-invalid
 	// signature is a drop, never a pass.
 	Signature []byte `json:"signature,omitempty"`
-	Payload   []byte `json:"payload,omitempty"`
+	// TraceID is an optional end-to-end trace stamped by the publisher.
+	// When set, each forwarder appends its peer ID to TraceHops (cap 16).
+	// Without it — two nil checks, zero overhead, no extra bytes on the
+	// wire. Additive and verify-free: old peers ignore unknown fields.
+	TraceID   string   `json:"trace_id,omitempty"`
+	TraceHops []string `json:"trace_hops,omitempty"`
+	Payload   []byte   `json:"payload,omitempty"`
 
 	// Overlay lookup fields.
 	OverlayKey       []byte            `json:"ov_key,omitempty"`
