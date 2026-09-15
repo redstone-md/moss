@@ -110,7 +110,7 @@ func (n *Node) handleHolePunchCoord(peer *peerConn, env gossip.Envelope) {
 		n.updateKnownPeer(env.RelaySource, env.AdvertisedAddr, false)
 		if env.CoordStage == "offer" {
 			replyAddr := n.freshObservedUDPAddr(peer.id, minDuration(750*time.Millisecond, n.config.HandshakeTimeout()/2))
-			go n.tryHolePunchDialAt(env.RelaySource, env.AdvertisedAddr, coordAt)
+			go n.tryHolePunchDialAt(env.RelaySource, env.AdvertisedAddr, coordAt, coordAt.Add(n.config.HandshakeTimeout()))
 			n.sendEnvelope(peer, gossip.Envelope{
 				Type:             gossip.TypePeerAnnounce,
 				AdvertisedPeerID: n.localPeerID(),

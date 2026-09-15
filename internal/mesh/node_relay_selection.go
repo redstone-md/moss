@@ -1,7 +1,6 @@
 package mesh
 
 import (
-	"encoding/hex"
 	"errors"
 	"net"
 	"sort"
@@ -188,14 +187,20 @@ func (n *Node) peerScore(peerID string) float64 {
 	if n.scoring == nil {
 		return 0
 	}
-	base := n.scoring.Score(peerID)
+	// The callback read stays behind scoringMu — SetScoringCallback fires
+	// once at startup, so this is an uncontended RLock on a lock that no
+	// hot path ever writes. The callback itself hands off to
+	// AdjustedScore, which memoizes the (peer, base) → adjusted result so
+	// the dozens of threshold gates and sort comparators that funnel here
+	// per envelope neither re-invoke the (FFI-hosted) callback nor
+	// re-decode the hex peer key on every comparison.
 	n.scoringMu.RLock()
 	cb := n.scoringCB
 	n.scoringMu.RUnlock()
 	if cb == nil {
-		return base
+		return n.scoring.Score(peerID)
 	}
-	return cb(decodePeerID(peerID), base)
+	return n.scoring.AdjustedScore(peerID, cb)
 }
 
 func (n *Node) shouldPreferRelayForTarget(targetPeerID string) bool {
@@ -325,12 +330,9 @@ func (n *Node) medianMeshScore(peers []string) float64 {
 	return (scores[middle-1] + scores[middle]) / 2
 }
 
+// decodePeerID is the historical mesh-side name for the hex peer-key
+// decode; tests reference it directly, so it now delegates to the single
+// gossip-side implementation instead of keeping a second copy.
 func decodePeerID(peerID string) [32]byte {
-	var out [32]byte
-	raw, err := hex.DecodeString(peerID)
-	if err != nil {
-		return out
-	}
-	copy(out[:], raw)
-	return out
+	return gossip.DecodePeerKey(peerID)
 }

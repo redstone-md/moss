@@ -551,7 +551,7 @@ func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origi
 	go n.readPeer(peer)
 	n.sendKnownPeerSnapshot(peer)
 	n.introduceSelfTo(peer)
-	n.broadcastPeerAnnouncement(n.localKnownPeer(), peerID)
+	n.announceSelfToPeers(peerID)
 	go n.refreshExternalAddress(time.Now().Add(n.config.HandshakeTimeout()))
 	n.mu.Lock()
 	delete(n.directProbes, peerID)

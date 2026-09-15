@@ -11,6 +11,13 @@ later. Nothing is deleted: the tags stay published because builds that already
 resolved them must keep resolving them.
 
 
+## [0.8.27] - 2026-09-16
+
+### Fixed
+- **Scoring no longer decodes and re-invokes the application callback per envelope.** `peerScore` hex-decoded the 64-char hex id and fired a synchronous `scoringCB` (behind FFI, `C.CBytes` per call) on every gate — `O(N log N)` times per sort. `gossip.Engine.AdjustedScore` now memoizes the adjusted score per `(peer, base)` and the callback runs at most once per base change (≤1/s under `Tick`); `DecodePeerKey` is the single decode site. Unknown peers are never memoized.
+- **Join-time self-announce no longer spams `N×(N-1)` envelopes.** Each accept broadcast its own identity to all peers; a 100-peer join wave sent ~9900 identical self-announces before they died at the `meaningfulChange` gate, burning recipients' `announceBudget`. `registerPeerFrom` now funnels through `announceSelfToPeers`, which reuses the forward gate's own `announceForwards[localID]` (10s `announceForwardCooldown`) — at most one self-broadcast per window for the whole wave. Joiners still learn the peer via `sendKnownPeerSnapshot`; supernode/meaningful address changes stay ungated.
+- **Relay promotion and binding refresh no longer spray overlapping generations.** `promoteRelayPeers` stamped `directProbes` at attempt start with a 1s cooldown while arming a 5s punch budget every 3 ticks — guaranteed overlap of 2–3 live `tryDirectUpgrade` generations per target, each spawning its own `Coordinator.Plan` dials. The stamp is now the attempt's budget end (+`Heartbeat` breather), so at most one live attempt per target; dials are deadline-clamped to the remaining budget. `refreshExternalAddress` (spawned per accept) walked all peers serially and never short-circuited — now bounded to 3 peers with early exit on first confirmed mapping.
+
 ## [0.8.26] - 2026-09-16
 
 ### Fixed
