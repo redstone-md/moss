@@ -251,12 +251,28 @@ func (n *Node) relayOverloadCooldown() time.Duration {
 	return cooldown
 }
 
+// lazyAnnounceDepth is how deep into the channel's recent ids the heartbeat
+// sweep announces. DLazy ids per envelope is the publish-side convention;
+// the sweep is the recovery net for ids a subscriber missed, and a payload
+// is only requestable while an announcement still names it. Announcing
+// just DLazy meant the tail of the freshest payloads stopped being named
+// as soon as DLazy newer ones existed — a subscriber that missed a payload
+// in its announce window (a congested tick, a lost IHAVE) could never ask
+// for it. Twice DLazy keeps the per-envelope cost bounded while giving
+// every payload a recoverable window measured in multiple publish
+// intervals, not one.
+const lazyAnnounceDepthFactor = 2
+
 func (n *Node) gossipRecentMessages(channel string) {
-	ids := n.cache.RecentIDs(channel, n.config.GossipSub.DLazy)
+	depth := n.config.GossipSub.DLazy * lazyAnnounceDepthFactor
+	if depth <= 0 {
+		depth = n.config.GossipSub.DLazy
+	}
+	ids := n.cache.RecentIDs(channel, depth)
 	if len(ids) == 0 {
 		return
 	}
-	targets := n.selectLazyPeers(channel, "", n.config.GossipSub.DLazy)
+	targets := n.selectLazyPeersCovering(channel)
 	n.sendToPeers(targets, gossip.Envelope{
 		Type:       gossip.TypeIHave,
 		Channel:    channel,
