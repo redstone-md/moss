@@ -11,6 +11,26 @@ later. Nothing is deleted: the tags stay published because builds that already
 resolved them must keep resolving them.
 
 
+## [0.8.29] - 2026-09-16
+
+### Fixed
+- **Envelope eviction is O(1), not a scan of the whole cache.** `Cache.removeLocked`
+  walked `envOrder` (up to `maxCachedEnvelopes=4096` ids) and re-sliced it on
+  every removal, and `purgeLocked` called it once per expired slot — so a burst
+  past the cap paid thousands of linear scans. `envOrder` is now a
+  `container/list` with a parallel `envIndex` (id → node), making both the FIFO
+  pop and an arbitrary removal O(1). Cap, ring and second-bucketed TTL-purge
+  semantics are unchanged.
+- **A session at the inbound-stream cap now reports its losses.** Once a
+  session held `maxInboundStreams` (1024) streams, `readLoop` discarded every
+  further packet by silently skipping a `nil` stream — a loss class invisible
+  to `stream_drops`, which only counts buffer-full drops on an existing stream.
+  A stream-id flood therefore emptied a session's stream table while looking
+  perfectly healthy in the dashboard. `streamCapDrops` is charged per
+  rejection and surfaced as `stream_cap_drops` in both the debug-plane `drops`
+  and the Axiom `node_stats`; the triage line for `outbound_drops` is corrected
+  from the stale 32-deep to the current 64-deep queue.
+
 ## [0.8.28] - 2026-09-16
 
 ### Fixed
