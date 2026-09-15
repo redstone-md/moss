@@ -38,6 +38,8 @@ var inboundDropFamilies = []string{
 	"__relay_oversize__",            // relay payload over the wire-safe cap, hostile/skewed origin (node_relay_control.go)
 	"__relay_rate_limited__",        // relay payload refused by per-source token bucket (node_relay_control.go)
 	"__relay_consumer_capped__",     // relay source past its per-minute consumer cap (node_relay_control.go)
+	"__relay_dispatch_dropped__",    // relayed DM delivery into a full dispatch channel (node_relay_control.go)
+	"__relay_route_expired__",       // relay route reaped by idle-TTL GC, not torn down explicitly (node_relay_control.go)
 	"__tun_frag_hardcap__",          // tun fragment over the fragment hard cap (internal/tun)
 	"__tun_frag_oversize__",         // tun fragment over the MTU-side cap (internal/tun)
 	"__tun_frag_malformed__",        // tun fragment that failed structural checks (internal/tun)
@@ -86,6 +88,20 @@ var inboundDropFamilies = []string{
 //   - in___relay_oversize__ rising → a relay origin is sending payloads past
 //     the wire-safe cap: hostile or version-skewed source, expect the
 //     relay-bandwidth bucket to be charging it too.
+//   - in___relay_rate_limited__ rising → the per-consumer bandwidth bucket
+//     is refusing payloads: that consumer outpaces its configured relay
+//     rate. The overload marker demotes supernode status while the window
+//     is open.
+//   - in___relay_consumer_capped__ rising → a consumer crossed its
+//     per-minute RelayConsumerCapBytes quota and its route was closed with
+//     an explicit RelayClose; a sustained rate here is quota exhaustion,
+//     not a bug — the quota guard is doing its job.
+//   - in___relay_dispatch_dropped__ rising → the local application is not
+//     draining relayed delivery as fast as it arrives: relayed DMs are
+//     being dropped at the target, the loss is on THIS node's consumer.
+//   - in___relay_route_expired__ rising → relay routes are dying of idle
+//     before their endpoints ended them: sessions idle out mid-stream
+//     (crashed or stalled endpoints). Origins learn via the expiry close.
 //   - bus_dropped / axiom_dropped rising → the observability layer itself is
 //     losing events; the mesh is fine, the dashboard is lying.
 //

@@ -12,15 +12,29 @@ import (
 	"github.com/redstone-md/moss/internal/nat"
 )
 
+// relayBucketFor returns the per-source bandwidth bucket, creating it on the
+// source's first charge. Every relayed packet from an established source
+// walks the hit path, so the read lock carries it: a busy supernode's
+// forwarding rate must not queue on the global write lock — serializing with
+// gossip, session bookkeeping, and every dispatch worker in the node — just
+// to read a map. The write lock appears only on a new source's first packet,
+// where the double-check keeps a concurrent first charge from allocating two
+// buckets for one peer.
 func (n *Node) relayBucketFor(peerID string) *nat.TokenBucket {
+	n.mu.RLock()
+	bucket := n.relayBuckets[peerID]
+	n.mu.RUnlock()
+	if bucket != nil {
+		return bucket
+	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	bucket := n.relayBuckets[peerID]
-	if bucket == nil {
-		burst, sustained := n.relayRateLimits()
-		bucket = nat.NewTokenBucket(burst, sustained)
-		n.relayBuckets[peerID] = bucket
+	if bucket = n.relayBuckets[peerID]; bucket != nil {
+		return bucket
 	}
+	burst, sustained := n.relayRateLimits()
+	bucket = nat.NewTokenBucket(burst, sustained)
+	n.relayBuckets[peerID] = bucket
 	return bucket
 }
 
@@ -102,6 +116,11 @@ func (n *Node) selectRelayPeers(targetPeerID string) ([]string, error) {
 	// geo.Proximity is neutral there and ordering falls through to
 	// score/load alone.
 	targetIP := hostIP(n.knownPeers[targetPeerID].addr)
+	// Precompute each candidate's relay-session load once: the sort below
+	// runs O(N·logN) comparisons, and rescanning every relayLocals session
+	// per comparison made that O(N·logN·S) while n.mu is held for read.
+	// One O(S) pass up front keeps each comparison to a map lookup.
+	relayLoad := n.relaySessionCountsViaLocked()
 	sort.Slice(candidates, func(i, j int) bool {
 		infoI := n.knownPeers[candidates[i]]
 		infoJ := n.knownPeers[candidates[j]]
@@ -120,8 +139,8 @@ func (n *Node) selectRelayPeers(targetPeerID string) ([]string, error) {
 		if scoreI != scoreJ {
 			return scoreI > scoreJ
 		}
-		loadI := n.relaySessionCountViaLocked(candidates[i])
-		loadJ := n.relaySessionCountViaLocked(candidates[j])
+		loadI := relayLoad[candidates[i]]
+		loadJ := relayLoad[candidates[j]]
 		if loadI != loadJ {
 			return loadI < loadJ
 		}
@@ -135,14 +154,17 @@ func (n *Node) isTrustedRelayCandidateLocked(peerID string) bool {
 	return ok && info.natTrusted && info.relayCapable && info.publicReachable
 }
 
-func (n *Node) relaySessionCountViaLocked(peerID string) int {
-	count := 0
+// relaySessionCountsViaLocked reports how many relay sessions each peer is
+// currently serving, in a single pass over relayLocals. It requires n.mu to
+// be held (read or write): selectRelayPeers builds this map once before
+// sorting so its comparator reads load from the map instead of rescanning
+// relayLocals for every comparison.
+func (n *Node) relaySessionCountsViaLocked() map[string]int {
+	counts := make(map[string]int, len(n.relayLocals))
 	for _, session := range n.relayLocals {
-		if session.viaPeerID == peerID {
-			count++
-		}
+		counts[session.viaPeerID]++
 	}
-	return count
+	return counts
 }
 
 func relayCandidateRank(info knownPeer) int {

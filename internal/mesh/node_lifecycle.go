@@ -336,12 +336,12 @@ func (n *Node) Stop() int32 {
 			peer.closeSession()
 		}
 	}
-	// Drain guard: the relay data path (node_relay_control.go) still sends
-	// on dispatchCh with a BLOCKING send, and dispatchLoop exits the moment
-	// the cancelled context wins its select. A worker parked on a full
-	// queue after that would hold wg.Wait here forever. Draining is
-	// bounded — the queue is 1024 deep — and ends as soon as every worker
-	// is done, so the goroutine lives only inside this Stop call.
+// Drain guard: every dispatchCh sender (relay data, events, relay API
+// packets) is now a non-blocking select/default — a parked worker was the
+// original hang risk, but a send that finds no receiver still occupies a
+// worker until the channel's buffer frees, and buffered items are exactly
+// what dispatchLoop stops consuming once the cancelled context wins its
+// select. Draining keeps wg.Wait bounded in that window regardless.
 	drainDone := make(chan struct{})
 	go func() {
 		for {
