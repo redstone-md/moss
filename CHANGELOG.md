@@ -11,6 +11,32 @@ later. Nothing is deleted: the tags stay published because builds that already
 resolved them must keep resolving them.
 
 
+## [0.8.26] - 2026-09-16
+
+### Fixed
+- **Ping probes no longer serial-kill healthy peers.** `sendPingTargets` wrote
+  pings serially and stamped `pingSentAt` at collect time. One stalled
+  `WritePacket` (5s writeMu) delayed every peer behind it in the same pass,
+  so `collectPruneLocked` charged them each a phantom miss; six passes killed
+  a healthy session (`peerDisconnectMissLimit`). Pings on a running node are
+  now dispersed over a bounded pool (`pingSendWorkers=16`, `wg`-tracked under
+  `rootCtx`); a failed send clears `pingPending/pingSentAt` via
+  `clearFailedPings` so it retries next pass instead of aging into a miss,
+  and a `Stop` mid-pass drains and disarms. The 6-miss semantics are
+  untouched — a miss is now only a genuinely-expired round trip.
+- **IP-colocation penalties no longer take N write locks per join/leave.**
+  `recalculateIPColocationPenalties` called `ApplyIPColocationPenalty` once
+  per peer, each taking `gossip.Engine.mu` for a single write. Now it counts
+  hosts once and applies the whole batch under one
+  `ApplyIPColocationPenalties` acquisition. Ranking unchanged.
+- **IWANT serve no longer overflows the peer queue by 2x.** A full serve of
+  `maxIWantServesPerReq=64` into `outboundQueueDepth=32` dropped its tail
+  deterministically — half the reply vanished per request, each drop with its
+  own rollback lock. The queue is now `64` (matches the serve cap; ~31KB/peer
+  resident) and a failed enqueue bails and defers the remaining ids as a
+  batch, rolling `IHaveAsk`/`IWantServes` back once. The heal is the next
+  `IWANT` for the same ids.
+
 ## [0.8.25] - 2026-09-15
 
 ### Fixed
