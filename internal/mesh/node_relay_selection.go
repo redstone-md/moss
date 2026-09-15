@@ -35,7 +35,21 @@ func (n *Node) relayRateLimits() (int, int) {
 	if burst <= 0 {
 		burst = 1024
 	}
+	// A volunteer who raised the ceiling did so for supply; the old
+	// sustained derivation — burst/4, i.e. 64 KiB/s at 256 — stays as
+	// floor so such a node does not still bill at 64 KiB/s. A non-default
+	// RelaySustainedKiBPS overrides that floor, clamped to ≤ burst.
 	sustained := burst / 4
+	if n.config.NAT.RelaySustainedKiBPS > 0 {
+		wanted := n.config.NAT.RelaySustainedKiBPS * 1024
+		if wanted > burst {
+			wanted = burst
+		}
+		if wanted < 1 {
+			wanted = 1
+		}
+		sustained = wanted
+	}
 	if n.config.Security.RateLimitSustained > 0 && n.config.Security.RateLimitSustained < sustained {
 		sustained = n.config.Security.RateLimitSustained
 	}
