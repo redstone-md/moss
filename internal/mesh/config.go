@@ -278,6 +278,29 @@ func DefaultConfig() Config {
 	}
 }
 
+// DefaultOfflineConfig returns a preset that talks to nobody outside the
+// local network: no trackers, no DHT, no Veil relays — discovery is static
+// peers plus LAN multicast only. It is the isolated-network story (a site, a
+// disaster box, an air-gapped lab): the public bootstrap servers must never
+// see an infohash from a deployment that decided not to exist publicly.
+// Everything else — encryption, gossip, NAT traversal among the nodes that
+// are there — is unchanged.
+func DefaultOfflineConfig() Config {
+	c := DefaultConfig()
+	c.Trackers = nil
+	c.DHTEnabled = false
+	c.Veil.Enabled = false
+	return c
+}
+
+// IsOffline reports whether a config keeps the node off the public bootstrap:
+// no trackers and no DHT. Static peers and LAN discovery still work — that is
+// the point of an offline preset — but a node with no static peers and no LAN
+// can only be joined by someone who already knows its address.
+func (c *Config) IsOffline() bool {
+	return len(c.Trackers) == 0 && !c.DHTEnabled
+}
+
 // Config accessors take a POINTER receiver on purpose.
 //
 // A value receiver copies the whole struct on every call, which means every
