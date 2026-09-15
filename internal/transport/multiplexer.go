@@ -36,6 +36,14 @@ var (
 	// all.
 	streamDropsDefault atomic.Uint64
 	streamDropsOther   atomic.Uint64
+	// streamCapDrops counts inbound packets thrown away because the session
+	// had already reached maxInboundStreams, so no stream could be created to
+	// receive them. Distinct from streamDrops: those are buffer-full losses on
+	// an existing stream; these are never even delivered to a buffer. A peer
+	// (or a hostile one) opening thousands of streams and sending on
+	// never-read ids saturates this, and the loss is otherwise invisible —
+	// readLoop silently continues.
+	streamCapDrops atomic.Uint64
 
 	streamOverflowMu       sync.RWMutex
 	streamBufferOnOverflow func(streamID StreamID, queueLen int)
@@ -48,6 +56,16 @@ var (
 // packet matters far less than whether packets are being lost at all.
 func StreamDrops() uint64 {
 	return streamDrops.Load()
+}
+
+
+// StreamCapDrops reports how many inbound packets were discarded because the
+// session had reached maxInboundStreams and no receiving stream could be
+// created. Unlike StreamDrops (a full buffer on a live stream), these packets
+// never reach any buffer; a peer opening many streams and sending on ids the
+// node never reads drives this counter.
+func StreamCapDrops() uint64 {
+	return streamCapDrops.Load()
 }
 
 // StreamDropsSplit reports dropped packets as (default stream, other streams).
@@ -161,6 +179,7 @@ func (m *Multiplexer) inboundStream(id StreamID) *Stream {
 		return nil
 	}
 	if len(m.streams) >= maxInboundStreams {
+		streamCapDrops.Add(1)
 		return nil
 	}
 	stream := newStream(id, m)
