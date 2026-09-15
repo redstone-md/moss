@@ -230,6 +230,64 @@ func (n *Node) selectLazyPeers(channel, excludePeerID string, limit int) []strin
 	return selected
 }
 
+// selectLazyPeersCovering is the heartbeat-side lazy selection: DLazy
+// targets per tick like selectLazyPeers, but as a rotating cover of the
+// channel's non-mesh subscribers rather than a hash-sampled lottery.
+//
+// The distinction is delivery reach, and it is the whole reason the
+// heartbeat sweep exists. A subscriber that is not in the topic mesh has
+// exactly one way to learn a payload id: an IHAVE naming it. The
+// publish-side one-shot announcement reaches only DLazy of those peers by
+// hash sampling — with replacement across payloads, so a peer with many
+// competitors (a hub with 24 subscribers and a 6-wide announce) can miss
+// any given id with constant probability. The heartbeat sweep is the
+// safety net that must close that gap: it re-announces the freshest ids
+// every tick precisely so a missed id gets named again. Sampling WITH
+// replacement in the sweep wastes that guarantee — the same peers can be
+// re-drawn tick after tick while a subscriber never sees an id before it
+// ages out of the announce set and becomes permanently unrequestable.
+//
+// A cursor over the sorted non-mesh list fixes the guarantee at the same
+// per-tick cost: each tick advances by the number of peers served, so
+// ceil(N/DLazy) ticks cover every subscriber exactly once before the pass
+// repeats. A returning peer set re-sorts stably (by peer id), and a
+// missing peer costs its slot nothing — the cursor is taken modulo the
+// current list length.
+func (n *Node) selectLazyPeersCovering(channel string) []string {
+	limit := n.config.GossipSub.DLazy
+	if limit <= 0 {
+		return nil
+	}
+	peers := n.pubsub.NonMeshSubscribers(channel)
+	if len(peers) == 0 {
+		return nil
+	}
+	// Stable order across ticks: NonMeshSubscribers walks a map, so without
+	// this the cursor would point into a reshuffled list every pass and the
+	// cover would be as probabilistic as the hash sampling it replaces.
+	sort.Strings(peers)
+	n.mu.Lock()
+	if n.lazyCursors == nil {
+		n.lazyCursors = make(map[string]int)
+	}
+	start := n.lazyCursors[channel]
+	if start >= len(peers) {
+		start = 0
+	}
+	n.lazyCursors[channel] = (start + limit) % len(peers)
+	n.mu.Unlock()
+
+	selected := make([]string, 0, min(limit, len(peers)))
+	for i := 0; i < len(peers) && len(selected) < limit; i++ {
+		peerID := peers[(start+i)%len(peers)]
+		if !n.canGossipWithPeer(peerID) {
+			continue
+		}
+		selected = append(selected, peerID)
+	}
+	return selected
+}
+
 func lazyPeerKey(channel, peerID string, heartbeat uint64) string {
 	hash, _ := blake2s.New256(nil)
 	hash.Write([]byte(channel))

@@ -218,6 +218,15 @@ type Node struct {
 	iwantAsks     map[string]map[string]time.Time
 	iwantServes   map[string]map[string]time.Time
 	announceSwept time.Time
+	// lazyCursors is the per-channel rotation state for the heartbeat-side
+	// IHAVE sweep (selectLazyPeersCovering): which slice of the sorted
+	// non-mesh subscriber list the next tick's announcement targets. A
+	// cursor turns the sweep into a bounded-cover pass — every subscriber
+	// is targeted within ceil(N/DLazy) ticks — instead of the publish-side
+	// hash lottery, which samples with replacement and leaves coverage
+	// probabilistic. Lazy init like the maps above: nodes are built as bare
+	// literals in tests.
+	lazyCursors map[string]int
 	// Per-channel delivery queues, each drained by its own worker.
 	//
 	// Delivery to the application is a synchronous FFI callback that decrypts

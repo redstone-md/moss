@@ -100,6 +100,18 @@ func (n *Node) handleIHave(peer *peerConn, env gossip.Envelope) {
 	// Ask-side dedup: record each fresh ask under the node lock so a repeat
 	// IHAVE from the same peer inside the cooldown costs a map lookup, not
 	// another IWANT — and cap what a single envelope may trigger.
+	//
+	// The records are ROLLED BACK when the IWANT fails to enqueue: the
+	// cooldown is the claim "this peer already asked and the ask is in
+	// flight", and a dropped envelope never made that true. Recording it
+	// anyway silenced the only recovery path a fresh payload has — the next
+	// IHAVE re-announcing the same id found the stale marker and never
+	// re-asked, while the id kept sliding toward the tail of the announce
+	// ring. A leaf behind a congested hub (full outbound queue on the
+	// announcer's side, or its own dispatch queue) then missed the payload
+	// for the rest of the cooldown — 10s, longer than most convergence
+	// budgets. The rollback makes the cooldown a property of what was
+	// actually sent, so a lost ask is retried by the very next announcement.
 	now := time.Now()
 	n.mu.Lock()
 	n.sweepStalePeerStateLocked(now)
@@ -129,11 +141,27 @@ func (n *Node) handleIHave(peer *peerConn, env gossip.Envelope) {
 	if len(fresh) == 0 {
 		return
 	}
-	n.sendOrEnqueue(peer, gossip.Envelope{
+	if n.sendOrEnqueue(peer, gossip.Envelope{
 		Type:       gossip.TypeIWant,
 		Channel:    env.Channel,
 		MessageIDs: fresh,
-	})
+	}) {
+		return
+	}
+	// The ask never left the node: forget the markers so the next
+	// announcement of the same ids re-asks instead of sitting out the
+	// cooldown for an envelope that is not in flight. Only the ids this
+	// attempt owned are touched — a concurrent delivery of the same id
+	// legitimately keeps its marker.
+	n.mu.Lock()
+	if asks = n.iwantAsks[peer.id]; asks != nil {
+		for _, id := range fresh {
+			if last, ok := asks[id]; ok && last.Equal(now) {
+				delete(asks, id)
+			}
+		}
+	}
+	n.mu.Unlock()
 }
 
 func (n *Node) handleIWant(peer *peerConn, env gossip.Envelope) {
@@ -194,7 +222,21 @@ func (n *Node) handleIWant(peer *peerConn, env gossip.Envelope) {
 			// again later is the protocol working.
 			continue
 		}
-		n.sendOrEnqueue(peer, cached)
+		if n.sendOrEnqueue(peer, cached) {
+			continue
+		}
+		// The serve never enqueued (the peer's outbound queue is full): a
+		// marker claiming it did would suppress the retry for the whole
+		// serve cooldown while the asker still does not have the payload.
+		// This is the mirror of the ask-side rollback in handleIHave — the
+		// cooldown may only stand for envelopes that actually left.
+		n.mu.Lock()
+		if served = n.iwantServes[peer.id]; served != nil {
+			if last, ok := served[id]; ok && last.Equal(now) {
+				delete(served, id)
+			}
+		}
+		n.mu.Unlock()
 	}
 }
 
