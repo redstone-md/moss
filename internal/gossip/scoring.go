@@ -93,6 +93,23 @@ func (e *Engine) SetApplicationScore(peerID string, value float64) {
 func (e *Engine) ApplyIPColocationPenalty(peerID string, count int) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	e.applyIPColocationPenaltyLocked(peerID, count)
+}
+
+// ApplyIPColocationPenalties applies a full IP-colocation recalculation in a
+// single pass under one lock acquisition. The mesh recomputes penalties for
+// every connected peer on each join and leave, so one write lock per batch
+// replaces what used to be one write lock per peer — a recalculation no
+// longer serializes against every dispatch worker on a large node.
+func (e *Engine) ApplyIPColocationPenalties(counts map[string]int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for peerID, count := range counts {
+		e.applyIPColocationPenaltyLocked(peerID, count)
+	}
+}
+
+func (e *Engine) applyIPColocationPenaltyLocked(peerID string, count int) {
 	peer := e.ensureLocked(peerID)
 	peer.IPColocationPenalty = 0
 	if count > 1 {

@@ -273,6 +273,11 @@ func (n *Node) meshGossipPeers(channel, excludePeerID string) []string {
 	return selected
 }
 
+// recalculateIPColocationPenalties recomputes every peer's IP-colocation
+// penalty on each join and leave. The peer snapshot is taken under n.mu and
+// released before the scoring engine is touched, and the whole batch is
+// applied under a single scoring.mu acquisition — one lock per recalculation,
+// not one per peer.
 func (n *Node) recalculateIPColocationPenalties() {
 	type peerAddr struct {
 		id   string
@@ -296,9 +301,12 @@ func (n *Node) recalculateIPColocationPenalties() {
 		}
 		counts[peer.host]++
 	}
+
+	penalties := make(map[string]int, len(peers))
 	for _, peer := range peers {
-		n.scoring.ApplyIPColocationPenalty(peer.id, counts[peer.host])
+		penalties[peer.id] = counts[peer.host]
 	}
+	n.scoring.ApplyIPColocationPenalties(penalties)
 }
 
 func (n *Node) medianMeshScore(peers []string) float64 {
