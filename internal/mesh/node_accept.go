@@ -105,18 +105,49 @@ func (n *Node) handleInbound(ctx context.Context, conn net.Conn) {
 func (n *Node) bootstrapLoop(ctx context.Context) {
 	defer n.wg.Done()
 	n.connectStaticPeers(ctx)
-	n.announceAndConnect(ctx, bootstrap.EventStarted)
-	ticker := time.NewTicker(n.config.AnnounceInterval())
-	defer ticker.Stop()
+	peers, _ := n.announceAndConnect(ctx, bootstrap.EventStarted)
+	// Announce rounds run on AnnounceWait instead of a fixed ticker: the
+	// jitter de-syncs a fleet that would otherwise re-announce in lockstep,
+	// and the empty-round doubling backs a quiet network off instead of
+	// hammering the same dead trackers every interval. The wait is re-armed
+	// after each round because it depends on how many peers that round
+	// yielded; a ticker cannot express that.
+	empty := 0
+	if peers == 0 {
+		empty = 1
+	}
 	for {
+		timer := time.NewTimer(n.announceRoundWait(empty))
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
-		case <-ticker.C:
-			n.announceAndConnect(ctx, bootstrap.EventNone)
+		case <-timer.C:
+			peers, _ = n.announceAndConnect(ctx, bootstrap.EventNone)
+			if peers > 0 {
+				empty = 0
+			} else {
+				empty++
+			}
 			n.savePeerCacheSnapshot()
 		}
 	}
+}
+
+// announceRoundWait is the pause the bootstrap loop takes between announce
+// rounds: AnnounceWait over the configured interval, jitter, and empty-round
+// count. A non-positive AnnounceIntervalSec (a Config{} literal that never
+// went through applyDefaults) must not reach time.NewTimer: the value passes
+// through AnnounceWait as zero, and a zero timer degenerates the loop into a
+// busy dial. Fall back to a sane minimum instead — the tracker skip list and
+// the empty-round backoff already bound the damage a misconfigured interval
+// can do.
+func (n *Node) announceRoundWait(consecutiveEmpty int) time.Duration {
+	base := n.config.AnnounceInterval()
+	if base <= 0 {
+		return time.Second
+	}
+	return AnnounceWait(base, n.config.AnnounceJitter(), consecutiveEmpty)
 }
 
 func (n *Node) connectStaticPeers(ctx context.Context) {
@@ -125,9 +156,14 @@ func (n *Node) connectStaticPeers(ctx context.Context) {
 	}
 }
 
-func (n *Node) announceAndConnect(ctx context.Context, event bootstrap.Event) {
+// announceAndConnect runs one tracker announce round and dials the peers it
+// returned. The peer count is the round's yield as the tracker saw it (the
+// number of candidate addresses, not connections established): the bootstrap
+// loop uses it to reset or grow its empty-round backoff, where "announced and
+// nobody is out there" is the signal to slow down.
+func (n *Node) announceAndConnect(ctx context.Context, event bootstrap.Event) (int, error) {
 	if len(n.config.Trackers) == 0 {
-		return
+		return 0, nil
 	}
 	req := bootstrap.AnnounceRequest{
 		InfoHash: n.infoHash,
@@ -143,7 +179,7 @@ func (n *Node) announceAndConnect(ctx context.Context, event bootstrap.Event) {
 	if err != nil {
 		n.emitTracker("все трекеры", 0, time.Since(announceStarted), err)
 		n.enqueueEvent(EventTrackerFailure, map[string]string{"error": err.Error()})
-		return
+		return 0, err
 	}
 	n.emitTracker("раунд анонса", len(peers), time.Since(announceStarted), nil)
 	n.rememberTrackerSeeds(peers)
@@ -152,6 +188,7 @@ func (n *Node) announceAndConnect(ctx context.Context, event bootstrap.Event) {
 		"candidate_peers": len(peers),
 		"connected_peers": n.currentPeerCount(),
 	})
+	return len(peers), nil
 }
 
 // peerDispatchQueueDepth bounds the raw packets buffered between one peer's

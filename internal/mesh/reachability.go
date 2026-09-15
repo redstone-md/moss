@@ -1,25 +1,6 @@
 package mesh
 
-import (
-	"sort"
-	"time"
-)
-
-func (n *Node) confirmReachability(addr string, deadline time.Time) bool {
-	n.mu.RLock()
-	peerIDs := n.reachabilityProbePeerIDsLocked()
-	n.mu.RUnlock()
-	for _, peerID := range peerIDs {
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			return false
-		}
-		if n.requestReachabilityProbe(peerID, addr, remaining) {
-			return true
-		}
-	}
-	return false
-}
+import "sort"
 
 func (n *Node) reachabilityProbePeerIDsLocked() []string {
 	peerIDs := make([]string, 0, len(n.peers))
