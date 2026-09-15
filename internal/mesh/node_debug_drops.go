@@ -60,15 +60,20 @@ var inboundDropFamilies = []string{
 //     loop is not draining a session fast enough, and the pings lost that way
 //     cost a healthy session at six missed probes (peerDisconnectMissLimit).
 //     Sessions dying in waves with stream_drops rising first is this signature.
+//   - stream_cap_drops rising → a peer opened more streams than
+//     maxInboundStreams and/or sends on ids nothing reads: those packets are
+//     never buffered, so they never surface in stream_drops. Rising alone
+//     points at a stream-id flood, not a slow reader.
 //   - udp_carrier_drops rising → UDP datagrams arrived faster than the
 //     per-session queue drained; same reader-behind story as stream drops, on
 //     the datagram side.
 //   - udp_accept_drops rising → the accept backlog is full: new sessions are
 //     being discarded at the door, so peers connect-and-vanish instead of
 //     flapping.
-//   - outbound_drops rising → a peer's own outbound queue (32 deep) is
-//     overflowing: that peer is slower than the mesh is trying to feed it, or a
-//     single channel's fan-out is writing faster than its worker drains.
+//   - outbound_drops rising → a peer's own outbound queue (64 deep, matching
+//     the serve cap) is overflowing: that peer is slower than the mesh is
+//     trying to feed it, or a single channel's fan-out is writing faster than
+//     its worker drains.
 //   - in___dispatch_dropped__ rising → one peer's dispatch queue is full: that
 //     peer is flooding faster than the node handles its traffic. Check
 //     `topics` for the channel and `peers` for the peer pair.
@@ -143,6 +148,7 @@ func (n *Node) dropCountersSnapshot() map[string]uint64 {
 	seen["stream_drops"] = dropsDefault + dropsOther
 	seen["stream_drops_default"] = dropsDefault
 	seen["stream_drops_other"] = dropsOther
+	seen["stream_cap_drops"] = transport.StreamCapDrops()
 	seen["udp_carrier_drops"] = transport.UDPCarrierDrops()
 	seen["udp_accept_drops"] = transport.UDPAcceptDrops()
 	seen["outbound_drops"] = n.outboundDropped.Load()
