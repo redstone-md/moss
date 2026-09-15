@@ -110,6 +110,18 @@ type Node struct {
 	// from the instantaneous bucket. Keyed by the source peer id (same key as
 	// relayBuckets), torn down in removePeer and reset in Stop.
 	relayConsumers map[string]*relayConsumer
+	// relayRouteExpiry is the tombstone map for routes reaped by TTL GC:
+	// pruneStaleRelayRoutes records each reaped session so the first
+	// RelayData for it is answered with a RelayClose
+	// (replyRelayRouteExpired, one-shot) instead of silently dropped —
+	// without it an origin whose session idled out streams into a
+	// blackhole it cannot observe. Guarded by mu; lazily initialized
+	// (bare test Nodes never call the constructor); bounded by
+	// relayRouteExpiryCap; entries also cleared by handleRelayClose's
+	// explicit teardown. Not reset in Start: tombstones are one-shot,
+	// bounded, and session ids are never reused (crypto/rand), so stale
+	// entries across a restart are inert.
+	relayRouteExpiry map[string]time.Time
 
 	// overlayMu guards the overlay's own bookkeeping. It is deliberately NOT
 	// n.mu: routing discovery traffic through the node's central RWMutex meant

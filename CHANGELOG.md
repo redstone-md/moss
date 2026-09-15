@@ -11,6 +11,39 @@ later. Nothing is deleted: the tags stay published because builds that already
 resolved them must keep resolving them.
 
 
+## [0.8.25] - 2026-09-15
+
+### Fixed
+- **The relay hot path no longer takes the global write lock per frame.**
+  `relayBucketFor` grabbed `n.mu.Lock()` on every forwarded packet even when
+  the bucket already existed, so a supernode serialized all its relay traffic
+  — and everything else holding that lock — behind a map read. The established
+  path is now an `RLock`; the write lock appears only on a source's first
+  packet, guarded by a double-check. A default-config node also no longer
+  touches `n.mu` at all in the consumer-cap leg (the zero-cap check runs
+  before the lock).
+- **Refusal handling stopped double-locking the flood path.** A bucket-refused
+  packet took the global lock twice in a row (the overload stamp, then the
+  supernode-verdict refresh) — precisely on the path the bucket exists to
+  throttle. The verdict refresh now runs only on the
+  not-overloaded→overloaded transition; recovery stays on the maintenance tick.
+- **Relay selection precomputes session load.** `selectRelayPeers` rescanned
+  every relay session inside each sort comparison — O(candidates·log·sessions)
+  under a read lock that also blocks `relayBucketFor`. One pass over the
+  sessions now feeds the comparator a map lookup. Ranking is unchanged.
+- **Relayed delivery no longer blocks the transport read loop.** The local
+  `dispatchCh` send in `handleRelayData` was blocking: one slow application
+  callback parked a per-peer dispatch worker on a shared 1024-deep channel, so
+  a stalled consumer became cross-peer head-of-line loss. It is a
+  non-blocking send with a `__relay_dispatch_dropped__` count, the same
+  contract the relay API packet path already used.
+- **Expired relay routes announce themselves instead of blackholing.** Route
+  garbage collection reaped idle sessions silently; the origin kept sending
+  into a void it could not observe. A reaped route now counts
+  `__relay_route_expired__` and the next data frame for it is answered with a
+  one-shot `RelayClose`, so the origin tears its session down and
+  re-establishes. Tombstones are bounded and cleared by an explicit close.
+
 ## [0.8.24] - 2026-09-15
 
 ### Fixed
