@@ -11,6 +11,27 @@ later. Nothing is deleted: the tags stay published because builds that already
 resolved them must keep resolving them.
 
 
+## [0.8.24] - 2026-09-15
+
+### Fixed
+- **Relay economics made visible and configurable.** The relay bandwidth
+  bucket previously refused silently: a consumer that overran it saw traffic
+  vanish with no counter, no event, and no way to tell a throttled peer from
+  a dead one. Refusals now charge `__relay_rate_limited__` and the
+  overload-cooldown marker stays wired to the bucket, so `drops` on the debug
+  plane shows exactly which consumer starved.
+- **`RelaySustainedKiBPS` lifts the per-consumer refill without touching the
+  burst.** The old derivation was hardwired to `burst/4` (64 KiB/s at the
+  256 KiB default), so a volunteer raising the ceiling alone could not raise
+  the floor. Set the new field to the wanted KiB/s; it is clamped to ≤ burst
+  and the legacy value remains the default.
+- **`RelayConsumerCapBytes` adds a per-minute quota per consumer.** Distinct
+  from the instantaneous bucket: a rolling two-window byte total, so a single
+  eager consumer cannot run a volunteer's monthly bill off. On trip the relay
+  counts `__relay_consumer_capped__`, reaps the route, and sends an explicit
+  `RelayClose` to both endpoints — never a silent drop that leaves the origin
+  convinced the path is still live. Zero (the default) disables the guard.
+
 ## [0.8.23] - 2026-09-15
 
 ### Fixed

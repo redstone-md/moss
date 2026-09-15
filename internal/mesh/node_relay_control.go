@@ -192,7 +192,13 @@ func (n *Node) handleRelayData(peer *peerConn, env gossip.Envelope) {
 	}
 	bucket := n.relayBucketFor(peer.id)
 	if !bucket.Allow(relayChargeableBytes(len(env.Payload))) {
+		n.countInbound("__relay_rate_limited__")
 		n.markRelayOverloaded(time.Now())
+		return
+	}
+	if n.relayConsumerCapped(peer.id, int64(len(env.Payload)), time.Now()) {
+		n.countInbound("__relay_consumer_capped__")
+		n.closeRelayRouteWithClose(env.RelaySession, env.RelaySource, env.RelayTarget)
 		return
 	}
 	n.sendEnvelope(targetPeer, env)
@@ -523,4 +529,63 @@ func (n *Node) removeRelayedPeerLocked(session relayLocalSession) bool {
 	}
 	delete(n.peers, session.remotePeerID)
 	return true
+}
+
+// relayConsumerCapped charges bytes to the source peer's rolling per-minute
+// budget and reports whether it now exceeds NAT.RelayConsumerCapBytes. The
+// entry is dropped when it trips: the caller tears the session down, and a
+// fresh consumer gets a clean window rather than an inherited full one.
+// Zero cap (the default) disables the guard entirely.
+func (n *Node) relayConsumerCapped(consumerID string, bytes int64, now time.Time) bool {
+	cap := n.config.NAT.RelayConsumerCapBytes
+	if cap <= 0 {
+		return false
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.relayConsumers == nil {
+		n.relayConsumers = make(map[string]*relayConsumer)
+	}
+	budget := n.relayConsumers[consumerID]
+	if budget == nil {
+		budget = &relayConsumer{windowStart: now}
+		n.relayConsumers[consumerID] = budget
+	}
+	if budget.charge(now, bytes) <= cap {
+		return false
+	}
+	delete(n.relayConsumers, consumerID)
+	return true
+}
+
+// closeRelayRouteWithClose reaps a middle-node route whose consumer tripped
+// the cap and tells both endpoints, so neither keeps sending into a route
+// that no longer exists. A silent drop here would leave the origin convinced
+// the relay still carries it: the refusal has to be observable, and an
+// explicit close on both legs is the only thing that propagates past the
+// relay itself.
+func (n *Node) closeRelayRouteWithClose(sessionID, source, target string) {
+	n.mu.Lock()
+	_, hadRoute := n.relayRoutes[sessionID]
+	delete(n.relayRoutes, sessionID)
+	sourcePeer := n.peers[source]
+	targetPeer := n.peers[target]
+	n.mu.Unlock()
+	if !hadRoute {
+		return
+	}
+	n.relaySessions.Release(sessionID)
+	n.refreshSupernodeStatus()
+	msg := gossip.Envelope{
+		Type:         gossip.TypeRelayClose,
+		RelaySession: sessionID,
+		RelaySource:  source,
+		RelayTarget:  target,
+	}
+	if sourcePeer != nil {
+		n.sendEnvelope(sourcePeer, msg)
+	}
+	if targetPeer != nil && targetPeer != sourcePeer {
+		n.sendEnvelope(targetPeer, msg)
+	}
 }

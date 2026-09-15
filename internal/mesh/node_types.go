@@ -105,6 +105,11 @@ type Node struct {
 	relayRoutes  map[string]relayRoute
 	relayLocals  map[string]relayLocalSession
 	relayBuckets map[string]*nat.TokenBucket
+	// relayConsumers tracks each source peer's rolling per-minute byte total
+	// against NAT.RelayConsumerCapBytes — a volunteer's quota guard distinct
+	// from the instantaneous bucket. Keyed by the source peer id (same key as
+	// relayBuckets), torn down in removePeer and reset in Stop.
+	relayConsumers map[string]*relayConsumer
 
 	// overlayMu guards the overlay's own bookkeeping. It is deliberately NOT
 	// n.mu: routing discovery traffic through the node's central RWMutex meant
@@ -330,6 +335,35 @@ type relayRoute struct {
 func (r relayRoute) allows(source, target string) bool {
 	return (r.initiator == source && r.target == target) ||
 		(r.initiator == target && r.target == source)
+}
+
+// relayConsumer is a per-source-peer rolling byte budget, the quota guard
+// behind NAT.RelayConsumerCapBytes. It uses two windows (current + previous)
+// so the estimate of "bytes in the last minute" never exceeds the true count
+// by more than one window's worth and never requires a sorted event log.
+// windowStart is the instant the current window opened; a packet whose clock
+// is older than a full window rolls the pair forward, discarding the oldest.
+type relayConsumer struct {
+	windowStart time.Time
+	prev        int64
+	cur         int64
+}
+
+// charge adds n bytes and reports the rolling per-minute total, advancing the
+// window first if now is past the current window's minute. Called under n.mu.
+func (c *relayConsumer) charge(now time.Time, n int64) int64 {
+	const window = time.Minute
+	for now.Sub(c.windowStart) >= window {
+		c.windowStart = c.windowStart.Add(window)
+		c.prev = c.cur
+		c.cur = 0
+	}
+	c.cur += n
+	// Weight the previous window by the fraction of the minute still covered,
+	// the standard sliding-counter estimate.
+	elapsed := now.Sub(c.windowStart)
+	weighted := c.prev * int64(window-elapsed) / int64(window)
+	return weighted + c.cur
 }
 
 type relayLocalSession struct {

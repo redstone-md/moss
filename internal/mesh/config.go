@@ -208,10 +208,24 @@ type NATConfig struct {
 	PCPEnabled            bool `json:"pcp_enabled"`
 	SuperNodeMinUptimeSec int  `json:"supernode_min_uptime_sec"`
 	RelayMaxBandwidthKBPS int  `json:"relay_max_bandwidth_kbps"`
-	RelayMaxSessions      int  `json:"relay_max_sessions"`
-	RelaySessionTTLSec    int  `json:"relay_session_ttl_sec"`
-	HolePunchAttempts     int  `json:"hole_punch_attempts"`
-	PortPredictionEnabled bool `json:"port_prediction_enabled"`
+	// RelaySustainedKiBPS is the bytes-per-second floor a relay bills per
+	// consumer before the burst ceiling in RelayMaxBandwidthKBPS caps it.
+	// Zero (the default) keeps the legacy derivation — sustained =
+	// ceiling/4, i.e. 64 KiB/s at the default 256 KiB ceiling. A volunteer
+	// with real uplink can raise it to the specification's 256 (KiB/s)
+	// without touching the per-second burst.
+	RelaySustainedKiBPS int `json:"relay_sustained_kibps"`
+	// RelayConsumerCapBytes is a rolling-window byte budget per consumer
+	// (relay session) per minute. Zero (the default) disables the cap — the
+	// bucket in RelayMaxBandwidthKBPS still throttles instantaneous rate.
+	// Set it to protect a volunteer's monthly quota from one eager
+	// consumer; a session that crosses the cap is torn down with an
+	// explicit RelayClose and counted, not silently starved.
+	RelayConsumerCapBytes int64 `json:"relay_consumer_cap_bytes"`
+	RelayMaxSessions      int   `json:"relay_max_sessions"`
+	RelaySessionTTLSec    int   `json:"relay_session_ttl_sec"`
+	HolePunchAttempts     int   `json:"hole_punch_attempts"`
+	PortPredictionEnabled bool  `json:"port_prediction_enabled"`
 }
 
 type SecurityConfig struct {

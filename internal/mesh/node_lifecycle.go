@@ -107,6 +107,7 @@ func NewNodeWithIdentity(meshID string, psk []byte, cfg Config, identity *mcrypt
 		relayRoutes:      make(map[string]relayRoute),
 		relayLocals:      make(map[string]relayLocalSession),
 		relayBuckets:     make(map[string]*nat.TokenBucket),
+		relayConsumers:   make(map[string]*relayConsumer),
 		overlayStore:     overlay.NewStore(0, 0),
 		overlayPending:   make(map[string]chan gossip.Envelope),
 		overlayDiscovery: make(map[string]time.Time),
@@ -314,6 +315,7 @@ func (n *Node) Stop() int32 {
 	n.relayRoutes = make(map[string]relayRoute)
 	n.relayLocals = make(map[string]relayLocalSession)
 	n.relayBuckets = make(map[string]*nat.TokenBucket)
+	n.relayConsumers = make(map[string]*relayConsumer)
 	n.suppress = make(map[string]map[string]time.Time)
 	n.mu.Unlock()
 	cancel()

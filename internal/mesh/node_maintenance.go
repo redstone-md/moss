@@ -44,6 +44,7 @@ func (n *Node) removePeer(peerID string, session *transport.Session) {
 	delete(n.peers, peerID)
 	delete(n.suppress, peerID)
 	delete(n.relayBuckets, peerID)
+	delete(n.relayConsumers, peerID)
 	delete(n.directProbes, peerID)
 	// A session that died on missed pings is a FAILED path, whatever the dial
 	// thought.
