@@ -11,6 +11,14 @@ later. Nothing is deleted: the tags stay published because builds that already
 resolved them must keep resolving them.
 
 
+## [0.8.28] - 2026-09-16
+
+### Fixed
+- **Peer registration no longer serializes a join storm.** `registerPeerFrom` ran its heavy tail — IP-colocation recalculation, the known-peer snapshot, self-introduction, the announce broadcast, relay-session migration and `maintainTopicMesh` per channel — synchronously in the accept loop, all under or adjacent to the node's write lock. A 100-peer wave therefore queued ~100 write acquisitions and ~500 read acquisitions in series, stretching a sub-second join into minutes. The tail now runs in one `wg`-tracked goroutine bounded by `rootCtx`, in the same envelope order; the capacity check releases the lock for its victim scan and re-verifies on re-acquire, so a slot freed in the window is taken without evicting anything.
+- **Overflow victim selection stopped scoring under the write lock.** `selectOverflowPrunePeerLocked` called `peerScore` for every peer and twice per comparison while `n.mu` was held for writing — the one path that violated the repo's own "peerScore must never run under `n.mu`" rule, and the longest write hold on the inbound path at capacity. It now snapshots candidates under a read lock, scores them outside the lock, and ranks by cached score (one scoring call per candidate instead of `P + 3C`).
+- **One `IWANT` costs one lock, not sixty-five.** The serve loop consulted `isSuppressed` per message id, each consult a full write-lock round trip — 65–66 acquisitions per request, ping-ponging against graft, prune and registration on every peer's recovery path. Suppression is now resolved for the whole batch inside the dedup section that already held the lock (3.8x faster measured on a 64-id request); rollback semantics on a refused enqueue are unchanged.
+- **Mesh selection is a batch, not a per-candidate lock storm.** `selectMeshCandidates` and `selectHighScoringCandidates` took a read lock per candidate for the outbound check, another per candidate for eligibility, and scored each two to five times — up to 2400 scoring calls and 1600 lock acquisitions per second on a 250 ms heartbeat with 200 known peers. Both paths now share one snapshot: a single read lock, a single pub/sub read, and one scoring pass per connected candidate run outside `n.mu` (184 ns vs 520 ns per candidate measured). Peers with no live connection are no longer scored at all — an unconnected candidate is ineligible regardless, and scoring one fires a non-memoized FFI callback.
+
 ## [0.8.27] - 2026-09-16
 
 ### Fixed
