@@ -485,19 +485,44 @@ func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origi
 	// its own teardown goroutine noticed the closed session, the next
 	// inbound at capacity evicted ANOTHER peer: a churn cascade where each
 	// newcomer killed a peer and then left. Now the victim's slot is freed
-	// synchronously under this same lock hold and the newcomer registers in
-	// it, so n.peers never exceeds MaxPeers and exactly one peer pays for
-	// one newcomer. With nothing prunable the newcomer alone is rejected,
-	// the way TestInboundConnectionsRespectMaxPeers expects.
+	// under this same lock hold and the newcomer registers in it, so
+	// n.peers never exceeds MaxPeers and exactly one peer pays for one
+	// newcomer. With nothing prunable the newcomer alone is rejected, the
+	// way TestInboundConnectionsRespectMaxPeers expects.
+	//
+	// The victim scan itself runs OUTSIDE n.mu: peerScore may invoke an
+	// application scoring callback, which must never execute under n.mu
+	// (the node_maintenance.go invariant) — under the accept path's WRITE
+	// lock it stalled every envelope handler on the node. The lock is
+	// dropped for the scan and re-taken, and every fact the scan could have
+	// invalidated is re-checked before anyone is evicted: the node must
+	// still be started, the slot must still be ours to fill (a concurrent
+	// registration of the SAME peer won it), capacity must still be full,
+	// and the victim must still be the very peerConn the scan picked
+	// (pointer identity — a peer that left and returned in the window is a
+	// different connection). The scores themselves are knowingly a
+	// microsecond stale; re-scoring under the lock would re-break the
+	// invariant the scan just fixed.
 	if replacedPeer == nil && n.directPeerCountLocked() >= n.config.MaxPeers {
+		n.mu.Unlock()
 		victim := n.selectOverflowPrunePeerLocked()
-		if victim == nil {
+		n.mu.Lock()
+		if !n.started || n.peers[peerID] != replacedPeer {
 			n.mu.Unlock()
 			_ = session.Close()
 			return
 		}
-		overflowPeer = victim
-		n.evictPeerLocked(victim)
+		if n.directPeerCountLocked() >= n.config.MaxPeers {
+			if victim == nil || n.peers[victim.id] != victim {
+				n.mu.Unlock()
+				_ = session.Close()
+				return
+			}
+			overflowPeer = victim
+			n.evictPeerLocked(victim)
+		}
+		// Capacity freed while the lock was down (a peer left): the
+		// newcomer is admitted without evicting anyone.
 	}
 	bootstrapSeed := !n.trackerSeeds[addr].IsZero()
 	peer := &peerConn{
@@ -534,9 +559,10 @@ func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origi
 	// The overflow victim's map entry and bookkeeping were already removed
 	// under the lock (evictPeerLocked), so its own peerDispatchWorker's
 	// deferred removePeer finds nothing and no-ops — this is the single
-	// source of truth for the eviction. enqueueEvent blocks on dispatchCh,
-	// so it must never run under n.mu: Stop() cancels dispatchLoop while an
-	// inbound could still be holding the lock here.
+	// source of truth for the eviction. The PeerLeft event is enqueued
+	// here, outside n.mu: enqueueEvent is non-blocking (a full dispatch
+	// queue drops, counted), so the accept path never waits on dispatch
+	// backpressure — and events stay out of the node lock regardless.
 	if replacedPeer != nil && replacedPeer.session != nil {
 		replacedPeer.closeSession()
 	}
@@ -546,40 +572,119 @@ func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origi
 		n.scoring.Remove(overflowPeer.id)
 		n.enqueueEvent(EventPeerLeft, map[string]string{"peer": overflowPeer.id, "addr": overflowPeer.addr})
 	}
-	n.recalculateIPColocationPenalties()
 	n.wg.Add(1)
 	go n.readPeer(peer)
-	n.sendKnownPeerSnapshot(peer)
-	n.introduceSelfTo(peer)
-	n.announceSelfToPeers(peerID)
+	// Join tail: everything readPeer does NOT need — recalc, snapshot,
+	// introduce, announce, relay migration, mesh maintenance — is fan-out
+	// work, and none of it gates admission. It used to run inline, so a
+	// 100-join storm serialized the accept loops: every later handshake
+	// waited on the previous peer's envelopes (each helper takes its own
+	// n.mu acquisitions, a write lock among them). It now runs as ONE
+	// wg-tracked goroutine per join, in the same order as before, so the
+	// snapshot still reaches the newcomer before its announce budget is
+	// spent on the introduce. Every helper here is Stop-safe: internal
+	// locks, emptied maps, non-blocking sends — and Stop's session closes
+	// (which run before wg.Wait) unblock any in-flight write. readPeer
+	// stays synchronous: the socket is owned from the instant the peer
+	// registers. The rootCtx check keeps a join that lost the race with
+	// shutdown from fanning out into a cancelled node.
+	n.wg.Add(1)
+	go func() {
+		defer n.wg.Done()
+		if ctx := n.rootCtx; ctx != nil {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+		}
+		n.recalculateIPColocationPenalties()
+		n.sendKnownPeerSnapshot(peer)
+		n.introduceSelfTo(peer)
+		n.announceSelfToPeers(peerID)
+		n.migrateRelaySessions(peerID)
+		for _, channel := range n.pubsub.SnapshotLocal() {
+			n.maintainTopicMesh(channel)
+		}
+	}()
 	go n.refreshExternalAddress(time.Now().Add(n.config.HandshakeTimeout()))
 	n.mu.Lock()
 	delete(n.directProbes, peerID)
 	delete(n.peerDials, peerID)
 	n.mu.Unlock()
-	n.migrateRelaySessions(peerID)
-	for _, channel := range n.pubsub.SnapshotLocal() {
-		n.maintainTopicMesh(channel)
-	}
 	if replacedPeer == nil {
 		n.enqueueEvent(EventPeerJoined, map[string]string{"peer": peerID, "addr": addr})
 	}
 }
 
+// pruneCandidate is one peer's snapshot for overflow eviction ranking: the
+// fields the comparison needs, copied under n.mu, plus the score computed
+// after the lock was released. Caching the score keeps the ranking at one
+// peerScore call per peer instead of a pair per comparison.
+type pruneCandidate struct {
+	peer     *peerConn
+	id       string
+	lastRTT  time.Duration
+	outbound bool
+	score    float64
+}
+
+// selectOverflowPrunePeerLocked picks the overflow eviction victim: the
+// worst peer by score, then RTT, then direction, then id. The name is kept
+// for the overflow tests; the CONTRACT is now the opposite of what it was:
+// the function takes its own RLock and must be called WITHOUT n.mu —
+// peerScore may run an application scoring callback, and the invariant
+// (see pruneLowScoringPeers) is that it never executes under n.mu. The old
+// form scored under the accept path's WRITE lock.
+//
+// Candidacy is exactly what the inline form computed: a peer past the 30s
+// retain window with an RTT over 2s or a negative score. pingMisses and the
+// bootstrap flag were never part of it — a bootstrap peer with a negative
+// score is still the worst peer on the table, and a healthy non-bootstrap
+// peer is never a candidate at all.
+//
+// lastRTT is copied under the RLock (pong handlers write it; reading it
+// lock-free after the RUnlock would race) and the scores are computed after
+// the release — the same snapshot-then-score shape as
+// pruneLowScoringPeers. The caller re-verifies the victim under its own
+// lock before evicting; the microsecond-stale score is the price of the
+// invariant, documented there.
 func (n *Node) selectOverflowPrunePeerLocked() *peerConn {
-	var selected *peerConn
+	n.mu.RLock()
+	// The age filter is the cheap half of the retain check — connectedAt is
+	// immutable after construction, so it costs nothing to apply while the
+	// snapshot is being taken.
+	candidates := make([]pruneCandidate, 0, len(n.peers))
 	for _, peer := range n.peers {
-		if n.shouldRetainPeerLocked(peer) {
+		if peer == nil || time.Since(peer.connectedAt) < 30*time.Second {
 			continue
 		}
-		if peer.lastRTT <= 2*time.Second && n.peerScore(peer.id) >= 0 {
+		candidates = append(candidates, pruneCandidate{
+			peer: peer, id: peer.id, lastRTT: peer.lastRTT, outbound: peer.outbound,
+		})
+	}
+	n.mu.RUnlock()
+	// In-place filter over the snapshot — appends only ever write indices
+	// the range has already copied past.
+	scored := candidates[:0]
+	for _, cand := range candidates {
+		// Outside n.mu: peerScore may run an application scoring callback.
+		cand.score = n.peerScore(cand.id)
+		if cand.lastRTT <= 2*time.Second && cand.score >= 0 {
 			continue
 		}
-		if selected == nil || comparePrunePriority(peer, selected, n) > 0 {
-			selected = peer
+		scored = append(scored, cand)
+	}
+	if len(scored) == 0 {
+		return nil
+	}
+	worst := scored[0]
+	for _, cand := range scored[1:] {
+		if comparePrunePriority(cand, worst) > 0 {
+			worst = cand
 		}
 	}
-	return selected
+	return worst.peer
 }
 
 // evictPeerLocked removes a peer from the node's bookkeeping under the
@@ -587,8 +692,8 @@ func (n *Node) selectOverflowPrunePeerLocked() *peerConn {
 // for n.peers, relay state, and knownPeers to be immediately consistent with
 // "this peer is gone". Transport close, pubsub removal, scoring eviction and
 // the PeerLeft event run in the caller after it drops n.mu — see
-// registerPeerFrom — because enqueueEvent blocks on dispatchCh and Stop()
-// cancels its drain.
+// registerPeerFrom — so neither a transport close nor an event ever
+// happens under the node lock.
 func (n *Node) evictPeerLocked(victim *peerConn) {
 	if victim == nil {
 		return
@@ -617,21 +722,17 @@ func (n *Node) evictPeerLocked(victim *peerConn) {
 	}
 }
 
-func comparePrunePriority(a, b *peerConn, node *Node) int {
-	if a == nil || b == nil {
-		switch {
-		case a != nil:
-			return 1
-		case b != nil:
-			return -1
-		default:
-			return 0
-		}
-	}
-	scoreA := node.peerScore(a.id)
-	scoreB := node.peerScore(b.id)
-	if scoreA != scoreB {
-		if scoreA < scoreB {
+// comparePrunePriority orders two prune candidates by how much each
+// deserves eviction. Positive means a is the weaker — more prunable —
+// peer. Ties break downward: lower score, then slower RTT, then inbound
+// (an outbound slot is a dial we chose; an inbound one is a slot we were
+// given), then id, so the choice is deterministic across the mesh. Scores
+// arrive precomputed in the candidates — one peerScore call per peer, not
+// a pair per comparison — which is the whole point: those calls run
+// outside n.mu.
+func comparePrunePriority(a, b pruneCandidate) int {
+	if a.score != b.score {
+		if a.score < b.score {
 			return 1
 		}
 		return -1

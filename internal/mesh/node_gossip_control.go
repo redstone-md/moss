@@ -213,6 +213,11 @@ func (n *Node) handleIWant(peer *peerConn, env gossip.Envelope) {
 			break
 		}
 	}
+	// The suppression check is batched under this same lock instead of the
+	// old per-id isSuppressed — a write-lock per id, up to 64 per IWANT — so
+	// the whole serve pass costs this one lock, plus the rollback lock only
+	// if the enqueue refuses mid-serve.
+	suppressed := n.suppressedIDsLocked(peer.id, fresh, now)
 	n.mu.Unlock()
 	if len(fresh) == 0 {
 		if throttled > 0 {
@@ -233,7 +238,7 @@ func (n *Node) handleIWant(peer *peerConn, env gossip.Envelope) {
 	// id from scratch — same cooldown, same caps, no permanently lost
 	// view.
 	for i, id := range fresh {
-		if n.isSuppressed(peer.id, id) {
+		if suppressed[i] {
 			continue
 		}
 		cached, ok := n.cache.Get(id)
@@ -265,6 +270,41 @@ func (n *Node) handleIWant(peer *peerConn, env gossip.Envelope) {
 		n.mu.Unlock()
 		break
 	}
+}
+
+// suppressionExpiryTTL is how long one IDontWant stands: the peer that sent
+// it is not served that id for this window, and an older claim expires
+// instead of pinning its slot in the per-peer suppression cap.
+const suppressionExpiryTTL = 2 * time.Minute
+
+// suppressedIDsLocked answers, for one IWANT's fresh ids, which ones the
+// asker has told us not to send (IDontWant) — a parallel slice: ids[i] is
+// suppressed iff suppressed[i], so the serve loop keeps its order and the
+// mid-serve rollback covers exactly the ids it always did. The batch runs
+// under the serve pass's existing write lock: the check is two map lookups
+// per id, and asking it per id under the loop cost a write-lock each — up
+// to 64 per IWANT where this costs the one lock the pass already holds.
+// Expired entries are reaped on read exactly as the old per-id check reaped
+// them, so a suppression that aged out frees its slot for fresh ones.
+// Callers hold n.mu.
+func (n *Node) suppressedIDsLocked(peerID string, ids []string, now time.Time) []bool {
+	suppressed := make([]bool, len(ids))
+	entry := n.suppress[peerID]
+	if entry == nil {
+		return suppressed
+	}
+	for i, id := range ids {
+		ts, ok := entry[id]
+		if !ok {
+			continue
+		}
+		if now.Sub(ts) > suppressionExpiryTTL {
+			delete(entry, id)
+			continue
+		}
+		suppressed[i] = true
+	}
+	return suppressed
 }
 
 func (n *Node) broadcastIHave(channel string, ids []string, excludePeerID string) {
