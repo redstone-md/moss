@@ -11,6 +11,25 @@ later. Nothing is deleted: the tags stay published because builds that already
 resolved them must keep resolving them.
 
 
+## [0.8.23] - 2026-09-15
+
+### Fixed
+- **Removed the dead sequential reachability probe.** `confirmReachability`
+  probed candidate peers one by one and had no callers left — every path
+  goes through `confirmReachabilityParallel`. Deleting it removes a trap
+  for future callers: sequential probes time out one after another on a
+  symmetric NAT while a working path waits next in line.
+- **Tracker re-announce no longer fires in fleet lockstep.** The bootstrap
+  loop ran on a fixed `AnnounceInterval` ticker, so 100 peers re-announced
+  to the same trackers on the same beat. Rounds now wait on `AnnounceWait`:
+  ±10% jitter de-syncs the fleet, and an empty-round doubling backs a quiet
+  network off instead of hammering dead trackers, capped at 30 minutes.
+  `announceAndConnect` reports its peer yield so the loop knows an empty
+  round when it sees one. A zero `AnnounceIntervalSec` (a `Config{}`
+  literal that skipped defaults) previously panicked in `time.NewTicker`
+  inside the loop's goroutine — a dead process; it now falls back to a 1s
+  floor.
+
 ## [0.8.22] - 2026-09-15
 
 ### Fixed
