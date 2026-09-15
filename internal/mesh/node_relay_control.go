@@ -468,6 +468,14 @@ func (n *Node) closeRelaySession(session relayLocalSession) {
 // the ordinary connect policy, the relay preference applied here too and a
 // symmetric pair was never retried once relayed: relay became the destination
 // rather than the fallback it is meant to be.
+//
+// One in-flight attempt per target, enforced without new bookkeeping: the
+// directProbes stamp records when the armed attempt ENDS (its budget expiry),
+// not when it started. A tick then re-arms a target only after the previous
+// attempt could no longer be running, so generations cannot overlap — the
+// old stamp-at-start left a 5s attempt re-armed every 3s, stacking live
+// punch generations on the same peer. tryDirectUpgrade still force-punches
+// past the relay preference, so a symmetric pair keeps being tried.
 func (n *Node) promoteRelayPeers() {
 	targets := n.relayPromotionTargets()
 	for _, peerID := range targets {
@@ -477,9 +485,13 @@ func (n *Node) promoteRelayPeers() {
 
 func (n *Node) relayPromotionTargets() []string {
 	now := time.Now()
-	cooldown := n.config.Heartbeat()
-	if cooldown <= 0 {
-		cooldown = 250 * time.Millisecond
+	// Breather between attempts on one target, counted from the END of the
+	// previous attempt (see the stamp below). The heartbeat alone keeps a
+	// flapping target retried at full tick rate; zero/negative configs keep
+	// the 250ms floor.
+	breather := n.config.Heartbeat()
+	if breather <= 0 {
+		breather = 250 * time.Millisecond
 	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -491,11 +503,14 @@ func (n *Node) relayPromotionTargets() []string {
 		if peer := n.peers[session.remotePeerID]; peer != nil && !peer.relayed {
 			continue
 		}
-		lastAttempt := n.directProbes[session.remotePeerID]
-		if !lastAttempt.IsZero() && now.Sub(lastAttempt) < cooldown {
+		until := n.directProbes[session.remotePeerID]
+		if !until.IsZero() && now.Before(until.Add(breather)) {
 			continue
 		}
-		n.directProbes[session.remotePeerID] = now
+		// Stamp budget END, not start: the next re-arm waits out the whole
+		// attempt first, then the breather — one live attempt per target at
+		// any moment, by construction, without an in-flight registry.
+		n.directProbes[session.remotePeerID] = now.Add(n.config.HandshakeTimeout())
 		targets = append(targets, session.remotePeerID)
 	}
 	return targets

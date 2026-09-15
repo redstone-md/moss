@@ -1,6 +1,7 @@
 package gossip
 
 import (
+	"encoding/hex"
 	"sync"
 	"time"
 )
@@ -40,6 +41,19 @@ func (p PeerScore) Total() float64 {
 type Engine struct {
 	mu    sync.RWMutex
 	peers map[string]*PeerScore
+	// appMemo caches the application callback's adjusted score for a peer,
+	// keyed by the base the adjustment was computed from. peerScore gates in
+	// the mesh call the callback path dozens of times per envelope (every
+	// threshold gate, every sort comparator); the memo serves those reads
+	// from the map instead of re-invoking what is, behind the FFI boundary,
+	// a C function call with a heap allocation for the peer key. The
+	// callback only runs when the base actually changed.
+	//
+	// appMemo is guarded by mu, like peers. It is lazily initialized on
+	// the first memo miss: most engines (component tests, benchmarks)
+	// never register an application callback, so paying for the map up
+	// front in NewEngine would tax every Engine that never needs it.
+	appMemo map[string]appScoreMemo
 	// onRemove is invoked (under mu) for every peer dropped by Remove —
 	// the eviction hook, so a node can release peer-keyed state it owns
 	// without gossip importing it. Optional; set via SetOnRemove.
@@ -48,6 +62,23 @@ type Engine struct {
 
 func NewEngine() *Engine {
 	return &Engine{peers: make(map[string]*PeerScore)}
+}
+
+// appScoreMemo is the memoized result of one application-callback
+// evaluation for one peer. The base it was computed from travels with the
+// adjusted value: a reader that finds memo.base == the current base can
+// serve memo.adjusted as-is, because for a fixed (peer, base) pair the
+// callback contract defines a single adjusted value. A peer whose base
+// changed since the memo was written gets re-evaluated and the memo
+// refreshed.
+type appScoreMemo struct {
+	// key is the decoded [32]byte peer identity, cached so the hex decode
+	// happens once per peer lifetime rather than on every hot-path gate.
+	// It is reused across base changes: the key depends only on the hex
+	// string, which never changes for a given peerID.
+	key      [32]byte
+	base     float64
+	adjusted float64
 }
 
 // SetOnRemove registers the eviction callback invoked for each peer Remove
@@ -160,6 +191,93 @@ func (e *Engine) Score(peerID string) float64 {
 	return peer.Total()
 }
 
+// DecodePeerKey decodes a hex peerID into the fixed [32]byte identity the
+// application scoring callback receives. Peer keys arrive as 64-char hex
+// strings and callbacks compare fixed arrays, so every call site would
+// otherwise hex-decode on its own. The zero array on decode failure matches
+// the historical mesh-side decodePeerID contract: an unparseable key scores
+// as the zero identity rather than panicking or dropping the gate.
+func DecodePeerKey(peerID string) [32]byte {
+	var out [32]byte
+	raw, err := hex.DecodeString(peerID)
+	if err != nil {
+		return out
+	}
+	copy(out[:], raw)
+	return out
+}
+
+// AdjustedScore returns the application-callback-adjusted score for a peer.
+//
+// The mesh gates dozens of threshold checks and sort comparators through
+// this path per envelope, and behind the FFI boundary the callback is a C
+// function call that allocates for the peer key on every invocation. To
+// keep that cost off the per-gate hot path, the result is memoized keyed by
+// the base score it was computed from: a reader comparing memo.base against
+// the peer's current base serves the memoized adjusted value without
+// invoking the callback at all, and the callback only runs when the base
+// actually changed — Tick recomputes TimeInMesh roughly once a second, and
+// the discrete reward/penalty/app-score setters change it on events.
+//
+// Semantics: for a single peer the returned value is exactly
+// cb(DecodePeerKey(peerID), base) — the memo never rewrites what the
+// callback would return, it only remembers the answer between base
+// changes. A peer absent from the engine (unknown, base 0) is never
+// memoized: it keeps the live cb(DecodePeerKey(peerID), 0) evaluation, so
+// an AdjustedScore flood from strangers cannot grow the memo map — the same
+// unbounded-growth rejection Score() already guarantees for peers.
+//
+// Locking: the callback runs OUTSIDE all locks. A registered callback may
+// itself acquire node locks (a test callback takes the node's mutex
+// directly), so invoking it under e.mu would invert the acquisition order
+// against mesh code that holds a node lock and then calls into the engine.
+// Concurrent misses on the same peer are benign: the callback already runs
+// concurrently today, and the last writer wins with the identical value
+// for a deterministic callback. A stale-base store cannot serve a wrong
+// value either — readers re-compare the memo's recorded base against the
+// current base under the read lock before trusting it.
+//
+// One known trade-off: swapping a non-nil callback for another non-nil
+// callback on a live engine serves memoized values until each peer's base
+// next changes. Deployed hosts register the callback once before Start
+// (per docs/SHARED_INTEGRATION*.md), so this path is never exercised in
+// production; no test swaps non-nil → non-nil on one engine.
+func (e *Engine) AdjustedScore(peerID string, cb func(peerID [32]byte, baseScore float64) float64) float64 {
+	e.mu.RLock()
+	peer, ok := e.peers[peerID]
+	if !ok {
+		// Unknown peers are never memoized: they keep the live evaluation
+		// and never grow the map, mirroring Score's contract that a lookup
+		// of a stranger does not track the stranger.
+		e.mu.RUnlock()
+		return cb(DecodePeerKey(peerID), 0)
+	}
+	base := peer.Total()
+	memo, ok := e.appMemo[peerID]
+	if ok && memo.base == base {
+		e.mu.RUnlock()
+		return memo.adjusted
+	}
+	e.mu.RUnlock()
+
+	// Miss: decode once per peer lifetime (reusing the memo's cached key
+	// across base changes), evaluate the callback with no locks held, and
+	// publish the result. Concurrent misses publish identical values for a
+	// deterministic callback; last writer wins.
+	key := memo.key
+	if !ok {
+		key = DecodePeerKey(peerID)
+	}
+	adjusted := cb(key, base)
+	e.mu.Lock()
+	if e.appMemo == nil {
+		e.appMemo = make(map[string]appScoreMemo)
+	}
+	e.appMemo[peerID] = appScoreMemo{key: key, base: base, adjusted: adjusted}
+	e.mu.Unlock()
+	return adjusted
+}
+
 // Remove evicts a disconnected peer from the engine and reports whether it was
 // present. Score() recreates an evicted peer at zero on first use, so eviction
 // costs nothing beyond releasing the entry — but without it the map grew by
@@ -172,6 +290,12 @@ func (e *Engine) Remove(peerID string) bool {
 		return false
 	}
 	delete(e.peers, peerID)
+	// The app-score memo travels with the peer entry: a returning peer
+	// starts from a fresh evaluation, and a disconnect must not leave a
+	// stale memo entry behind — the map would grow by one entry per peer
+	// the node had ever connected to, exactly the leak Remove exists to
+	// prevent for peers.
+	delete(e.appMemo, peerID)
 	if e.onRemove != nil {
 		e.onRemove(peerID)
 	}

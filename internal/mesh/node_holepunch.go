@@ -94,7 +94,10 @@ func (n *Node) attemptHolePunchPolicy(targetPeerID string, timeout time.Duration
 	sourceAddr := n.freshObservedUDPAddr(viaPeerID, minDuration(750*time.Millisecond, timeout/3))
 	coordAt := time.Now().Add(holePunchCoordGrace)
 	coordRetries := 0
-	go n.tryHolePunchDialAt(targetPeerID, targetInfo.addr, coordAt)
+	deadline := time.Now().Add(timeout)
+	// The dial goroutines inherit the attempt's deadline so they cannot
+	// outlive it by a fresh handshake budget.
+	go n.tryHolePunchDialAt(targetPeerID, targetInfo.addr, coordAt, deadline)
 	n.mu.Lock()
 	n.holePunchWait[requestID] = holePunchRequest{targetPeerID: targetPeerID, relayPeerID: viaPeerID}
 	n.mu.Unlock()
@@ -115,7 +118,7 @@ func (n *Node) attemptHolePunchPolicy(targetPeerID string, timeout time.Duration
 	})
 	n.emitPunchAttempt(targetPeerID, targetInfo.natType, viaPeerID)
 	punchStarted := time.Now()
-	deadline := time.Now().Add(timeout)
+
 	triedAddr := targetInfo.addr
 	for time.Now().Before(deadline) {
 		if n.directPeerConnected(targetPeerID) {
@@ -156,7 +159,7 @@ func (n *Node) attemptHolePunchPolicy(targetPeerID string, timeout time.Duration
 		n.mu.RUnlock()
 		if updated != "" && updated != triedAddr {
 			triedAddr = updated
-			go n.tryHolePunchDial(targetPeerID, updated)
+			go n.tryHolePunchDialAt(targetPeerID, updated, time.Time{}, deadline)
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
@@ -174,10 +177,13 @@ func (n *Node) attemptHolePunchPolicy(targetPeerID string, timeout time.Duration
 }
 
 func (n *Node) tryHolePunchDial(targetPeerID, addr string) {
-	n.tryHolePunchDialAt(targetPeerID, addr, time.Time{})
+	// The standalone entrypoints (coordinator reply, tests) run on their own:
+	// there is no parent attempt whose budget should bound them, so they keep
+	// a fresh per-plan handshake budget per dial.
+	n.tryHolePunchDialAt(targetPeerID, addr, time.Time{}, time.Time{})
 }
 
-func (n *Node) tryHolePunchDialAt(targetPeerID, addr string, at time.Time) {
+func (n *Node) tryHolePunchDialAt(targetPeerID, addr string, at time.Time, deadline time.Time) {
 	if addr == "" || n.directPeerConnected(targetPeerID) {
 		return
 	}
@@ -203,16 +209,29 @@ func (n *Node) tryHolePunchDialAt(targetPeerID, addr string, at time.Time) {
 		if n.directPeerConnected(targetPeerID) {
 			return
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), n.config.HandshakeTimeout())
+		budget := n.config.HandshakeTimeout()
+		if !deadline.IsZero() {
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				return
+			}
+			budget = minDuration(budget, remaining)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), budget)
 		n.connectPeerUDP(ctx, targetPeerID, pair.Remote)
 		cancel()
 		if n.directPeerConnected(targetPeerID) {
+			return
+		}
+		if !deadline.IsZero() && !time.Now().Add(75*time.Millisecond).Before(deadline) {
 			return
 		}
 		time.Sleep(75 * time.Millisecond)
 	}
 }
 
+// freshObservedUDPAddr samples a live mapping through a relay peer, folding it
+// into the binding history, and falls back to the advertised address.
 func (n *Node) freshObservedUDPAddr(peerID string, timeout time.Duration) string {
 	if timeout > 0 {
 		if observed, ok := n.requestUDPBindingObservation(peerID, timeout); ok && observed != "" {
