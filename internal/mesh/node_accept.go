@@ -107,10 +107,22 @@ func (n *Node) handleInbound(ctx context.Context, conn net.Conn) {
 // like handleInbound the Noise server handshake is run here per conn. Any
 // TLS-level probe never reaches this loop — the listener swallows it — and
 // Accept only errors on close/cancel, ending the loop.
-func (n *Node) masqAcceptLoop(ctx context.Context) {
+//
+// The listener is a launch PARAMETER, not a field read: Stop clears
+// n.masqListener under n.mu before cancel() releases this loop, so a goroutine
+// scheduled late would reload a nil field between its guard and Accept —
+// SIGSEGV in MasqListener.Accept (the parameter mirrors veilAcceptLoop, which
+// never touches n.veilListener from its loop for the same reason).
+func (n *Node) masqAcceptLoop(ctx context.Context, ln *transport.MasqListener) {
 	defer n.wg.Done()
+	// Defensive: Start never launches this loop with a nil listener, but a
+	// nil here must exit cleanly, not dereference — wg accounting stays
+	// balanced because Done is deferred above.
+	if ln == nil {
+		return
+	}
 	for {
-		conn, err := n.masqListener.Accept(ctx)
+		conn, err := ln.Accept(ctx)
 		if err != nil {
 			return
 		}

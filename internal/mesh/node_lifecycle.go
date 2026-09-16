@@ -275,7 +275,7 @@ func (n *Node) Start() int32 {
 		go n.acceptLoop(ctx)
 	}
 	if masqLn != nil {
-		go n.masqAcceptLoop(ctx)
+		go n.masqAcceptLoop(ctx, masqLn)
 	}
 	go n.acceptUDPLoop(ctx)
 	go n.dispatchLoop(ctx)
