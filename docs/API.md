@@ -726,7 +726,10 @@ Top-level config schema:
     "dp_epsilon": 1.0,
     "bandwidth_cap_bytes": 1073741824,
     "degree_cap": 256,
-    "k_anon": 5
+  },
+  "masq": {
+    "enabled": false,
+    "cover_sni": "yandex.ru"
   }
 }
 ```
@@ -782,6 +785,21 @@ Privacy properties: a node contributes under a per-epoch **unlinkable** id
 (`BLAKE2s(epoch ‖ pubkey)`), never its address or public key; node count uses
 HyperLogLog (cannot enumerate members); topology is exposed only as aggregate
 NAT/degree histograms for client-side *simulation*, never as real edges.
+
+### Masq (peer-to-peer Chrome TLS masquerade)
+
+The `masq` block is **off by default**. When `enabled` is `true` and
+`cover_sni` is set, the node's direct peer-to-peer TCP legs are carried
+inside a **Chrome uTLS fingerprint** TLS stream: outbound dials present a
+Chrome-shaped ClientHello aimed at `cover_sni`, and the listener answers
+with a locally generated certificate, so the Noise session inside is
+indistinguishable from ordinary HTTPS on the wire.
+
+Unlike the Veil "Reality" bearer, Masq is purely peer-to-peer: no relays,
+no splice target, no third party to run. Both peers must set the same
+`cover_sni` — a plausible, non-suspicious domain such as `yandex.ru`
+(matching the Veil SNI pool) works; a node needs nothing but its peers'
+addresses.
 
 ## Current Examples
 

@@ -102,6 +102,52 @@ func (n *Node) handleInbound(ctx context.Context, conn net.Conn) {
 	n.registerPeerFrom(session, false, originInboundTCP)
 }
 
+// masqAcceptLoop drains the uTLS-masquerade listener: each accepted conn is
+// the raw post-TLS stream (the masquerade completed inside the listener), so
+// like handleInbound the Noise server handshake is run here per conn. Any
+// TLS-level probe never reaches this loop — the listener swallows it — and
+// Accept only errors on close/cancel, ending the loop.
+func (n *Node) masqAcceptLoop(ctx context.Context) {
+	defer n.wg.Done()
+	for {
+		conn, err := n.masqListener.Accept(ctx)
+		if err != nil {
+			return
+		}
+		n.wg.Add(1)
+		go n.handleMasqInbound(ctx, conn)
+	}
+}
+
+// handleMasqInbound mirrors handleVeilInbound: the raw post-TLS stream gets
+// the Moss Noise server handshake, and the session registers under its own
+// origin so a masked ear can be told apart from a plain TCP one in the debug
+// plane. The masquerade is pure DPI camouflage; Moss's crypto rides unchanged.
+func (n *Node) handleMasqInbound(ctx context.Context, conn net.Conn) {
+	defer n.wg.Done()
+	defer func() {
+		if r := recover(); r != nil {
+			_ = conn.Close()
+			n.enqueueEvent(EventTrackerFailure, map[string]string{"error": fmt.Sprintf("masq inbound handshake panic: %v", r)})
+		}
+	}()
+	hsCtx, cancel := withTimeout(ctx, n.config.HandshakeTimeout())
+	defer cancel()
+	session, err := transport.ServerHandshake(hsCtx, conn, transport.HandshakeConfig{
+		// Same substrate binding and PSK gate as every direct bearer: the
+		// masquerade changes the wrapper, never the handshake policy.
+		MeshID:   n.networkID,
+		PSK:      n.transportHandshakePSK(),
+		Identity: n.identity,
+		Buffers:  transportBufferConfig(n.config.Transport),
+	})
+	if err != nil {
+		_ = conn.Close()
+		return
+	}
+	n.registerPeerFrom(session, false, originInboundMasq)
+}
+
 func (n *Node) bootstrapLoop(ctx context.Context) {
 	defer n.wg.Done()
 	n.connectStaticPeers(ctx)
@@ -384,17 +430,46 @@ func (n *Node) connectPeerOnce(ctx context.Context, addr string, remoteStatic []
 	if ctx == nil {
 		return errors.New("mesh: peer dial requires a non-nil context")
 	}
+	// Masq swaps the plain TCP dial for the uTLS masquerade: the ClientHello
+	// carries Chrome's fingerprint aimed at the cover SNI, and the Noise
+	// handshake below runs inside the TLS stream. Veil dialers keep the plain
+	// path: their masked legs go through veilDial (node_veil.go), and a
+	// second masquerade here would desynchronise the bootstrap's fingerprint
+	// story. The dialer is Start-created and immutable; reading it without
+	// the lock matches how Stop guarantees quiescence (cancel first, then
+	// nil, then wg.Wait), so no dial can observe a half-torn bearer.
+	started := time.Now()
+	if d := n.masqDialer; d != nil && !n.config.Veil.IsDialer() {
+		conn, err := d.Dial(ctx, addr)
+		if err != nil {
+			n.emitDial(addr, "", "dial", err, time.Since(started))
+			return err
+		}
+		return n.clientHandshakeAndRegister(ctx, conn, addr, remoteStatic, started)
+	}
 	// Bound to the same NIC as the UDP listener: an outbound dial left to the
 	// routing table leaves through the VPN, so the peer observes us at the
 	// tunnel's exit and echoes that back as our address — which is how one node
 	// ends up advertising two of them.
-	started := time.Now()
 	dialer := transport.DialerWithBind(net.Dialer{Timeout: n.config.HandshakeTimeout()}, n.bindIfIndex)
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		n.emitDial(addr, "", "dial", err, time.Since(started))
 		return err
 	}
+	return n.clientHandshakeAndRegister(ctx, conn, addr, remoteStatic, started)
+}
+
+// clientHandshakeAndRegister is the tail every direct TCP dial converges on,
+// masqueraded or plain: the Noise client handshake over the established
+// stream, then registration as an outbound session.
+func (n *Node) clientHandshakeAndRegister(ctx context.Context, conn net.Conn, addr string, remoteStatic []byte, started time.Time) error {
+	defer func() {
+		if r := recover(); r != nil {
+			_ = conn.Close()
+			panic(r)
+		}
+	}()
 	hsCtx, cancel := withTimeout(ctx, n.config.HandshakeTimeout())
 	defer cancel()
 	session, err := transport.ClientHandshake(hsCtx, conn, transport.HandshakeConfig{
@@ -418,6 +493,7 @@ func (n *Node) connectPeerOnce(ctx context.Context, addr string, remoteStatic []
 const (
 	originInboundTCP   = "inbound_tcp"
 	originInboundUDP   = "inbound_udp"
+	originInboundMasq  = "inbound_masq"
 	originDialTCP      = "dial_tcp"
 	originHolePunchUDP = "holepunch_udp"
 	originVeilInbound  = "veil_inbound"

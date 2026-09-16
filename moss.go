@@ -94,6 +94,11 @@ type Config struct {
 	// Relays. Omitted (nil) leaves it disabled.
 	Veil *VeilConfig `json:"veil,omitempty"`
 
+	// Masq configures the peer-to-peer uTLS masquerade: direct TCP dials and
+	// accepts are carried inside a Chrome-fingerprinted TLS stream (see
+	// mesh.MasqConfig). Omitted (nil) leaves it disabled.
+	Masq *MasqConfig `json:"masq,omitempty"`
+
 	IdentityPath string `json:"identity_path,omitempty"`
 }
 
@@ -116,6 +121,14 @@ type VeilRelay struct {
 	Addr      string `json:"addr"`
 	CoverSNI  string `json:"cover_sni"`
 	PubKeyHex string `json:"pubkey"`
+}
+
+// MasqConfig is a public mirror of mesh.MasqConfig: the peer-to-peer
+// Chrome-fingerprint TLS masquerade for direct connections. CoverSNI must
+// be identical on both peers.
+type MasqConfig struct {
+	Enabled  bool   `json:"enabled"`
+	CoverSNI string `json:"cover_sni,omitempty"`
 }
 
 func (c Config) toMeshConfig() mesh.Config {
@@ -209,6 +222,12 @@ func (c Config) toMeshConfig() mesh.Config {
 				CoverSNI:  r.CoverSNI,
 				PubKeyHex: r.PubKeyHex,
 			})
+		}
+	}
+	if c.Masq != nil {
+		base.MasqConfig = mesh.MasqConfig{
+			Enabled:  c.Masq.Enabled,
+			CoverSNI: c.Masq.CoverSNI,
 		}
 	}
 	if c.IdentityPath != "" {

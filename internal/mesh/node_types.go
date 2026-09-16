@@ -50,6 +50,13 @@ type Node struct {
 	portMapper  nat.PortMapper
 	listener    *transport.Listener
 	udpListener *transport.UDPListener
+	// masqListener and masqDialer hold the uTLS masquerade bearer created by
+	// Start when MasqConfig opts the node in (and Veil is not the listener).
+	// Both are immutable for the lifetime of a started run — built once
+	// under n.mu, read by the dial path without locking, cleared by Stop —
+	// so a mid-run restart swaps them atomically rather than racing dials.
+	masqListener *transport.MasqListener
+	masqDialer   *transport.MasqDialer
 	// veilListener holds the Veil "Reality" DPI-mask listener when this
 	// node runs the relay role. Typed as a bare Closer so the field
 	// stays free of the uTLS-heavy vtransport import on js/wasm builds,

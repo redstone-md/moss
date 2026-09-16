@@ -5,7 +5,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"net"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/redstone-md/moss/internal/bootstrap"
@@ -159,19 +161,71 @@ func (n *Node) Start() int32 {
 	if n.started {
 		return MOSS_ERR_ALREADY_STARTED
 	}
-	ln, udpListener, port, err := transport.ListenPair(n.config.ListenPort, transport.HandshakeConfig{
-		MeshID:      n.networkID,
-		PSK:         n.transportHandshakePSK(),
-		Identity:    n.identity,
-		Buffers:     transportBufferConfig(n.config.Transport),
-		BindIfIndex: n.bindIfIndex,
-		ObfsPadMax:  n.config.obfsPadMax(),
-		ObfsPadData: !n.config.Transport.HighThroughput,
-	})
-	if err != nil {
-		n.setLastError(err.Error())
-		n.reportErrorToAxiom("listen_failed", err.Error(), nil)
-		return MOSS_ERR_LISTEN_FAILED
+	// Masq replaces the plain TCP ear with the uTLS masquerade. It is bound
+	// FIRST (it owns the port the node was asked to listen on), then the UDP
+	// half is bound on the same port — no ListenPair, because pairing tries
+	// a plain TCP listener alongside and a masked node must not open a
+	// distinguishable plain-TCP ear at all. Veil keeps priority when it is
+	// the listener: its Reality splice would fight the masquerade over the
+	// same "looks like HTTPS" claim, and a node running both has chosen the
+	// relay topology.
+	masqEnabled := n.config.MasqConfig.IsMasq() && !n.config.Veil.IsListener()
+	var masqLn *transport.MasqListener
+	var ln *transport.Listener
+	var udpListener *transport.UDPListener
+	var port int
+	if masqEnabled {
+		listenAddr := net.JoinHostPort("", strconv.Itoa(n.config.ListenPort))
+		l, err := transport.MasqListen(listenAddr, n.config.MasqConfig.CoverSNI)
+		if err != nil {
+			n.setLastError(err.Error())
+			n.reportErrorToAxiom("listen_failed", err.Error(), nil)
+			return MOSS_ERR_LISTEN_FAILED
+		}
+		masqLn = l
+		// Port 0 asked the OS to choose; the masquerade's port is now THE
+		// node port, and the UDP half must share it so discovery and NAT
+		// mapping stay consistent.
+		masqPort := l.Addr().(*net.TCPAddr).Port
+		udpListener, port, err = transport.ListenUDP(masqPort, transport.HandshakeConfig{
+			MeshID:      n.networkID,
+			PSK:         n.transportHandshakePSK(),
+			Identity:    n.identity,
+			Buffers:     transportBufferConfig(n.config.Transport),
+			BindIfIndex: n.bindIfIndex,
+			ObfsPadMax:  n.config.obfsPadMax(),
+			ObfsPadData: !n.config.Transport.HighThroughput,
+		})
+		if err != nil {
+			_ = l.Close()
+			n.setLastError(err.Error())
+			n.reportErrorToAxiom("listen_failed", err.Error(), nil)
+			return MOSS_ERR_LISTEN_FAILED
+		}
+	} else {
+		var err error
+		ln, udpListener, port, err = transport.ListenPair(n.config.ListenPort, transport.HandshakeConfig{
+			MeshID:      n.networkID,
+			PSK:         n.transportHandshakePSK(),
+			Identity:    n.identity,
+			Buffers:     transportBufferConfig(n.config.Transport),
+			BindIfIndex: n.bindIfIndex,
+			ObfsPadMax:  n.config.obfsPadMax(),
+			ObfsPadData: !n.config.Transport.HighThroughput,
+		})
+		if err != nil {
+			n.setLastError(err.Error())
+			n.reportErrorToAxiom("listen_failed", err.Error(), nil)
+			return MOSS_ERR_LISTEN_FAILED
+		}
+	}
+	if masqLn != nil {
+		n.masqListener = masqLn
+		n.masqDialer = &transport.MasqDialer{
+			CoverSNI:    n.config.MasqConfig.CoverSNI,
+			BindIfIndex: n.bindIfIndex,
+			Timeout:     n.config.HandshakeTimeout(),
+		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	n.listener = ln
@@ -204,9 +258,13 @@ func (n *Node) Start() int32 {
 	n.natProfile.Store(n.profiler.Detect(listenAddrStr))
 	n.portMapper = nil
 	// Loops that call n.wg.Done(): acceptUDPLoop, dispatchLoop, bootstrapLoop,
-	// maintenanceLoop, and — only when TCP is up — acceptLoop.
+	// maintenanceLoop, and — when the plain or masqueraded TCP ear is up —
+	// the matching accept loop.
 	wgCount := 4
 	if ln != nil {
+		wgCount++
+	}
+	if masqLn != nil {
 		wgCount++
 	}
 	if n.config.LANDiscoveryEnabled && !transport.RunningGoTest() {
@@ -215,6 +273,9 @@ func (n *Node) Start() int32 {
 	n.wg.Add(wgCount)
 	if ln != nil {
 		go n.acceptLoop(ctx)
+	}
+	if masqLn != nil {
+		go n.masqAcceptLoop(ctx)
 	}
 	go n.acceptUDPLoop(ctx)
 	go n.dispatchLoop(ctx)
@@ -298,6 +359,9 @@ func (n *Node) Stop() int32 {
 	cancel := n.cancel
 	listener := n.listener
 	udpListener := n.udpListener
+	masqListener := n.masqListener
+	n.masqListener = nil
+	n.masqDialer = nil
 	veilListener := n.veilListener
 	n.veilListener = nil
 	portMapper := n.portMapper
@@ -334,6 +398,9 @@ func (n *Node) Stop() int32 {
 	if udpListener != nil {
 		_ = udpListener.Close()
 	}
+	if masqListener != nil {
+		_ = masqListener.Close()
+	}
 	if portMapper != nil {
 		portMapper.Close()
 	}
@@ -342,12 +409,12 @@ func (n *Node) Stop() int32 {
 			peer.closeSession()
 		}
 	}
-// Drain guard: every dispatchCh sender (relay data, events, relay API
-// packets) is now a non-blocking select/default — a parked worker was the
-// original hang risk, but a send that finds no receiver still occupies a
-// worker until the channel's buffer frees, and buffered items are exactly
-// what dispatchLoop stops consuming once the cancelled context wins its
-// select. Draining keeps wg.Wait bounded in that window regardless.
+	// Drain guard: every dispatchCh sender (relay data, events, relay API
+	// packets) is now a non-blocking select/default — a parked worker was the
+	// original hang risk, but a send that finds no receiver still occupies a
+	// worker until the channel's buffer frees, and buffered items are exactly
+	// what dispatchLoop stops consuming once the cancelled context wins its
+	// select. Draining keeps wg.Wait bounded in that window regardless.
 	drainDone := make(chan struct{})
 	go func() {
 		for {

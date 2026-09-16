@@ -29,6 +29,9 @@ var boundElsewhere = map[string]string{
 	// socket would refuse connections arriving over the tunnel, and outbound
 	// TCP gets its own bound dialer in mesh/node_accept.go.
 	filepath.Join("transport", "listener.go"): "inbound only, deliberately unbound",
+	// Same story for the masquerade listener: inbound-only, and its dial
+	// side carries the bind (MasqDialer routes through DialerWithBind).
+	filepath.Join("transport", "masq.go"): "inbound only, deliberately unbound",
 	// Send socket is bound at the call site; the receive socket joins a
 	// link-local multicast group per interface and never leaves the LAN.
 	filepath.Join("mesh", "lan_discovery.go"): "binds its send socket, receive is link-local",

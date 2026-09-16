@@ -96,8 +96,16 @@ type Config struct {
 	PeerCacheMax    int             `json:"peer_cache_max"`
 	PeerCacheTTLSec int             `json:"peer_cache_ttl_sec"`
 	PeerCachePath   string          `json:"peer_cache_path"`
-	Telemetry       TelemetryConfig `json:"telemetry"`
 	Veil            VeilConfig      `json:"veil"`
+	Telemetry       TelemetryConfig `json:"telemetry"`
+	// MasqConfig opts direct peer connections into Chrome-shaped TLS
+	// masquerading: every TCP dial and listener accept is carried inside
+	// a uTLS stream whose ClientHello carries the Chrome fingerprint
+	// aimed at CoverSNI, with the Noise session running inside. Unlike
+	// Veil it is peer-to-peer — no relays, no Reality splice, no extra
+	// infrastructure: a node needs only its peers' addresses. Disabled by
+	// default (zero value).
+	MasqConfig MasqConfig `json:"masq"`
 	// Debug opens the loopback debug plane MossScope attaches to: a structured
 	// event bus, a ring buffer of recent history, and a WebSocket. It is OFF by
 	// default and refuses any non-loopback bind address, because a debug session
@@ -157,6 +165,22 @@ func (v VeilConfig) IsListener() bool { return v.Enabled && v.Role == "listener"
 // Veil-fronted relays. It is independent of Role: any node may hold veil
 // relay descriptors to survive DPI, including a listener bridging to another.
 func (v VeilConfig) IsDialer() bool { return v.Enabled && len(v.Relays) > 0 }
+
+// MasqConfig opts the node's direct peer-to-peer TCP legs into uTLS
+// masquerading: dials present a Chrome ClientHello aimed at CoverSNI and
+// listeners answer with a self-signed certificate, so the Noise session
+// rides inside an ordinary-looking TLS stream. Both sides must set the
+// same CoverSNI. This is the p2p story Veil cannot serve — no relay, no
+// Reality splice, no third party needed. Disabled by default.
+type MasqConfig struct {
+	Enabled  bool   `json:"enabled"`
+	CoverSNI string `json:"cover_sni"`
+}
+
+// IsMasq reports whether direct peer connections should be carried inside
+// the uTLS Chrome-shaped TLS masquerade. CoverSNI is required: without a
+// cover domain there is nothing to shape the ClientHello against.
+func (m MasqConfig) IsMasq() bool { return m.Enabled && m.CoverSNI != "" }
 
 // TelemetryConfig controls the privacy-preserving network observability layer.
 // It is disabled by default. When enabled, the node contributes DP-noised,
