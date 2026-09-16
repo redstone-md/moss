@@ -189,6 +189,12 @@ func (n *Node) Start() int32 {
 	n.localMu.Lock()
 	n.localQueues = nil
 	n.localMu.Unlock()
+	// Same reason for the directed (per-sender DM) queues: each is bound to a
+	// worker from the previous run whose rootCtx is cancelled, so reusing the
+	// map would enqueue payloads into channels nobody drains.
+	n.directedMu.Lock()
+	n.directedQueues = nil
+	n.directedMu.Unlock()
 	// ln is nil in UDP-only mode (TCP couldn't bind — e.g. under Wine/Proton).
 	// Fall back to the UDP listener's address for NAT profiling and port mapping.
 	listenAddrStr := udpListener.Addr().String()

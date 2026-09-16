@@ -267,6 +267,27 @@ type Node struct {
 	// previous run's workers are gone with their rootCtx.
 	localMu     sync.Mutex
 	localQueues map[string]chan dispatchMessage
+	// directedMu guards directedQueues, the per-sender counterpart of
+	// localQueues for directed payloads (relayed DMs and TypeDirect packets).
+	//
+	// Delivery is a synchronous FFI callback: the single dispatchLoop used to
+	// invoke packetCB/relayCB inline, so one application that decrypted or wrote
+	// to disk slowly parked the only consumer. Once it was parked, every other
+	// peer's DMs piled up behind it in the shared dispatchCh until that filled,
+	// and the producers' non-blocking sends began dropping payloads from
+	// UNINVOLVED peers — cross-peer head-of-line loss, the directed twin of the
+	// per-channel fix that localQueues already made for pubsub. One queue and
+	// worker per sender keeps ordering within a sender's stream (a chunk
+	// transfer still can't reorder) while a slow sender now drops only its own
+	// traffic once its bounded queue fills. See node_dispatch_bootstrap.go.
+	//
+	// Lifetime mirrors localQueues: lazily created per sender, torn down when
+	// the worker exits (rootCtx cancel on Stop); Start resets the map wholesale.
+	// Bounded by config.MaxPeers so a hostile peer spraying distinct sender
+	// keys cannot grow it without limit — a new sender at the ceiling is
+	// dropped and counted, never spawned.
+	directedMu     sync.Mutex
+	directedQueues map[[32]byte]chan any
 }
 
 type peerConn struct {
