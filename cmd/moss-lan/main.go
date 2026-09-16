@@ -85,21 +85,27 @@ func usage() {
                требует CAP_NET_ADMIN/root (Linux/macOS) или
                wintun.dll рядом с бинарём (Windows, см. MOSS_WINTUN_DLL)
     --tun-name имя интерфейса ("tun0", "utun5"); пусто = авто
+    --public   ездить по публичному диску (трекеры+DHT) вместо изоляции;
+               нужно, чтобы в комнату зашёл узел с другой машины
+               (PSK всё равно гейтит доступ)
 
   QR: инвайт — обычная строка. Любой внешний QR-энкодер
   (например `+"`"+`qrencode -t UTF8 <строка>`+"`"+`) закодирует её как есть.
 `)
 }
 
-// isolatedConfig builds a mesh config with no public discovery: no
-// trackers, no DHT, no LAN beacons. A moss-lan room is invitation/PSK
-// territory; the public substrate is not where it looks for peers.
-func isolatedConfig(name string) mesh.Config {
+// isolatedConfig builds a mesh config. By default moss-lan rooms are
+// isolated (no trackers/DHT/LAN — invitation/PSK territory). With --public
+// the room rides the public substrate (default trackers + DHT) so a peer on
+// another host can discover it; the PSK still gates the room.
+func isolatedConfig(name string, public bool) mesh.Config {
 	cfg := mesh.DefaultConfig()
-	cfg.NetworkID = "moss-lan-" + name
-	cfg.Trackers = nil
-	cfg.DHTEnabled = false
-	cfg.LANDiscoveryEnabled = false
+	if !public {
+		cfg.NetworkID = "moss-lan-" + name
+		cfg.Trackers = nil
+		cfg.DHTEnabled = false
+		cfg.LANDiscoveryEnabled = false
+	}
 	cfg.GossipSub.HeartbeatMS = 100
 	return cfg
 }
@@ -137,6 +143,7 @@ func runCreate(args []string) {
 	cidr := fs.String("cidr", defaultCIDR, "пул виртуальных IP")
 	useTun := fs.Bool("tun", false, "реальный TUN-интерфейс вместо loopback")
 	tunName := fs.String("tun-name", "", "имя TUN-интерфейса (пусто = авто)")
+	public := fs.Bool("public", false, "публичный диск (трекеры+DHT) — чтобы зашёл узел с другой машины")
 	invitees := multiFlag{}
 	fs.Var(&invitees, "invitee", "peer ID приглашаемого (повторяется)")
 	if err := fs.Parse(args); err != nil {
@@ -151,7 +158,7 @@ func runCreate(args []string) {
 
 	// The node lives in the room it is born into (meshID = --room, psk).
 	// moss-lan owns this node's full lifecycle: start, run, stop.
-	node, err := mesh.NewNode(*room, []byte(*psk), isolatedConfig(*room))
+	node, err := mesh.NewNode(*room, []byte(*psk), isolatedConfig(*room, *public))
 	if err != nil {
 		log.Fatalf("create: NewNode: %v", err)
 	}
@@ -208,6 +215,7 @@ func runJoin(args []string) {
 	cidr := fs.String("cidr", defaultCIDR, "пул виртуальных IP")
 	useTun := fs.Bool("tun", false, "реальный TUN-интерфейс вместо loopback")
 	tunName := fs.String("tun-name", "", "имя TUN-интерфейса (пусто = авто)")
+	public := fs.Bool("public", false, "публичный диск (трекеры+DHT) — нужно, если комната создана с --public")
 	if err := fs.Parse(args); err != nil {
 		log.Fatalf("join: %v", err)
 	}
@@ -225,8 +233,7 @@ func runJoin(args []string) {
 	if err != nil {
 		log.Fatalf("join: %v", err)
 	}
-
-	node, err := mesh.NewNode(meshID, nil, isolatedConfig(meshID))
+	node, err := mesh.NewNode(meshID, nil, isolatedConfig(meshID, *public))
 	if err != nil {
 		log.Fatalf("join: NewNode: %v", err)
 	}
