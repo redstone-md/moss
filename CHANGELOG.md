@@ -11,6 +11,152 @@ later. Nothing is deleted: the tags stay published because builds that already
 resolved them must keep resolving them.
 
 
+## [0.8.31] - 2026-09-16
+
+### Fixed
+- **The UDP handshake hot path no longer scans the pending table on every
+  init.** `handleHandshakeInit` called `prunePendingServerHandshakes` — an
+  O(pending) walk (up to 1024) under its own lock — on every handshake
+  initiation, and even on a retry from an already-tracked peer whose slot was
+  about to be overwritten regardless. All of that ran on the single read-loop
+  goroutine that already serializes AEAD and Noise for every session, so a
+  100-peer join wave paid 100 full scans in the hottest path in the node. The
+  reap is now conditional: it fires only when a genuinely new peer finds the
+  table full, inside the lock section that checks capacity, and it reaps only
+  entries past the TTL (previously the unconditional per-init scan pointlessly
+  expired other peers' live handshakes during a retry).
+
+## [0.8.30] - 2026-09-16
+
+### Fixed
+- **One slow peer can no longer make another peer's DMs vanish.** The single
+  `dispatchLoop` invoked the application's packet/relay callback inline, and
+  that callback is a synchronous FFI call (decrypt, write to disk). One
+  application parked on sender A froze the only consumer, so every other
+  sender's payloads piled up behind it in the shared 1024-deep `dispatchCh`
+  until it filled — at which point the producers' non-blocking sends began
+  dropping messages from peers that had nothing to do with A. Directed delivery
+  now shunts each payload to a per-sender bounded queue drained by its own
+  worker (the directed twin of the per-channel `localQueues` split already used
+  for pub/sub): a slow sender drops only its own traffic once its queue fills,
+  and per-sender order is preserved. The map is bounded by `MaxPeers` so a
+  relay source spraying distinct keys cannot grow it without limit.
+
+## [0.8.29] - 2026-09-16
+
+### Fixed
+- **Envelope eviction is O(1), not a scan of the whole cache.** `Cache.removeLocked`
+  walked `envOrder` (up to `maxCachedEnvelopes=4096` ids) and re-sliced it on
+  every removal, and `purgeLocked` called it once per expired slot — so a burst
+  past the cap paid thousands of linear scans. `envOrder` is now a
+  `container/list` with a parallel `envIndex` (id → node), making both the FIFO
+  pop and an arbitrary removal O(1). Cap, ring and second-bucketed TTL-purge
+  semantics are unchanged.
+- **A session at the inbound-stream cap now reports its losses.** Once a
+  session held `maxInboundStreams` (1024) streams, `readLoop` discarded every
+  further packet by silently skipping a `nil` stream — a loss class invisible
+  to `stream_drops`, which only counts buffer-full drops on an existing stream.
+  A stream-id flood therefore emptied a session's stream table while looking
+  perfectly healthy in the dashboard. `streamCapDrops` is charged per
+  rejection and surfaced as `stream_cap_drops` in both the debug-plane `drops`
+  and the Axiom `node_stats`; the triage line for `outbound_drops` is corrected
+  from the stale 32-deep to the current 64-deep queue.
+
+## [0.8.28] - 2026-09-16
+
+### Fixed
+- **Peer registration no longer serializes a join storm.** `registerPeerFrom` ran its heavy tail — IP-colocation recalculation, the known-peer snapshot, self-introduction, the announce broadcast, relay-session migration and `maintainTopicMesh` per channel — synchronously in the accept loop, all under or adjacent to the node's write lock. A 100-peer wave therefore queued ~100 write acquisitions and ~500 read acquisitions in series, stretching a sub-second join into minutes. The tail now runs in one `wg`-tracked goroutine bounded by `rootCtx`, in the same envelope order; the capacity check releases the lock for its victim scan and re-verifies on re-acquire, so a slot freed in the window is taken without evicting anything.
+- **Overflow victim selection stopped scoring under the write lock.** `selectOverflowPrunePeerLocked` called `peerScore` for every peer and twice per comparison while `n.mu` was held for writing — the one path that violated the repo's own "peerScore must never run under `n.mu`" rule, and the longest write hold on the inbound path at capacity. It now snapshots candidates under a read lock, scores them outside the lock, and ranks by cached score (one scoring call per candidate instead of `P + 3C`).
+- **One `IWANT` costs one lock, not sixty-five.** The serve loop consulted `isSuppressed` per message id, each consult a full write-lock round trip — 65–66 acquisitions per request, ping-ponging against graft, prune and registration on every peer's recovery path. Suppression is now resolved for the whole batch inside the dedup section that already held the lock (3.8x faster measured on a 64-id request); rollback semantics on a refused enqueue are unchanged.
+- **Mesh selection is a batch, not a per-candidate lock storm.** `selectMeshCandidates` and `selectHighScoringCandidates` took a read lock per candidate for the outbound check, another per candidate for eligibility, and scored each two to five times — up to 2400 scoring calls and 1600 lock acquisitions per second on a 250 ms heartbeat with 200 known peers. Both paths now share one snapshot: a single read lock, a single pub/sub read, and one scoring pass per connected candidate run outside `n.mu` (184 ns vs 520 ns per candidate measured). Peers with no live connection are no longer scored at all — an unconnected candidate is ineligible regardless, and scoring one fires a non-memoized FFI callback.
+
+## [0.8.27] - 2026-09-16
+
+### Fixed
+- **Scoring no longer decodes and re-invokes the application callback per envelope.** `peerScore` hex-decoded the 64-char hex id and fired a synchronous `scoringCB` (behind FFI, `C.CBytes` per call) on every gate — `O(N log N)` times per sort. `gossip.Engine.AdjustedScore` now memoizes the adjusted score per `(peer, base)` and the callback runs at most once per base change (≤1/s under `Tick`); `DecodePeerKey` is the single decode site. Unknown peers are never memoized.
+- **Join-time self-announce no longer spams `N×(N-1)` envelopes.** Each accept broadcast its own identity to all peers; a 100-peer join wave sent ~9900 identical self-announces before they died at the `meaningfulChange` gate, burning recipients' `announceBudget`. `registerPeerFrom` now funnels through `announceSelfToPeers`, which reuses the forward gate's own `announceForwards[localID]` (10s `announceForwardCooldown`) — at most one self-broadcast per window for the whole wave. Joiners still learn the peer via `sendKnownPeerSnapshot`; supernode/meaningful address changes stay ungated.
+- **Relay promotion and binding refresh no longer spray overlapping generations.** `promoteRelayPeers` stamped `directProbes` at attempt start with a 1s cooldown while arming a 5s punch budget every 3 ticks — guaranteed overlap of 2–3 live `tryDirectUpgrade` generations per target, each spawning its own `Coordinator.Plan` dials. The stamp is now the attempt's budget end (+`Heartbeat` breather), so at most one live attempt per target; dials are deadline-clamped to the remaining budget. `refreshExternalAddress` (spawned per accept) walked all peers serially and never short-circuited — now bounded to 3 peers with early exit on first confirmed mapping.
+
+## [0.8.26] - 2026-09-16
+
+### Fixed
+- **Ping probes no longer serial-kill healthy peers.** `sendPingTargets` wrote
+  pings serially and stamped `pingSentAt` at collect time. One stalled
+  `WritePacket` (5s writeMu) delayed every peer behind it in the same pass,
+  so `collectPruneLocked` charged them each a phantom miss; six passes killed
+  a healthy session (`peerDisconnectMissLimit`). Pings on a running node are
+  now dispersed over a bounded pool (`pingSendWorkers=16`, `wg`-tracked under
+  `rootCtx`); a failed send clears `pingPending/pingSentAt` via
+  `clearFailedPings` so it retries next pass instead of aging into a miss,
+  and a `Stop` mid-pass drains and disarms. The 6-miss semantics are
+  untouched — a miss is now only a genuinely-expired round trip.
+- **IP-colocation penalties no longer take N write locks per join/leave.**
+  `recalculateIPColocationPenalties` called `ApplyIPColocationPenalty` once
+  per peer, each taking `gossip.Engine.mu` for a single write. Now it counts
+  hosts once and applies the whole batch under one
+  `ApplyIPColocationPenalties` acquisition. Ranking unchanged.
+- **IWANT serve no longer overflows the peer queue by 2x.** A full serve of
+  `maxIWantServesPerReq=64` into `outboundQueueDepth=32` dropped its tail
+  deterministically — half the reply vanished per request, each drop with its
+  own rollback lock. The queue is now `64` (matches the serve cap; ~31KB/peer
+  resident) and a failed enqueue bails and defers the remaining ids as a
+  batch, rolling `IHaveAsk`/`IWantServes` back once. The heal is the next
+  `IWANT` for the same ids.
+
+## [0.8.25] - 2026-09-15
+
+### Fixed
+- **The relay hot path no longer takes the global write lock per frame.**
+  `relayBucketFor` grabbed `n.mu.Lock()` on every forwarded packet even when
+  the bucket already existed, so a supernode serialized all its relay traffic
+  — and everything else holding that lock — behind a map read. The established
+  path is now an `RLock`; the write lock appears only on a source's first
+  packet, guarded by a double-check. A default-config node also no longer
+  touches `n.mu` at all in the consumer-cap leg (the zero-cap check runs
+  before the lock).
+- **Refusal handling stopped double-locking the flood path.** A bucket-refused
+  packet took the global lock twice in a row (the overload stamp, then the
+  supernode-verdict refresh) — precisely on the path the bucket exists to
+  throttle. The verdict refresh now runs only on the
+  not-overloaded→overloaded transition; recovery stays on the maintenance tick.
+- **Relay selection precomputes session load.** `selectRelayPeers` rescanned
+  every relay session inside each sort comparison — O(candidates·log·sessions)
+  under a read lock that also blocks `relayBucketFor`. One pass over the
+  sessions now feeds the comparator a map lookup. Ranking is unchanged.
+- **Relayed delivery no longer blocks the transport read loop.** The local
+  `dispatchCh` send in `handleRelayData` was blocking: one slow application
+  callback parked a per-peer dispatch worker on a shared 1024-deep channel, so
+  a stalled consumer became cross-peer head-of-line loss. It is a
+  non-blocking send with a `__relay_dispatch_dropped__` count, the same
+  contract the relay API packet path already used.
+- **Expired relay routes announce themselves instead of blackholing.** Route
+  garbage collection reaped idle sessions silently; the origin kept sending
+  into a void it could not observe. A reaped route now counts
+  `__relay_route_expired__` and the next data frame for it is answered with a
+  one-shot `RelayClose`, so the origin tears its session down and
+  re-establishes. Tombstones are bounded and cleared by an explicit close.
+
+## [0.8.24] - 2026-09-15
+
+### Fixed
+- **Relay economics made visible and configurable.** The relay bandwidth
+  bucket previously refused silently: a consumer that overran it saw traffic
+  vanish with no counter, no event, and no way to tell a throttled peer from
+  a dead one. Refusals now charge `__relay_rate_limited__` and the
+  overload-cooldown marker stays wired to the bucket, so `drops` on the debug
+  plane shows exactly which consumer starved.
+- **`RelaySustainedKiBPS` lifts the per-consumer refill without touching the
+  burst.** The old derivation was hardwired to `burst/4` (64 KiB/s at the
+  256 KiB default), so a volunteer raising the ceiling alone could not raise
+  the floor. Set the new field to the wanted KiB/s; it is clamped to ≤ burst
+  and the legacy value remains the default.
+- **`RelayConsumerCapBytes` adds a per-minute quota per consumer.** Distinct
+  from the instantaneous bucket: a rolling two-window byte total, so a single
+  eager consumer cannot run a volunteer's monthly bill off. On trip the relay
+  counts `__relay_consumer_capped__`, reaps the route, and sends an explicit
+  `RelayClose` to both endpoints — never a silent drop that leaves the origin
+  convinced the path is still live. Zero (the default) disables the guard.
+
 ## [0.8.23] - 2026-09-15
 
 ### Fixed

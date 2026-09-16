@@ -1,7 +1,6 @@
 package mesh
 
 import (
-	"encoding/hex"
 	"errors"
 	"net"
 	"sort"
@@ -12,15 +11,29 @@ import (
 	"github.com/redstone-md/moss/internal/nat"
 )
 
+// relayBucketFor returns the per-source bandwidth bucket, creating it on the
+// source's first charge. Every relayed packet from an established source
+// walks the hit path, so the read lock carries it: a busy supernode's
+// forwarding rate must not queue on the global write lock — serializing with
+// gossip, session bookkeeping, and every dispatch worker in the node — just
+// to read a map. The write lock appears only on a new source's first packet,
+// where the double-check keeps a concurrent first charge from allocating two
+// buckets for one peer.
 func (n *Node) relayBucketFor(peerID string) *nat.TokenBucket {
+	n.mu.RLock()
+	bucket := n.relayBuckets[peerID]
+	n.mu.RUnlock()
+	if bucket != nil {
+		return bucket
+	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	bucket := n.relayBuckets[peerID]
-	if bucket == nil {
-		burst, sustained := n.relayRateLimits()
-		bucket = nat.NewTokenBucket(burst, sustained)
-		n.relayBuckets[peerID] = bucket
+	if bucket = n.relayBuckets[peerID]; bucket != nil {
+		return bucket
 	}
+	burst, sustained := n.relayRateLimits()
+	bucket = nat.NewTokenBucket(burst, sustained)
+	n.relayBuckets[peerID] = bucket
 	return bucket
 }
 
@@ -35,14 +48,37 @@ func (n *Node) relayRateLimits() (int, int) {
 	if burst <= 0 {
 		burst = 1024
 	}
-	sustained := burst / 4
+	// Sustained refill. Two sources, in precedence order:
+	//   1. NAT.RelaySustainedKiBPS — an explicit operator directive (a
+	//      volunteer raising supply). It wins outright, clamped only to the
+	//      burst ceiling so it can never exceed the token-bucket capacity.
+	//   2. otherwise burst/4 (64 KiB/s at the 256 KiB default), and the
+	//      legacy Security.RateLimitSustained acts as a governor cap on that
+	//      derived value — the pre-existing behavior.
+	// The legacy clamp deliberately does NOT apply to (1): otherwise an
+	// operator who set the new field could not raise relay throughput past
+	// Security.RateLimitSustained without also discovering and editing an
+	// unrelated security knob, defeating the point of exposing the field.
+	if wanted := n.config.NAT.RelaySustainedKiBPS * 1024; n.config.NAT.RelaySustainedKiBPS > 0 {
+		sustained := clampInt(wanted, 1, burst)
+		return burst, sustained
+	}
+	sustained := clampInt(burst/4, 1, burst)
 	if n.config.Security.RateLimitSustained > 0 && n.config.Security.RateLimitSustained < sustained {
 		sustained = n.config.Security.RateLimitSustained
 	}
-	if sustained <= 0 {
-		sustained = max(1, burst/4)
+	return burst, max(1, sustained)
+}
+
+// clampInt bounds v to [lo, hi].
+func clampInt(v, lo, hi int) int {
+	if v < lo {
+		return lo
 	}
-	return burst, sustained
+	if v > hi {
+		return hi
+	}
+	return v
 }
 
 // hostIP parses the IP out of a "host:port" (or bare host) address, or nil.
@@ -88,6 +124,11 @@ func (n *Node) selectRelayPeers(targetPeerID string) ([]string, error) {
 	// geo.Proximity is neutral there and ordering falls through to
 	// score/load alone.
 	targetIP := hostIP(n.knownPeers[targetPeerID].addr)
+	// Precompute each candidate's relay-session load once: the sort below
+	// runs O(N·logN) comparisons, and rescanning every relayLocals session
+	// per comparison made that O(N·logN·S) while n.mu is held for read.
+	// One O(S) pass up front keeps each comparison to a map lookup.
+	relayLoad := n.relaySessionCountsViaLocked()
 	sort.Slice(candidates, func(i, j int) bool {
 		infoI := n.knownPeers[candidates[i]]
 		infoJ := n.knownPeers[candidates[j]]
@@ -106,8 +147,8 @@ func (n *Node) selectRelayPeers(targetPeerID string) ([]string, error) {
 		if scoreI != scoreJ {
 			return scoreI > scoreJ
 		}
-		loadI := n.relaySessionCountViaLocked(candidates[i])
-		loadJ := n.relaySessionCountViaLocked(candidates[j])
+		loadI := relayLoad[candidates[i]]
+		loadJ := relayLoad[candidates[j]]
 		if loadI != loadJ {
 			return loadI < loadJ
 		}
@@ -121,14 +162,17 @@ func (n *Node) isTrustedRelayCandidateLocked(peerID string) bool {
 	return ok && info.natTrusted && info.relayCapable && info.publicReachable
 }
 
-func (n *Node) relaySessionCountViaLocked(peerID string) int {
-	count := 0
+// relaySessionCountsViaLocked reports how many relay sessions each peer is
+// currently serving, in a single pass over relayLocals. It requires n.mu to
+// be held (read or write): selectRelayPeers builds this map once before
+// sorting so its comparator reads load from the map instead of rescanning
+// relayLocals for every comparison.
+func (n *Node) relaySessionCountsViaLocked() map[string]int {
+	counts := make(map[string]int, len(n.relayLocals))
 	for _, session := range n.relayLocals {
-		if session.viaPeerID == peerID {
-			count++
-		}
+		counts[session.viaPeerID]++
 	}
-	return count
+	return counts
 }
 
 func relayCandidateRank(info knownPeer) int {
@@ -152,14 +196,20 @@ func (n *Node) peerScore(peerID string) float64 {
 	if n.scoring == nil {
 		return 0
 	}
-	base := n.scoring.Score(peerID)
+	// The callback read stays behind scoringMu — SetScoringCallback fires
+	// once at startup, so this is an uncontended RLock on a lock that no
+	// hot path ever writes. The callback itself hands off to
+	// AdjustedScore, which memoizes the (peer, base) → adjusted result so
+	// the dozens of threshold gates and sort comparators that funnel here
+	// per envelope neither re-invoke the (FFI-hosted) callback nor
+	// re-decode the hex peer key on every comparison.
 	n.scoringMu.RLock()
 	cb := n.scoringCB
 	n.scoringMu.RUnlock()
 	if cb == nil {
-		return base
+		return n.scoring.Score(peerID)
 	}
-	return cb(decodePeerID(peerID), base)
+	return n.scoring.AdjustedScore(peerID, cb)
 }
 
 func (n *Node) shouldPreferRelayForTarget(targetPeerID string) bool {
@@ -237,6 +287,11 @@ func (n *Node) meshGossipPeers(channel, excludePeerID string) []string {
 	return selected
 }
 
+// recalculateIPColocationPenalties recomputes every peer's IP-colocation
+// penalty on each join and leave. The peer snapshot is taken under n.mu and
+// released before the scoring engine is touched, and the whole batch is
+// applied under a single scoring.mu acquisition — one lock per recalculation,
+// not one per peer.
 func (n *Node) recalculateIPColocationPenalties() {
 	type peerAddr struct {
 		id   string
@@ -260,9 +315,12 @@ func (n *Node) recalculateIPColocationPenalties() {
 		}
 		counts[peer.host]++
 	}
+
+	penalties := make(map[string]int, len(peers))
 	for _, peer := range peers {
-		n.scoring.ApplyIPColocationPenalty(peer.id, counts[peer.host])
+		penalties[peer.id] = counts[peer.host]
 	}
+	n.scoring.ApplyIPColocationPenalties(penalties)
 }
 
 func (n *Node) medianMeshScore(peers []string) float64 {
@@ -281,12 +339,9 @@ func (n *Node) medianMeshScore(peers []string) float64 {
 	return (scores[middle-1] + scores[middle]) / 2
 }
 
+// decodePeerID is the historical mesh-side name for the hex peer-key
+// decode; tests reference it directly, so it now delegates to the single
+// gossip-side implementation instead of keeping a second copy.
 func decodePeerID(peerID string) [32]byte {
-	var out [32]byte
-	raw, err := hex.DecodeString(peerID)
-	if err != nil {
-		return out
-	}
-	copy(out[:], raw)
-	return out
+	return gossip.DecodePeerKey(peerID)
 }

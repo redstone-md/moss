@@ -185,8 +185,14 @@ func (n *Node) handleDirectPacket(peer *peerConn, env gossip.Envelope) {
 	}
 	var sender [32]byte
 	copy(sender[:], env.SenderID)
+	// queueKey is the authenticated session identity (peer.id is the 64-char
+	// hex of the Noise static key bound at handshake, never attacker-chosen),
+	// while sender stays the envelope's CLAIMED key that SendToPeer's receive
+	// half reports to the app. Keying the per-sender delivery queue on the
+	// claim instead would let one peer mint up to MaxPeers queues and flood
+	// each — the queue bound must ride the connection, not the payload.
 	select {
-	case n.dispatchCh <- dispatchPacket{sender: sender, data: append([]byte(nil), env.Payload...)}:
+	case n.dispatchCh <- dispatchPacket{sender: sender, queueKey: decodePeerID(peer.id), data: append([]byte(nil), env.Payload...)}:
 	default:
 		n.countInbound("__packet_dispatch_dropped__")
 	}

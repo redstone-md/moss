@@ -404,24 +404,6 @@ func (n *Node) rememberSuppression(peerID string, ids []string, fallback string)
 	}
 }
 
-func (n *Node) isSuppressed(peerID, messageID string) bool {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	entry := n.suppress[peerID]
-	if entry == nil {
-		return false
-	}
-	ts, ok := entry[messageID]
-	if !ok {
-		return false
-	}
-	if time.Since(ts) > 2*time.Minute {
-		delete(entry, messageID)
-		return false
-	}
-	return true
-}
-
 func (n *Node) maintainTopicMesh(channel string) {
 	if !n.pubsub.IsLocalSubscriber(channel) {
 		return
@@ -617,59 +599,136 @@ func (n *Node) pruneTopicMeshExcess(channel string) {
 	}
 }
 
+// meshCandidateSnapshot is one graft candidate's batch-assessed state: the
+// n.mu-guarded fields eligibleForMeshCandidate reads (node_relay_selection.go),
+// captured together with the candidate's adjusted score. eligible() applies
+// the exact same predicate — score at or above baseline, connected, not
+// mesh-blocked, and (relayed OR responsive-and-low-latency) — so a snapshot
+// can be assessed without going back for either lock.
+type meshCandidateSnapshot struct {
+	id          string
+	score       float64
+	outbound    bool
+	alive       bool
+	blocked     bool
+	relayed     bool
+	highLatency bool
+	pingMiss    bool
+}
+
+func (c meshCandidateSnapshot) eligible() bool {
+	if !c.alive || c.blocked || c.score < gossip.BaselineThreshold {
+		return false
+	}
+	if c.relayed {
+		return true
+	}
+	return !c.highLatency && !c.pingMiss
+}
+
+// meshCandidateRanking assesses every graft candidate for channel in ONE
+// batch — a single pubsub read for the candidate list, a single n.mu read
+// for all candidate states, one scoring pass — and returns the eligible
+// candidates in graft preference order: outbound first, then adjusted score
+// descending, then id ascending.
+//
+// It replaces the per-candidate lock round-trips the heartbeat path used to
+// pay per selection pass: isOutboundPeer and eligibleForMeshCandidate each
+// took n.mu.RLock per candidate, and eligibleForMeshCandidate re-ran
+// peerScore per candidate on top of the score-hash loop — so one
+// maintainTopicMesh tick (min-fill plus opportunistic graft, each at up to
+// 4 ticks/s in chat clients) acquired n.mu hundreds to a thousand times and
+// evaluated peerScore two to five times per candidate.
+//
+// Scoring runs OUTSIDE n.mu (the invariant below: peerScore may invoke an
+// application scoring callback, and that callback must never stall the
+// envelope hot path's writers) and only for connected candidates: a
+// stranger's score never changes the outcome (an unconnected candidate is
+// ineligible regardless of score), and scoring a stranger is a live,
+// non-memoized callback evaluation per call — exactly the heartbeat
+// pressure this batch exists to remove.
+func (n *Node) meshCandidateRanking(channel string) []meshCandidateSnapshot {
+	ids := n.pubsub.NonMeshSubscribers(channel)
+	if len(ids) == 0 {
+		// Same fallback as before: connected peers not already in the mesh.
+		// The mesh membership is snapshotted in ONE pubsub read here; the
+		// old loop called n.pubsub.InMesh per peer — a nested pubsub-lock
+		// acquisition held under n.mu per candidate, once per fallback pass.
+		mesh := n.pubsub.MeshPeers(channel)
+		inMesh := make(map[string]struct{}, len(mesh))
+		for _, peerID := range mesh {
+			inMesh[peerID] = struct{}{}
+		}
+		n.mu.RLock()
+		ids = make([]string, 0, len(n.peers))
+		for peerID := range n.peers {
+			if _, taken := inMesh[peerID]; taken {
+				continue
+			}
+			ids = append(ids, peerID)
+		}
+		n.mu.RUnlock()
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	now := time.Now()
+	snap := make([]meshCandidateSnapshot, len(ids))
+	n.mu.RLock()
+	for i, peerID := range ids {
+		snap[i].id = peerID
+		peer := n.peers[peerID]
+		if peer == nil {
+			continue
+		}
+		snap[i].alive = true
+		snap[i].outbound = peer.outbound
+		snap[i].blocked = now.Before(peer.meshBlocked)
+		snap[i].relayed = peer.relayed
+		snap[i].highLatency = peer.lastRTT > peerLatencyPruneThreshold
+		snap[i].pingMiss = peer.pingMisses != 0
+	}
+	n.mu.RUnlock()
+	for i := range snap {
+		if snap[i].alive {
+			snap[i].score = n.peerScore(snap[i].id)
+		}
+	}
+	sort.Slice(snap, func(i, j int) bool {
+		if snap[i].outbound != snap[j].outbound {
+			return snap[i].outbound
+		}
+		if snap[i].score != snap[j].score {
+			return snap[i].score > snap[j].score
+		}
+		return snap[i].id < snap[j].id
+	})
+	// In-place filter (the write index never passes the read index).
+	ranked := snap[:0]
+	for _, c := range snap {
+		if c.eligible() {
+			ranked = append(ranked, c)
+		}
+	}
+	return ranked
+}
+
 func (n *Node) selectMeshCandidates(channel string, limit int) []string {
 	if limit <= 0 {
 		return nil
 	}
-	candidates := n.pubsub.NonMeshSubscribers(channel)
-	if len(candidates) == 0 {
-		n.mu.RLock()
-		candidates = make([]string, 0, len(n.peers))
-		for peerID := range n.peers {
-			if n.pubsub.InMesh(channel, peerID) {
-				continue
-			}
-			candidates = append(candidates, peerID)
-		}
-		n.mu.RUnlock()
-	}
-	if len(candidates) == 0 {
+	ranked := n.meshCandidateRanking(channel)
+	if len(ranked) == 0 {
 		return nil
 	}
-	// Hash-once for the comparator: isOutboundPeer took n.mu.RLock and
-	// peerScore took the scoring read lock on EVERY comparison —
-	// O(C log C) lock acquisitions per selection pass on the maintenance
-	// path.
-	scores := make(map[string]float64, len(candidates))
-	outbound := make(map[string]bool, len(candidates))
-	for _, peerID := range candidates {
-		scores[peerID] = n.peerScore(peerID)
-		outbound[peerID] = n.isOutboundPeer(peerID)
+	if len(ranked) > limit {
+		ranked = ranked[:limit]
 	}
-	sort.Slice(candidates, func(i, j int) bool {
-		outI := outbound[candidates[i]]
-		outJ := outbound[candidates[j]]
-		if outI != outJ {
-			return outI
-		}
-		scoreI := scores[candidates[i]]
-		scoreJ := scores[candidates[j]]
-		if scoreI == scoreJ {
-			return candidates[i] < candidates[j]
-		}
-		return scoreI > scoreJ
-	})
-	filtered := make([]string, 0, len(candidates))
-	for _, peerID := range candidates {
-		if !n.eligibleForMeshCandidate(peerID) {
-			continue
-		}
-		filtered = append(filtered, peerID)
-		if len(filtered) == limit {
-			break
-		}
+	selected := make([]string, 0, len(ranked))
+	for _, c := range ranked {
+		selected = append(selected, c.id)
 	}
-	return filtered
+	return selected
 }
 
 func (n *Node) opportunisticGraft(channel string) {
@@ -703,21 +762,26 @@ func (n *Node) selectHighScoringCandidates(channel string, limit int, threshold 
 	if limit <= 0 {
 		return nil
 	}
-	candidates := n.selectMeshCandidates(channel, n.config.MaxPeers)
-	filtered := make([]string, 0, len(candidates))
-	for _, peerID := range candidates {
-		if !n.eligibleForMeshCandidate(peerID) {
+	// Same batch as selectMeshCandidates, at the same cap: the old path
+	// re-ran eligibleForMeshCandidate (n.mu.RLock + a fresh peerScore) and
+	// peerScore again per candidate, on top of the selection pass that had
+	// just scored the same peers. The snapshot carries the score and the
+	// eligibility together, so the threshold filter costs no locks at all.
+	ranked := n.meshCandidateRanking(channel)
+	if len(ranked) > n.config.MaxPeers {
+		ranked = ranked[:n.config.MaxPeers]
+	}
+	selected := make([]string, 0, min(limit, len(ranked)))
+	for _, c := range ranked {
+		if c.score <= threshold {
 			continue
 		}
-		if n.peerScore(peerID) <= threshold {
-			continue
-		}
-		filtered = append(filtered, peerID)
-		if len(filtered) == limit {
+		selected = append(selected, c.id)
+		if len(selected) == limit {
 			break
 		}
 	}
-	return filtered
+	return selected
 }
 
 func (n *Node) countOutboundMesh(channel string) int {

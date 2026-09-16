@@ -107,6 +107,7 @@ func NewNodeWithIdentity(meshID string, psk []byte, cfg Config, identity *mcrypt
 		relayRoutes:      make(map[string]relayRoute),
 		relayLocals:      make(map[string]relayLocalSession),
 		relayBuckets:     make(map[string]*nat.TokenBucket),
+		relayConsumers:   make(map[string]*relayConsumer),
 		overlayStore:     overlay.NewStore(0, 0),
 		overlayPending:   make(map[string]chan gossip.Envelope),
 		overlayDiscovery: make(map[string]time.Time),
@@ -188,6 +189,12 @@ func (n *Node) Start() int32 {
 	n.localMu.Lock()
 	n.localQueues = nil
 	n.localMu.Unlock()
+	// Same reason for the directed (per-sender DM) queues: each is bound to a
+	// worker from the previous run whose rootCtx is cancelled, so reusing the
+	// map would enqueue payloads into channels nobody drains.
+	n.directedMu.Lock()
+	n.directedQueues = nil
+	n.directedMu.Unlock()
 	// ln is nil in UDP-only mode (TCP couldn't bind — e.g. under Wine/Proton).
 	// Fall back to the UDP listener's address for NAT profiling and port mapping.
 	listenAddrStr := udpListener.Addr().String()
@@ -314,6 +321,7 @@ func (n *Node) Stop() int32 {
 	n.relayRoutes = make(map[string]relayRoute)
 	n.relayLocals = make(map[string]relayLocalSession)
 	n.relayBuckets = make(map[string]*nat.TokenBucket)
+	n.relayConsumers = make(map[string]*relayConsumer)
 	n.suppress = make(map[string]map[string]time.Time)
 	n.mu.Unlock()
 	cancel()
@@ -334,12 +342,12 @@ func (n *Node) Stop() int32 {
 			peer.closeSession()
 		}
 	}
-	// Drain guard: the relay data path (node_relay_control.go) still sends
-	// on dispatchCh with a BLOCKING send, and dispatchLoop exits the moment
-	// the cancelled context wins its select. A worker parked on a full
-	// queue after that would hold wg.Wait here forever. Draining is
-	// bounded — the queue is 1024 deep — and ends as soon as every worker
-	// is done, so the goroutine lives only inside this Stop call.
+// Drain guard: every dispatchCh sender (relay data, events, relay API
+// packets) is now a non-blocking select/default — a parked worker was the
+// original hang risk, but a send that finds no receiver still occupies a
+// worker until the channel's buffer frees, and buffered items are exactly
+// what dispatchLoop stops consuming once the cancelled context wins its
+// select. Draining keeps wg.Wait bounded in that window regardless.
 	drainDone := make(chan struct{})
 	go func() {
 		for {
@@ -541,6 +549,24 @@ func (n *Node) Publish(channel string, data []byte) int32 {
 // PublishRoom publishes inside a named room; an empty room means this node's
 // own.
 func (n *Node) PublishRoom(meshID, channel string, data []byte) int32 {
+	return n.publishRoomTrace(meshID, channel, data, "")
+}
+
+// PublishTrace publishes like PublishRoom but stamps the message with an
+// end-to-end trace id: every node that forwards or delivers the message
+// appends its peer id to the hop list (capped at 16 hops), and the
+// delivering node emits a gossip.trace event on the debug plane so an
+// operator can answer "where did this message actually go?". The trace
+// rides the publish envelope as two optional fields — old peers ignore
+// them, and a publish without a trace id pays nothing.
+func (n *Node) PublishTrace(meshID, channel string, data []byte, traceID string) int32 {
+	if traceID == "" {
+		return n.PublishRoom(meshID, channel, data)
+	}
+	return n.publishRoomTrace(meshID, channel, data, traceID)
+}
+
+func (n *Node) publishRoomTrace(meshID, channel string, data []byte, traceID string) int32 {
 	if !validChannel(channel) {
 		return MOSS_ERR_INVALID_CHANNEL
 	}
@@ -567,6 +593,10 @@ func (n *Node) PublishRoom(meshID, channel string, data []byte) int32 {
 		return MOSS_ERR_NOT_IN_ROOM
 	}
 	env := n.makePublishEnvelope(topic, sealed)
+	env.TraceID = traceID
+	if traceID != "" {
+		env.TraceHops = []string{n.localPeerID()}
+	}
 	n.debugBus.Emit(func() inspect.Event {
 		return inspect.Event{
 			Kind:   inspect.KindPublish,

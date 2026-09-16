@@ -75,6 +75,7 @@ const (
 	// transport.datagram_drop's job at the packet level) but per-minute delta —
 	// a queue that is backing up, not a packet that was lost.
 	KindDropGrowth Kind = "node.drop_growth"
+	KindTrace      Kind = "gossip.trace"
 )
 
 // Event is one observation. Time is monotonic nanoseconds since the bus was

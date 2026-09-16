@@ -105,6 +105,23 @@ type Node struct {
 	relayRoutes  map[string]relayRoute
 	relayLocals  map[string]relayLocalSession
 	relayBuckets map[string]*nat.TokenBucket
+	// relayConsumers tracks each source peer's rolling per-minute byte total
+	// against NAT.RelayConsumerCapBytes — a volunteer's quota guard distinct
+	// from the instantaneous bucket. Keyed by the source peer id (same key as
+	// relayBuckets), torn down in removePeer and reset in Stop.
+	relayConsumers map[string]*relayConsumer
+	// relayRouteExpiry is the tombstone map for routes reaped by TTL GC:
+	// pruneStaleRelayRoutes records each reaped session so the first
+	// RelayData for it is answered with a RelayClose
+	// (replyRelayRouteExpired, one-shot) instead of silently dropped —
+	// without it an origin whose session idled out streams into a
+	// blackhole it cannot observe. Guarded by mu; lazily initialized
+	// (bare test Nodes never call the constructor); bounded by
+	// relayRouteExpiryCap; entries also cleared by handleRelayClose's
+	// explicit teardown. Not reset in Start: tombstones are one-shot,
+	// bounded, and session ids are never reused (crypto/rand), so stale
+	// entries across a restart are inert.
+	relayRouteExpiry map[string]time.Time
 
 	// overlayMu guards the overlay's own bookkeeping. It is deliberately NOT
 	// n.mu: routing discovery traffic through the node's central RWMutex meant
@@ -250,6 +267,27 @@ type Node struct {
 	// previous run's workers are gone with their rootCtx.
 	localMu     sync.Mutex
 	localQueues map[string]chan dispatchMessage
+	// directedMu guards directedQueues, the per-sender counterpart of
+	// localQueues for directed payloads (relayed DMs and TypeDirect packets).
+	//
+	// Delivery is a synchronous FFI callback: the single dispatchLoop used to
+	// invoke packetCB/relayCB inline, so one application that decrypted or wrote
+	// to disk slowly parked the only consumer. Once it was parked, every other
+	// peer's DMs piled up behind it in the shared dispatchCh until that filled,
+	// and the producers' non-blocking sends began dropping payloads from
+	// UNINVOLVED peers — cross-peer head-of-line loss, the directed twin of the
+	// per-channel fix that localQueues already made for pubsub. One queue and
+	// worker per sender keeps ordering within a sender's stream (a chunk
+	// transfer still can't reorder) while a slow sender now drops only its own
+	// traffic once its bounded queue fills. See node_dispatch_bootstrap.go.
+	//
+	// Lifetime mirrors localQueues: lazily created per sender, torn down when
+	// the worker exits (rootCtx cancel on Stop); Start resets the map wholesale.
+	// Bounded by config.MaxPeers so a hostile peer spraying distinct sender
+	// keys cannot grow it without limit — a new sender at the ceiling is
+	// dropped and counted, never spawned.
+	directedMu     sync.Mutex
+	directedQueues map[[32]byte]chan any
 }
 
 type peerConn struct {
@@ -311,9 +349,18 @@ type dispatchRelay struct {
 // dispatchPacket is one directed payload on its way to the application's
 // packet callback: the sender's public key and the raw bytes. It is the
 // unified shape for direct (TypeDirect) and relayed directed delivery.
+//
+// queueKey is the identity the DELIVERY QUEUE is keyed by, deliberately
+// separate from sender: on a direct session the claimed SenderID is whatever
+// the connected peer wrote into the envelope — unvalidated — so keying the
+// per-sender queues on it would let one peer mint up to MaxPeers queues and
+// flood each. queueKey is the authenticated session identity instead (peer.id
+// decoded). sender stays the claimed one because that is what SendToPeer's
+// receive half reports to the application.
 type dispatchPacket struct {
-	sender [32]byte
-	data   []byte
+	sender   [32]byte
+	queueKey [32]byte
+	data     []byte
 }
 
 // PacketCallback is the unified application sink for directed payloads —
@@ -330,6 +377,35 @@ type relayRoute struct {
 func (r relayRoute) allows(source, target string) bool {
 	return (r.initiator == source && r.target == target) ||
 		(r.initiator == target && r.target == source)
+}
+
+// relayConsumer is a per-source-peer rolling byte budget, the quota guard
+// behind NAT.RelayConsumerCapBytes. It uses two windows (current + previous)
+// so the estimate of "bytes in the last minute" never exceeds the true count
+// by more than one window's worth and never requires a sorted event log.
+// windowStart is the instant the current window opened; a packet whose clock
+// is older than a full window rolls the pair forward, discarding the oldest.
+type relayConsumer struct {
+	windowStart time.Time
+	prev        int64
+	cur         int64
+}
+
+// charge adds n bytes and reports the rolling per-minute total, advancing the
+// window first if now is past the current window's minute. Called under n.mu.
+func (c *relayConsumer) charge(now time.Time, n int64) int64 {
+	const window = time.Minute
+	for now.Sub(c.windowStart) >= window {
+		c.windowStart = c.windowStart.Add(window)
+		c.prev = c.cur
+		c.cur = 0
+	}
+	c.cur += n
+	// Weight the previous window by the fraction of the minute still covered,
+	// the standard sliding-counter estimate.
+	elapsed := now.Sub(c.windowStart)
+	weighted := c.prev * int64(window-elapsed) / int64(window)
+	return weighted + c.cur
 }
 
 type relayLocalSession struct {

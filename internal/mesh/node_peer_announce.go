@@ -293,6 +293,34 @@ func sameHostIP(a, b string) bool {
 	return ha == hb
 }
 
+// announceSelfToPeers is the accept path's own-identity fan-out, gated by the
+// same per-advertised-peer cooldown that caps every other re-flood: one
+// broadcast per announceForwardCooldown, whatever the join rate.
+//
+// The accept path used to broadcast our self-announce on EVERY
+// registerPeerFrom — one envelope per connected peer per join. On a
+// 100-peer simultaneous join that is N×(N-1) ≈ 9800 envelopes from one node
+// in one instant, each carrying state that had NOT changed (a real change
+// takes the refreshExternalAddress / refreshSupernodeStatus paths and
+// broadcasts immediately, gate or no gate), and each one burning the
+// RECIPIENT'S inbound announceBudget before dying at the meaningfulChange
+// gate — the flood's only product was drained budgets for the
+// announcements that mattered.
+//
+// The joiner itself is never the audience: it is excluded from the broadcast
+// and receives our self-announce as the first envelope of
+// sendKnownPeerSnapshot regardless. The audience is peers that already hold
+// our entry, so the cooldown costs them one redundant copy per 10s window —
+// the same trade every other announce dedup here makes. The local id is a
+// safe key for the shared table: handleKnownPeerEnvelope refuses
+// self-advertisements outright, so the forward gate never writes it.
+func (n *Node) announceSelfToPeers(excludePeerID string) {
+	if !n.shouldForwardAnnounce(n.localPeerID()) {
+		return
+	}
+	n.broadcastPeerAnnouncement(n.localKnownPeer(), excludePeerID)
+}
+
 // announceForwardCooldown bounds how often one peer's state may be re-flooded.
 const announceForwardCooldown = 10 * time.Second
 
