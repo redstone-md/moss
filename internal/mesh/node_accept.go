@@ -374,6 +374,16 @@ func (n *Node) connectPeerTCPWithHint(ctx context.Context, addr, peerID string) 
 }
 
 func (n *Node) connectPeerOnce(ctx context.Context, addr string, remoteStatic []byte) error {
+	// net.Dialer.DialContext panics on a nil context ("nil context") before
+	// it can refuse the call itself, so the dial path's contract — errors,
+	// never panics — is enforced once here rather than at each caller. All
+	// internal callers derive their context from the node's root context;
+	// this guards the boundary for callers that do not. Refuse rather than
+	// substitute: a silent context.Background() would mask the caller's bug
+	// and quietly drop whatever cancellation semantics it owed.
+	if ctx == nil {
+		return errors.New("mesh: peer dial requires a non-nil context")
+	}
 	// Bound to the same NIC as the UDP listener: an outbound dial left to the
 	// routing table leaves through the VPN, so the peer observes us at the
 	// tunnel's exit and echoes that back as our address — which is how one node

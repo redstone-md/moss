@@ -334,6 +334,14 @@ func (n *Node) connectBootstrapPeer(ctx context.Context, addr string) error {
 	if addr == "" {
 		return errors.New("peer address is required")
 	}
+	// The TCP and UDP halves below each derive from this context
+	// (context.WithCancel), and connectPeerOnce refuses a nil one before
+	// DialContext can panic on it. Refuse here for the same reason: the
+	// double dial is launched from goroutines whose errors come back through
+	// a channel, so a panic in either half would take the whole node down.
+	if ctx == nil {
+		return errors.New("mesh: bootstrap dial requires a non-nil context")
+	}
 	if n.udpListener == nil {
 		return n.connectPeer(ctx, addr)
 	}
