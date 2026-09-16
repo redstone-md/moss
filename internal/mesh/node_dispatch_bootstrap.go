@@ -15,6 +15,125 @@ import (
 	"github.com/redstone-md/moss/internal/nat"
 )
 
+// directedQueueDepth bounds one sender's in-flight directed payloads (relayed
+// DMs and TypeDirect packets). Sized like the per-peer dispatch queue (256)
+// rather than the per-channel pubsub queue (4096): a directed queue is already
+// single-sender, so it absorbs callback jitter, not fan-out.
+const directedQueueDepth = 256
+
+// deliverDirected hands one directed payload (dispatchRelay or dispatchPacket)
+// from the single dispatchLoop to the sender's own bounded queue instead of
+// invoking the application callback inline. It is the directed twin of the
+// per-channel localQueues split: the callback — a synchronous FFI call that may
+// decrypt or write to disk — then runs in a per-sender worker, so one
+// application parked on sender A no longer parks the only consumer and stops
+// draining dispatchCh, which is what used to make UNINVOLVED senders' DMs hit
+// the producers' non-blocking drop. The push here is non-blocking too: a sender
+// whose own queue is full drops only its traffic, never another's. Queues are
+// lazily created and bounded by MaxPeers, so a relay source spraying distinct
+// keys cannot grow the map past the peer ceiling.
+func (n *Node) deliverDirected(item any) {
+	var key [32]byte
+	var countDropped func()
+	switch v := item.(type) {
+	case dispatchRelay:
+		// The relay path already authenticated the source: the payload opened
+		// under the session's DM seal keyed to env.RelaySource, so this sender
+		// is route-authenticated and safe to key on directly.
+		key = v.sender
+		countDropped = func() { n.countInbound("__relay_dispatch_dropped__") }
+	case dispatchPacket:
+		// queueKey is the authenticated session identity; the claimed sender is
+		// unvalidated and must not grow the map. See dispatchPacket.
+		key = v.queueKey
+		countDropped = func() { n.countInbound("__packet_dispatch_dropped__") }
+	default:
+		return
+	}
+	n.directedMu.Lock()
+	if n.directedQueues == nil {
+		n.directedQueues = make(map[[32]byte]chan any)
+	}
+	queue, ok := n.directedQueues[key]
+	if !ok {
+		if len(n.directedQueues) >= n.config.MaxPeers {
+			n.directedMu.Unlock()
+			countDropped()
+			return
+		}
+		queue = make(chan any, directedQueueDepth)
+		n.directedQueues[key] = queue
+		n.wg.Add(1)
+		go n.directedWorker(key, queue)
+	}
+	select {
+	case queue <- item:
+		n.directedMu.Unlock()
+	default:
+		n.directedMu.Unlock()
+		countDropped()
+	}
+}
+
+// directedWorker drains one sender's directed payloads in order, invoking the
+// unified packet callback when registered and the legacy relay callback
+// otherwise — the same precedence the single dispatchLoop applied, now scoped
+// to this sender so its slow consumer cannot touch any other's. Exits on
+// rootCtx cancellation; deregisters its map entry on the way out so a
+// reconnecting sender re-arms a fresh queue+worker.
+func (n *Node) directedWorker(sender [32]byte, queue chan any) {
+	defer n.wg.Done()
+	defer func() {
+		n.directedMu.Lock()
+		if n.directedQueues[sender] == queue {
+			delete(n.directedQueues, sender)
+		}
+		n.directedMu.Unlock()
+	}()
+	for {
+		n.mu.RLock()
+		root := n.rootCtx
+		n.mu.RUnlock()
+		var done <-chan struct{}
+		if root != nil {
+			done = root.Done()
+		}
+		select {
+		case <-done:
+			return
+		case item := <-queue:
+			n.deliverDirectedItem(item)
+		}
+	}
+}
+
+// deliverDirectedItem invokes the right application sink for one directed
+// payload: the packet callback for both relayed and direct bytes when set, the
+// legacy relay callback only for a relayed payload otherwise. Shared by the
+// per-sender worker and the single dispatchLoop so the precedence stays in one
+// place.
+func (n *Node) deliverDirectedItem(item any) {
+	switch v := item.(type) {
+	case dispatchRelay:
+		n.mu.RLock()
+		cb := n.relayCB
+		packet := n.packetCB
+		n.mu.RUnlock()
+		if packet != nil {
+			packet(v.sender, v.data)
+		} else if cb != nil {
+			cb(v.sender, v.data)
+		}
+	case dispatchPacket:
+		n.mu.RLock()
+		packet := n.packetCB
+		n.mu.RUnlock()
+		if packet != nil {
+			packet(v.sender, v.data)
+		}
+	}
+}
+
 func (n *Node) dispatchLoop(ctx context.Context) {
 	defer n.wg.Done()
 	for {
@@ -37,27 +156,12 @@ func (n *Node) dispatchLoop(ctx context.Context) {
 				if cb != nil {
 					cb(v.eventType, v.detail)
 				}
-			case dispatchRelay:
-				n.mu.RLock()
-				cb := n.relayCB
-				packet := n.packetCB
-				n.mu.RUnlock()
-				// The unified packet sink takes precedence when
-				// registered: an application that asked for one
-				// directed-payload stream must not ALSO see the same
-				// bytes twice through the legacy relay callback.
-				if packet != nil {
-					packet(v.sender, v.data)
-				} else if cb != nil {
-					cb(v.sender, v.data)
-				}
-			case dispatchPacket:
-				n.mu.RLock()
-				packet := n.packetCB
-				n.mu.RUnlock()
-				if packet != nil {
-					packet(v.sender, v.data)
-				}
+			case dispatchRelay, dispatchPacket:
+				// Shunt to the sender's worker rather than invoking the
+				// callback here: the single dispatchLoop must never park on
+				// one slow sender, or every other sender's DMs drop behind it
+				// once dispatchCh fills. v is unused in this arm by design.
+				n.deliverDirected(item)
 			}
 		}
 	}

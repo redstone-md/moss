@@ -4,10 +4,122 @@ import (
 	"crypto/subtle"
 	"errors"
 	"net"
+	"sync/atomic"
 	"time"
 
 	"github.com/flynn/noise"
 )
+// packetWorkers bounds the pool that off-loads per-datagram work from the
+// read loop. Fixed at 6: enough to spread distinct peers (hash-by-remote)
+// while each remote stays pinned to one worker (preserving handshake init→
+// resp→done ordering). Each worker has its own queue so a task keeps one
+// peer's ordering.
+const packetWorkers = 6
+
+// packetQueueDepth bounds each worker's inbox. When a worker is saturated the
+// read loop runs the datagram inline instead of dropping it.
+const packetQueueDepth = 256
+
+// udpPacketTask is one datagram handed to a pool worker — the raw wire bytes
+// straight from ReadFromUDP. The worker does STUN filtering, AEAD Open, and
+// the kind-specific handler.
+type udpPacketTask struct {
+	remote *net.UDPAddr
+	wire   []byte
+}
+
+// packetQueueDrops counts dispatches that found their worker saturated and fell
+// back to inline handling on the read loop.
+var packetQueueDrops atomic.Uint64
+
+// HandshakeQueueRetries is the legacy query name for packetQueueDrops (the pool
+// now handles every kind, but nonzero still means "the pool is a bottleneck").
+func HandshakeQueueRetries() uint64 { return packetQueueDrops.Load() }
+
+// PacketQueueDrops reports the same counter under its new name.
+func PacketQueueDrops() uint64 { return packetQueueDrops.Load() }
+
+// startPacketWorkers builds the pool. Called once from ListenUDP before the
+// read loop begins; workers run until Close closes l.closed.
+func (l *UDPListener) startPacketWorkers() {
+	l.packetWork = make([]chan *udpPacketTask, packetWorkers)
+	for i := range l.packetWork {
+		q := make(chan *udpPacketTask, packetQueueDepth)
+		l.packetWork[i] = q
+		go l.packetWorker(q)
+	}
+}
+
+// packetWorker drains one pool queue until the listener closes.
+func (l *UDPListener) packetWorker(q chan *udpPacketTask) {
+	for {
+		select {
+		case <-l.closed:
+			return
+		case task := <-q:
+			l.handlePacket(task.remote, task.wire)
+		}
+	}
+}
+
+// handlePacket runs the full per-datagram path for one wire packet: STUN
+// filtering, AEAD open, and the kind-specific handler. Shared by pool workers
+// and the read-loop inline fallback so the work is identical on both paths.
+func (l *UDPListener) handlePacket(remote *net.UDPAddr, wire []byte) {
+	if l.handleSTUNResponse(wire) {
+		return
+	}
+	kind, payload, ok := l.codec.Open(wire)
+	if !ok {
+		return
+	}
+	switch kind {
+	case udpMessageHandshakeInit:
+		l.handleHandshakeInit(remote, payload)
+	case udpMessageHandshakeResp:
+		l.handleHandshakeResp(remote, payload)
+	case udpMessageHandshakeDone:
+		l.handleHandshakeDone(remote, payload)
+	case udpMessageData:
+		l.handleData(remote, payload)
+	case udpMessageObserveReq:
+		l.handleObserveReq(remote, payload)
+	case udpMessageObserveResp:
+		l.handleObserveResp(payload)
+	}
+}
+
+// dispatchPacket pins a datagram to a worker by hashing the remote address, so
+// every datagram from one peer — its handshakes and its data — runs on the
+// same goroutine and keeps ordering, while distinct peers parallelize. Returns
+// false when there is no pool or the worker is saturated; the caller then runs
+// it inline, degrading to the old serialized path rather than dropping.
+func (l *UDPListener) dispatchPacket(remote *net.UDPAddr, wire []byte) bool {
+	if len(l.packetWork) == 0 {
+		return false
+	}
+	idx := hashRemote(remote.String()) % uint64(len(l.packetWork))
+	task := &udpPacketTask{remote: remote, wire: append([]byte(nil), wire...)}
+	select {
+	case l.packetWork[idx] <- task:
+		return true
+	default:
+		packetQueueDrops.Add(1)
+		return false
+	}
+}
+
+// hashRemote folds an address string into a small uint with FNV-1a; stable
+// across the process so a peer's datagrams always land on one worker.
+func hashRemote(s string) uint64 {
+	const offset, prime = 14695981039346656037, 1099511628211
+	var h uint64 = offset
+	for i := 0; i < len(s); i++ {
+		h ^= uint64(s[i])
+		h *= prime
+	}
+	return h
+}
 
 func (l *UDPListener) readLoop() {
 	buf := make([]byte, 64*1024)
@@ -19,27 +131,17 @@ func (l *UDPListener) readLoop() {
 		if n < 1 {
 			continue
 		}
+		// The read loop now does nothing but pull datagrams off the socket and
+		// hand them to a pool worker keyed by remote. STUN filtering, AEAD
+		// open, and the kind handler all run on the worker, so a 100-peer
+		// dial wave parallelizes its DH+verify across workers instead of
+		// serializing behind one goroutine and starving the data path.
 		packet := append([]byte(nil), buf[:n]...)
-		if l.handleSTUNResponse(packet) {
-			continue
-		}
-		kind, payload, ok := l.codec.Open(packet)
-		if !ok {
-			continue
-		}
-		switch kind {
-		case udpMessageHandshakeInit:
-			l.handleHandshakeInit(remote, payload)
-		case udpMessageHandshakeResp:
-			l.handleHandshakeResp(remote, payload)
-		case udpMessageHandshakeDone:
-			l.handleHandshakeDone(remote, payload)
-		case udpMessageData:
-			l.handleData(remote, payload)
-		case udpMessageObserveReq:
-			l.handleObserveReq(remote, payload)
-		case udpMessageObserveResp:
-			l.handleObserveResp(payload)
+		if !l.dispatchPacket(remote, packet) {
+			// Pool absent or this worker is saturated: handle inline against
+			// the private copy (degrades to the old serialized path; never
+			// drops a datagram).
+			l.handlePacket(remote, packet)
 		}
 	}
 }
@@ -64,7 +166,6 @@ func (l *UDPListener) handleHandshakeInit(remote *net.UDPAddr, payload []byte) {
 	switch mode {
 	case HandshakeModeXX:
 		now := time.Now()
-		l.prunePendingServerHandshakes(now)
 		if _, _, _, err := hs.ReadMessage(nil, body); err != nil {
 			return
 		}
@@ -74,8 +175,15 @@ func (l *UDPListener) handleHandshakeInit(remote *net.UDPAddr, payload []byte) {
 		}
 		l.mu.Lock()
 		if _, exists := l.servers[key]; !exists && len(l.servers) >= maxPendingUDPServerHandshakes {
-			l.mu.Unlock()
-			return
+			// Out of room only now that we know this is a NEW peer: reap
+			// expired handshakes before refusing. The scan is O(pending), so
+			// it stays off the common path (a below-cap init, or a retry from
+			// an already-tracked peer, never touches it).
+			l.prunePendingServerHandshakesLocked(now)
+			if len(l.servers) >= maxPendingUDPServerHandshakes {
+				l.mu.Unlock()
+				return
+			}
 		}
 		l.servers[key] = &udpServerHandshake{hs: hs, mode: mode, createdAt: now}
 		l.mu.Unlock()
@@ -105,11 +213,15 @@ func (l *UDPListener) handleHandshakeInit(remote *net.UDPAddr, payload []byte) {
 			return
 		}
 		now := time.Now()
-		l.prunePendingServerHandshakes(now)
 		l.mu.Lock()
 		if _, exists := l.servers[key]; !exists && len(l.servers) >= maxPendingUDPServerHandshakes {
-			l.mu.Unlock()
-			return
+			// Same conditional reap as the XX path: only pay the O(pending)
+			// scan when a new peer actually finds the table full.
+			l.prunePendingServerHandshakesLocked(now)
+			if len(l.servers) >= maxPendingUDPServerHandshakes {
+				l.mu.Unlock()
+				return
+			}
 		}
 		l.servers[key] = &udpServerHandshake{
 			hs:        hs,
@@ -126,9 +238,13 @@ func (l *UDPListener) handleHandshakeInit(remote *net.UDPAddr, payload []byte) {
 	}
 }
 
-func (l *UDPListener) prunePendingServerHandshakes(now time.Time) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+// prunePendingServerHandshakesLocked drops expired pending server handshakes.
+// l.mu must be held by the caller. It is reached only when a new peer finds
+// the pending table full, so the O(pending) scan stays off the common
+// below-cap init path — previously it ran on every handshake init, and even on
+// a retry from an already-tracked peer, where it pointlessly reaped other
+// peers' live entries.
+func (l *UDPListener) prunePendingServerHandshakesLocked(now time.Time) {
 	for key, pending := range l.servers {
 		if now.Sub(pending.createdAt) > pendingUDPServerHandshakeTTL {
 			delete(l.servers, key)

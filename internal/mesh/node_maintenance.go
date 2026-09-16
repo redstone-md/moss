@@ -44,6 +44,7 @@ func (n *Node) removePeer(peerID string, session *transport.Session) {
 	delete(n.peers, peerID)
 	delete(n.suppress, peerID)
 	delete(n.relayBuckets, peerID)
+	delete(n.relayConsumers, peerID)
 	delete(n.directProbes, peerID)
 	// A session that died on missed pings is a FAILED path, whatever the dial
 	// thought.
@@ -237,10 +238,101 @@ func (n *Node) collectPingTargetsLocked(now time.Time) []pingTarget {
 	return targets
 }
 
-// sendPingTargets writes the queued pings outside n.mu and clears pingPending
-// on peers whose write failed, so a ping that never left the node is retried
-// by the next pass instead of aging into a phantom miss.
+// pingSendWorkers bounds the goroutines (and in-flight probe writes) one
+// maintenance pass may use. Probe writes serialize per session on the
+// session's write mutex, so workers contend only on the target channel; the
+// bound exists so a pass over a large mesh cannot fan out one goroutine per
+// peer. Stalled sessions, not the worker count, are the limiting factor: a
+// stalled WritePacket holds its worker for the full stream write timeout,
+// and 16 simultaneous stalled writes is far past a mesh that is still
+// making progress.
+const pingSendWorkers = 16
+
+// sendPingTargets writes the queued pings. On a running node the writes go to
+// a bounded worker pool so the maintenance loop is never the thing a stalled
+// peer blocks: every WritePacket on a stream session can stall for the full
+// stream write timeout on the session's write mutex, and the old serial loop
+// chained those stalls — one stalled peer delayed every peer after it in the
+// pass, while all their pings had already been timestamped at collect time,
+// so the prune scan read the accumulated delay as expiry and healthy peers
+// collected one phantom miss per pass until the six-miss limit disconnected
+// them. With per-target workers the stalled peer stalls only itself; a write
+// that fails outright still clears the peer's pending ping (clearFailedPings)
+// so the next pass re-probes instead of aging into a miss. On a node that
+// never started — unit tests drive the probe functions directly — or one
+// that is stopping, the writes stay synchronous so the observable behavior
+// of an unstarted node is unchanged.
 func (n *Node) sendPingTargets(targets []pingTarget) {
+	if len(targets) == 0 {
+		return
+	}
+	// One RLock section covers the started-check AND the worker spawn: Stop
+	// flips `started` and swaps the peer table under the WRITE lock before it
+	// cancels and waits, so a worker registered here is n.wg-counted before
+	// wg.Wait can run — wg.Add can never race Stop's Wait — and a node that
+	// already stopped takes the synchronous path instead. The same contract
+	// sendOrEnqueueWire documents.
+	n.mu.RLock()
+	ctx, started := n.rootCtx, n.started
+	if !started || ctx == nil || ctx.Err() != nil {
+		n.mu.RUnlock()
+		n.sendPingTargetsSync(targets)
+		return
+	}
+	workers := min(len(targets), pingSendWorkers)
+	queue := make(chan pingTarget, len(targets))
+	for _, target := range targets {
+		queue <- target
+	}
+	close(queue)
+	for range workers {
+		n.wg.Add(1)
+		go n.pingSendWorker(ctx, queue)
+	}
+	n.mu.RUnlock()
+}
+
+// pingSendWorker drains the pass's target queue until it is empty or the node
+// stops, collecting writes that failed so their peers' probes can be
+// disarmed. wg-tracked and ctx-bounded: Stop's wg.Wait collects it, and a
+// worker caught mid-write finishes that one write attempt (bounded by the
+// stream write timeout) before observing ctx and exiting — no leak, and no
+// Stop wait beyond what the existing outbound workers already cost.
+// On cancel the queue is drained and its never-written targets disarmed:
+// abandoning them armed would be the phantom-miss bug again, one pass later.
+func (n *Node) pingSendWorker(ctx context.Context, queue <-chan pingTarget) {
+	defer n.wg.Done()
+	var failed []pingTarget
+	defer func() { n.clearFailedPings(failed) }()
+	for {
+		select {
+		case <-ctx.Done():
+			for {
+				select {
+				case target, ok := <-queue:
+					if !ok {
+						return
+					}
+					failed = append(failed, target)
+				default:
+					return
+				}
+			}
+		case target, ok := <-queue:
+			if !ok {
+				return
+			}
+			if n.sendEnvelope(target.peer, gossip.Envelope{Type: gossip.TypePing, RequestID: target.requestID}) {
+				continue
+			}
+			failed = append(failed, target)
+		}
+	}
+}
+
+// sendPingTargetsSync is the synchronous send path for unstarted or stopping
+// nodes: serial, blocking, with the same failed-write accounting as the pool.
+func (n *Node) sendPingTargetsSync(targets []pingTarget) {
 	failed := make([]pingTarget, 0, len(targets))
 	for _, target := range targets {
 		if n.sendEnvelope(target.peer, gossip.Envelope{Type: gossip.TypePing, RequestID: target.requestID}) {
@@ -248,6 +340,13 @@ func (n *Node) sendPingTargets(targets []pingTarget) {
 		}
 		failed = append(failed, target)
 	}
+	n.clearFailedPings(failed)
+}
+
+// clearFailedPings disarms probes whose envelope never left the node, so the
+// next pass re-probes the peer instead of the failed ping aging into a
+// phantom miss. Caller must not hold n.mu.
+func (n *Node) clearFailedPings(failed []pingTarget) {
 	if len(failed) == 0 {
 		return
 	}
@@ -325,7 +424,10 @@ func (n *Node) pruneHighLatencyPeers() {
 // connTickProbeAndPrune is the maintenance loop's per-second pass: the probe
 // and prune scans share one n.mu acquisition instead of two back-to-back
 // lock cycles, with the envelope sends and mesh mutations after the unlock —
-// the same ordering the standalone functions use.
+// the same ordering the standalone functions use. The sends dispatch to the
+// bounded ping pool rather than blocking the tick: a stalled peer's
+// WritePacket can hold its slot for the full stream write timeout, and this
+// pass is on the maintenance loop's critical path.
 func (n *Node) connTickProbeAndPrune(now time.Time) {
 	n.mu.Lock()
 	targets := n.collectPingTargetsLocked(now)

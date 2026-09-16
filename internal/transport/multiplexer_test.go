@@ -118,6 +118,11 @@ func TestMalformedFrameIsIgnoredBeforeNextValidPacket(t *testing.T) {
 func TestInboundStreamCreationIsCapped(t *testing.T) {
 	_, receiver, _, _ := newStubSessionPair(t)
 
+	// The cap drop is otherwise invisible: readLoop discards the packet with
+	// no buffer to count it in. Assert it is charged once per rejection —
+	// measured as a delta because the counter is process-wide.
+	before := StreamCapDrops()
+	rejected := 0
 	for id := StreamID(2); id <= StreamID(maxInboundStreams+100); id++ {
 		stream := receiver.mux.inboundStream(id)
 		if id <= StreamID(maxInboundStreams) && stream == nil {
@@ -126,6 +131,9 @@ func TestInboundStreamCreationIsCapped(t *testing.T) {
 		if id > StreamID(maxInboundStreams) && stream != nil {
 			t.Fatalf("expected stream %d to be rejected after cap", id)
 		}
+		if stream == nil {
+			rejected++
+		}
 
 		receiver.mux.mu.RLock()
 		streamCount := len(receiver.mux.streams)
@@ -133,6 +141,9 @@ func TestInboundStreamCreationIsCapped(t *testing.T) {
 		if streamCount > maxInboundStreams {
 			t.Fatalf("expected at most %d inbound streams, got %d", maxInboundStreams, streamCount)
 		}
+	}
+	if got := StreamCapDrops() - before; got != uint64(rejected) {
+		t.Fatalf("expected %d cap drops counted, got %d", rejected, got)
 	}
 }
 

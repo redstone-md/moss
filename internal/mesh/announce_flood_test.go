@@ -76,3 +76,48 @@ func TestAnnounceForwardingRejectsAnEmptyPeer(t *testing.T) {
 		t.Fatal("an announcement for no peer was forwarded")
 	}
 }
+
+// The accept path must not turn a join wave into a self-announce storm.
+// registerPeerFrom used to broadcast our identity to every connected peer on
+// EVERY accept: 100 simultaneous joins on a 100-peer mesh was N×(N-1) ≈ 9800
+// envelopes in one instant, all carrying unchanged state, each burning the
+// recipients' inbound announceBudget before dying at the meaningfulChange
+// gate. The joiner itself never needed the broadcast — it is excluded and
+// gets our self-announce as the first envelope of its snapshot. The gate is
+// the same per-advertised-peer cooldown that caps every other re-flood.
+func TestAnnounceSelfToPeersIsCappedPerCooldown(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Trackers = nil
+	node, err := NewNode("mesh-announce-join-storm", nil, cfg)
+	if err != nil {
+		t.Fatalf("NewNode: %v", err)
+	}
+
+	watcher := newRecordedSession(t)
+	node.mu.Lock()
+	// The watcher must pass the baseline filter broadcastToAll applies;
+	// a fresh peerConn has score 0 which is exactly BaselineThreshold.
+	node.peers["watcher"] = &peerConn{id: "watcher", session: watcher.session}
+	node.mu.Unlock()
+
+	// 100 sequential joins — the storm, without the handshakes.
+	for range 100 {
+		node.announceSelfToPeers("joiner")
+	}
+
+	if got := watcher.writeCount(); got != 1 {
+		t.Fatalf("expected the watcher to receive exactly one self-announce across "+
+			"100 joins (cooldown-capped fan-out), got %d: the accept path is an "+
+			"O(N^2) storm again", got)
+	}
+
+	// The cap must lift once the cooldown passes: a peer that genuinely
+	// changes state (or the next window) still gets its broadcast.
+	node.mu.Lock()
+	node.announceForwards[node.localPeerID()] = time.Now().Add(-announceForwardCooldown - time.Second)
+	node.mu.Unlock()
+	node.announceSelfToPeers("joiner")
+	if got := watcher.writeCount(); got != 2 {
+		t.Fatalf("expected a post-cooldown join to broadcast again, got %d packets total", got)
+	}
+}

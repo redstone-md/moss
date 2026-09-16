@@ -1,6 +1,7 @@
 package gossip
 
 import (
+	"container/list"
 	"sync"
 	"time"
 )
@@ -28,8 +29,16 @@ type Cache struct {
 	// maxCachedEnvelopes by FIFO eviction; entries share the main entry's
 	// TTL and die with it.
 	envStore map[string]Envelope
-	// envOrder is the FIFO of envStore ids, oldest first.
-	envOrder []string
+	// envOrder is the FIFO of envStore ids, oldest first, as a linked
+	// list so the front is the oldest live payload and the pop is O(1).
+	envOrder *list.List
+	// envIndex maps message id → its envOrder node, keeping removal O(1).
+	// A plain slice forced removeLocked to scan up to maxCachedEnvelopes
+	// ids on EVERY removal — and every insert past the cap evicts one, so
+	// a publish burst paid thousands of full-queue scans. Invariant: a
+	// node exists for exactly the ids in envStore (appended together in
+	// Store/StoreIfNew, unlinked together in removeLocked).
+	envIndex map[string]*list.Element
 	// channels maps channel → ring of ids ordered oldest → newest by
 	// SeenAt, so RecentIDs is a bounded tail read instead of a full-cache
 	// scan + sort on every heartbeat. Invariant: ring ids strictly
@@ -103,6 +112,8 @@ func NewCache(ttl time.Duration) *Cache {
 		ttl:       ttl,
 		items:     make(map[string]CacheEntry),
 		envStore:  make(map[string]Envelope),
+		envOrder:  list.New(),
+		envIndex:  make(map[string]*list.Element),
 		channels:  make(map[string][]string),
 		ringIndex: make(map[string]int),
 	}
@@ -154,7 +165,7 @@ func (c *Cache) Store(env Envelope) {
 	}
 	c.pushBucketLocked(env.MessageID)
 	c.envStore[env.MessageID] = env
-	c.envOrder = append(c.envOrder, env.MessageID)
+	c.envIndex[env.MessageID] = c.envOrder.PushBack(env.MessageID)
 	c.appendRingLocked(env.Channel, env.MessageID)
 	c.evictEnvelopesLocked()
 	c.evictEntriesLocked()
@@ -179,7 +190,7 @@ func (c *Cache) StoreIfNew(env Envelope) bool {
 	}
 	c.pushBucketLocked(env.MessageID)
 	c.envStore[env.MessageID] = env
-	c.envOrder = append(c.envOrder, env.MessageID)
+	c.envIndex[env.MessageID] = c.envOrder.PushBack(env.MessageID)
 	c.appendRingLocked(env.Channel, env.MessageID)
 	c.evictEnvelopesLocked()
 	c.evictEntriesLocked()
@@ -332,11 +343,9 @@ func (c *Cache) removeLocked(id string) {
 	}
 	delete(c.items, id)
 	delete(c.envStore, id)
-	for i, eid := range c.envOrder {
-		if eid == id {
-			c.envOrder = append(c.envOrder[:i], c.envOrder[i+1:]...)
-			break
-		}
+	if e, ok := c.envIndex[id]; ok {
+		c.envOrder.Remove(e)
+		delete(c.envIndex, id)
 	}
 	ring := c.channels[entry.Channel]
 	pos, indexed := c.ringIndex[id]
@@ -383,11 +392,15 @@ func (c *Cache) appendRingLocked(channel, id string) {
 // evictEnvelopesLocked bounds envStore to maxCachedEnvelopes by evicting the
 // oldest inserts. The FIFO envOrder is the truth; envStore never gains an
 // entry without a matching append, so the front of envOrder is always the
-// oldest live payload.
+// oldest live payload. The pop and the removeLocked it triggers are both
+// O(1) via envIndex — the old slice design walked the whole queue (up to
+// maxCachedEnvelopes ids) per eviction, on every insert past the cap.
 func (c *Cache) evictEnvelopesLocked() {
-	for len(c.envStore) > maxCachedEnvelopes && len(c.envOrder) > 0 {
-		oldest := c.envOrder[0]
-		c.envOrder = c.envOrder[1:]
-		c.removeLocked(oldest)
+	for len(c.envStore) > maxCachedEnvelopes && c.envOrder.Len() > 0 {
+		front := c.envOrder.Front()
+		id := front.Value.(string)
+		c.envOrder.Remove(front)
+		delete(c.envIndex, id)
+		c.removeLocked(id)
 	}
 }

@@ -15,18 +15,27 @@ import (
 // never the read loop, the maintenance pass, or the publish call that
 // happened to target it.
 //
-// 32, not 256: the queue's job is to absorb a BURST, not to buffer a
-// backlog — the worker drains at wire speed, and the deepest real burst is
-// the join-time peer-exchange fan-out (one self-announce plus up to
-// snapshotCatalogCap catalog entries), ~25 envelopes. Everything past that
-// is a peer slower than the mesh feeds it, and gossip is re-announced on
-// later heartbeats anyway — a counted drop (outboundDropped) is the honest
-// signal there. The memory math is the other half: the channel buffer is
-// allocated eagerly with the queue (488B per slot × depth) for EVERY
-// connected peer for the node's whole life, so 256 was ~122KB of resident
-// heap per peer — 40MB on the 200-peer memory gate vs ~15KB at 32 — while
-// measured occupancy never left single digits.
-const outboundQueueDepth = 32
+// The depth is tied, not freehand: the deepest burst ONE call may pour is
+// the IWANT serve cap — maxIWantServesPerReq envelopes out of a single
+// handleIWant — so the queue must hold at least that many, or every full
+// serve turns deterministic drops (a 64-id IWANT into a 32-slot queue lost
+// its back half no matter how healthy the peer was). At the cap an empty
+// queue absorbs any one call whole; a queue that arrived pre-occupied —
+// heartbeat broadcasts ahead of the IWANT — refuses mid-serve, and
+// handleIWant answers that with a bounded deferral, not a loss. The
+// join-time peer-exchange fan-out (~25 envelopes: one self-announce plus
+// up to snapshotCatalogCap catalog entries) fits with room to spare.
+//
+// The memory math is the other half: the channel buffer is allocated
+// eagerly with the queue (488B per slot × depth) for EVERY connected peer
+// for the node's whole life. At today's cap of 64 that is ~31KB resident
+// per peer — ~3MB on a 100-peer node, ~6MB on the 200-peer memory gate,
+// against ~15KB per peer at the old 32 — while the rejected 256 was
+// ~122KB per peer, 40MB on the same gate. Everything past a burst is a
+// peer slower than the mesh feeds it, gossip is re-announced on later
+// heartbeats anyway, and a counted drop (outboundDropped) is the honest
+// signal there.
+const outboundQueueDepth = maxIWantServesPerReq
 
 // outboundEnvelope is one queued send: the envelope plus its marshaled wire
 // bytes. Carrying the wire form through the queue is what makes a broadcast
@@ -204,6 +213,11 @@ func (n *Node) handleIWant(peer *peerConn, env gossip.Envelope) {
 			break
 		}
 	}
+	// The suppression check is batched under this same lock instead of the
+	// old per-id isSuppressed — a write-lock per id, up to 64 per IWANT — so
+	// the whole serve pass costs this one lock, plus the rollback lock only
+	// if the enqueue refuses mid-serve.
+	suppressed := n.suppressedIDsLocked(peer.id, fresh, now)
 	n.mu.Unlock()
 	if len(fresh) == 0 {
 		if throttled > 0 {
@@ -211,8 +225,20 @@ func (n *Node) handleIWant(peer *peerConn, env gossip.Envelope) {
 		}
 		return
 	}
-	for _, id := range fresh {
-		if n.isSuppressed(peer.id, id) {
+	// Serve the fresh ids, but never pour into a full queue: at the first
+	// refusal the rest of the ask is DEFERRED, not lost. The depth is the
+	// serve cap (outboundQueueDepth == maxIWantServesPerReq), so an empty
+	// queue absorbs any one serve whole — a refusal means the peer's queue
+	// is occupied by other traffic (a heartbeat broadcast landed ahead of
+	// the IWANT), and hammering it id by id would only mint one drop per
+	// remaining envelope, each with its own write-lock rollback. The bail
+	// makes the deferral one bounded, visible event instead, and the
+	// markers rolled back below are what heal it: with none of the rolled
+	// back ids standing, the asker's next IWANT re-serves every deferred
+	// id from scratch — same cooldown, same caps, no permanently lost
+	// view.
+	for i, id := range fresh {
+		if suppressed[i] {
 			continue
 		}
 		cached, ok := n.cache.Get(id)
@@ -229,15 +255,56 @@ func (n *Node) handleIWant(peer *peerConn, env gossip.Envelope) {
 		// marker claiming it did would suppress the retry for the whole
 		// serve cooldown while the asker still does not have the payload.
 		// This is the mirror of the ask-side rollback in handleIHave — the
-		// cooldown may only stand for envelopes that actually left.
+		// cooldown may only stand for envelopes that actually left — and it
+		// covers the refused id AND the unserved remainder in one batch:
+		// the markers rolled back here are exactly the heal path.
+		n.countInbound("__iwant_deferred__")
 		n.mu.Lock()
 		if served = n.iwantServes[peer.id]; served != nil {
-			if last, ok := served[id]; ok && last.Equal(now) {
-				delete(served, id)
+			for _, deferredID := range fresh[i:] {
+				if last, ok := served[deferredID]; ok && last.Equal(now) {
+					delete(served, deferredID)
+				}
 			}
 		}
 		n.mu.Unlock()
+		break
 	}
+}
+
+// suppressionExpiryTTL is how long one IDontWant stands: the peer that sent
+// it is not served that id for this window, and an older claim expires
+// instead of pinning its slot in the per-peer suppression cap.
+const suppressionExpiryTTL = 2 * time.Minute
+
+// suppressedIDsLocked answers, for one IWANT's fresh ids, which ones the
+// asker has told us not to send (IDontWant) — a parallel slice: ids[i] is
+// suppressed iff suppressed[i], so the serve loop keeps its order and the
+// mid-serve rollback covers exactly the ids it always did. The batch runs
+// under the serve pass's existing write lock: the check is two map lookups
+// per id, and asking it per id under the loop cost a write-lock each — up
+// to 64 per IWANT where this costs the one lock the pass already holds.
+// Expired entries are reaped on read exactly as the old per-id check reaped
+// them, so a suppression that aged out frees its slot for fresh ones.
+// Callers hold n.mu.
+func (n *Node) suppressedIDsLocked(peerID string, ids []string, now time.Time) []bool {
+	suppressed := make([]bool, len(ids))
+	entry := n.suppress[peerID]
+	if entry == nil {
+		return suppressed
+	}
+	for i, id := range ids {
+		ts, ok := entry[id]
+		if !ok {
+			continue
+		}
+		if now.Sub(ts) > suppressionExpiryTTL {
+			delete(entry, id)
+			continue
+		}
+		suppressed[i] = true
+	}
+	return suppressed
 }
 
 func (n *Node) broadcastIHave(channel string, ids []string, excludePeerID string) {

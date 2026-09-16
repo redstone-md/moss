@@ -164,6 +164,10 @@ func (n *Node) addCapacityFields(fields, info map[string]any) {
 	dropsDefault, dropsOther := transport.StreamDropsSplit()
 	fields["stream_drops_default"] = dropsDefault
 	fields["stream_drops_other"] = dropsOther
+	// Never-delivered loss: packets for a stream that could not be created
+	// because the session hit maxInboundStreams. A peer opening many streams
+	// and never reading some drives this; it is invisible to stream_drops.
+	fields["stream_cap_drops"] = transport.StreamCapDrops()
 	// The datagram equivalents: a session queue that filled (per-session
 	// buffer, same shape as the stream one) and sessions that arrived when
 	// the accept backlog was full. Zero on a TCP-only node, which is itself

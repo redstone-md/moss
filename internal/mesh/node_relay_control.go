@@ -156,7 +156,14 @@ func (n *Node) handleRelayData(peer *peerConn, env gossip.Envelope) {
 			if raw, err := hex.DecodeString(env.RelaySource); err == nil {
 				copy(sender[:], raw)
 			}
-			n.dispatchCh <- dispatchRelay{sender: sender, data: plaintext}
+			select {
+			case n.dispatchCh <- dispatchRelay{sender: sender, data: plaintext}:
+			default:
+				// Full channel would otherwise park the transport reader on a
+				// slow application: drop-and-count, never block the read loop
+				// on downstream capacity (same contract as handleDirectPacket).
+				n.countInbound("__relay_dispatch_dropped__")
+			}
 			return
 		}
 		n.countInbound("__relay_payload_unopenable__")
@@ -166,7 +173,19 @@ func (n *Node) handleRelayData(peer *peerConn, env gossip.Envelope) {
 	route, hasRoute := n.relayRoutes[env.RelaySession]
 	targetPeer := n.peers[env.RelayTarget]
 	n.mu.RUnlock()
-	if !hasRoute || !route.allows(env.RelaySource, env.RelayTarget) {
+	if !hasRoute {
+		// The route was reaped by TTL GC while the origin kept sending:
+		// without a reply every following payload is silently dropped and
+		// the origin never learns the relay stopped carrying it — the
+		// silent blackhole. One RelayClose answers the first Data after
+		// expiry (replyRelayRouteExpired consumes the tombstone), so the
+		// origin tears down its relayLocals and re-establishes.
+		if peer != nil && peer.id == env.RelaySource {
+			n.replyRelayRouteExpired(peer, env)
+		}
+		return
+	}
+	if !route.allows(env.RelaySource, env.RelayTarget) {
 		return
 	}
 	if peer == nil || peer.id != env.RelaySource {
@@ -192,7 +211,13 @@ func (n *Node) handleRelayData(peer *peerConn, env gossip.Envelope) {
 	}
 	bucket := n.relayBucketFor(peer.id)
 	if !bucket.Allow(relayChargeableBytes(len(env.Payload))) {
+		n.countInbound("__relay_rate_limited__")
 		n.markRelayOverloaded(time.Now())
+		return
+	}
+	if n.relayConsumerCapped(peer.id, int64(len(env.Payload)), time.Now()) {
+		n.countInbound("__relay_consumer_capped__")
+		n.closeRelayRouteWithClose(env.RelaySession, env.RelaySource, env.RelayTarget)
 		return
 	}
 	n.sendEnvelope(targetPeer, env)
@@ -209,6 +234,10 @@ func (n *Node) handleRelayData(peer *peerConn, env gossip.Envelope) {
 // of dead entries while the underlying sessions had long since expired. Tying
 // route liveness to the session (refreshed by Touch on every forwarded packet)
 // lets genuinely idle routes expire on their own.
+//
+// Each reaped route leaves a tombstone in relayRouteExpiry so the next
+// RelayData for it is answered with a RelayClose instead of silently
+// dropped (see replyRelayRouteExpired), and counts as __relay_route_expired__.
 func (n *Node) pruneStaleRelayRoutes() {
 	n.mu.RLock()
 	var stale []string
@@ -222,25 +251,86 @@ func (n *Node) pruneStaleRelayRoutes() {
 		return
 	}
 	n.mu.Lock()
+	now := time.Now()
+	if n.relayRouteExpiry == nil {
+		n.relayRouteExpiry = make(map[string]time.Time, len(stale))
+	}
 	for _, sessionID := range stale {
 		delete(n.relayRoutes, sessionID)
+		if len(n.relayRouteExpiry) >= relayRouteExpiryCap {
+			// At the cap, drop the oldest tombstone: the scan runs only
+			// on this ~1s maintenance path, never the relay hot path.
+			oldestID, oldest := "", time.Time{}
+			for id, ts := range n.relayRouteExpiry {
+				if oldestID == "" || ts.Before(oldest) {
+					oldestID, oldest = id, ts
+				}
+			}
+			delete(n.relayRouteExpiry, oldestID)
+		}
+		n.relayRouteExpiry[sessionID] = now
 	}
 	n.mu.Unlock()
+	for range stale {
+		n.countInbound("__relay_route_expired__")
+	}
 	n.refreshSupernodeStatus()
 }
 
+// relayRouteExpiryCap bounds the expired-route tombstone map: tombstones are
+// one-shot (consumed by the first replyRelayRouteExpired) and sessions are
+// never re-established under the same ID, so an entry past the cap is the
+// oldest one, whose origin has already had its chance to learn.
+const relayRouteExpiryCap = 1024
+
+// replyRelayRouteExpired answers the first RelayData a source sends for a
+// route the TTL GC reaped: pruneStaleRelayRoutes left a tombstone, and the
+// close consumes it one-shot so a post-expiry burst costs a single reply.
+// Without it every following payload is silently dropped and the origin
+// never learns the relay stopped carrying it. The close mirrors the Data it
+// answers, so the source's handleRelayClose tears down its relayLocals and
+// the next RelaySend fails into re-establishment instead of streaming into
+// the blackhole.
+func (n *Node) replyRelayRouteExpired(peer *peerConn, env gossip.Envelope) {
+	n.mu.Lock()
+	_, expired := n.relayRouteExpiry[env.RelaySession]
+	delete(n.relayRouteExpiry, env.RelaySession)
+	n.mu.Unlock()
+	if !expired {
+		return
+	}
+	n.sendEnvelope(peer, gossip.Envelope{
+		Type:         gossip.TypeRelayClose,
+		RelaySession: env.RelaySession,
+		RelaySource:  env.RelaySource,
+		RelayTarget:  env.RelayTarget,
+	})
+}
+
+// markRelayOverloaded stamps the overload cooldown and demotes the supernode
+// role when the window OPENS. It runs on every bucket-refused packet, so the
+// lock hold is one field compare, and the verdict refresh — which takes the
+// same global lock again — runs only on the not-overloaded→overloaded
+// transition. Inside an already-open window a further refusal extends the
+// deadline but changes nothing the verdict reads: the node is already
+// demoted, and re-evaluating per packet serialized two lock acquisitions
+// into the exact flood path the bucket exists to throttle. Recovery stays
+// where it always was: the maintenance tick's refresh re-promotes once the
+// extended window expires.
 func (n *Node) markRelayOverloaded(now time.Time) {
 	cooldown := n.relayOverloadCooldown()
 	if cooldown <= 0 {
 		cooldown = 500 * time.Millisecond
 	}
 	n.mu.Lock()
-	until := now.Add(cooldown)
-	if until.After(n.overloadedUntil) {
+	wasOverloaded := now.Before(n.overloadedUntil)
+	if until := now.Add(cooldown); until.After(n.overloadedUntil) {
 		n.overloadedUntil = until
 	}
 	n.mu.Unlock()
-	n.refreshSupernodeStatus()
+	if !wasOverloaded {
+		n.refreshSupernodeStatus()
+	}
 }
 
 func (n *Node) relayOverloadCooldown() time.Duration {
@@ -287,6 +377,8 @@ func (n *Node) handleRelayClose(peer *peerConn, env gossip.Envelope) {
 	n.mu.Lock()
 	delete(n.relayLocals, env.RelaySession)
 	delete(n.relayRoutes, env.RelaySession)
+	// The session was torn down explicitly — no expiry reply is owed.
+	delete(n.relayRouteExpiry, env.RelaySession)
 	n.mu.Unlock()
 	n.relaySessions.Release(env.RelaySession)
 	n.refreshSupernodeStatus()
@@ -376,6 +468,14 @@ func (n *Node) closeRelaySession(session relayLocalSession) {
 // the ordinary connect policy, the relay preference applied here too and a
 // symmetric pair was never retried once relayed: relay became the destination
 // rather than the fallback it is meant to be.
+//
+// One in-flight attempt per target, enforced without new bookkeeping: the
+// directProbes stamp records when the armed attempt ENDS (its budget expiry),
+// not when it started. A tick then re-arms a target only after the previous
+// attempt could no longer be running, so generations cannot overlap — the
+// old stamp-at-start left a 5s attempt re-armed every 3s, stacking live
+// punch generations on the same peer. tryDirectUpgrade still force-punches
+// past the relay preference, so a symmetric pair keeps being tried.
 func (n *Node) promoteRelayPeers() {
 	targets := n.relayPromotionTargets()
 	for _, peerID := range targets {
@@ -385,9 +485,13 @@ func (n *Node) promoteRelayPeers() {
 
 func (n *Node) relayPromotionTargets() []string {
 	now := time.Now()
-	cooldown := n.config.Heartbeat()
-	if cooldown <= 0 {
-		cooldown = 250 * time.Millisecond
+	// Breather between attempts on one target, counted from the END of the
+	// previous attempt (see the stamp below). The heartbeat alone keeps a
+	// flapping target retried at full tick rate; zero/negative configs keep
+	// the 250ms floor.
+	breather := n.config.Heartbeat()
+	if breather <= 0 {
+		breather = 250 * time.Millisecond
 	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -399,11 +503,14 @@ func (n *Node) relayPromotionTargets() []string {
 		if peer := n.peers[session.remotePeerID]; peer != nil && !peer.relayed {
 			continue
 		}
-		lastAttempt := n.directProbes[session.remotePeerID]
-		if !lastAttempt.IsZero() && now.Sub(lastAttempt) < cooldown {
+		until := n.directProbes[session.remotePeerID]
+		if !until.IsZero() && now.Before(until.Add(breather)) {
 			continue
 		}
-		n.directProbes[session.remotePeerID] = now
+		// Stamp budget END, not start: the next re-arm waits out the whole
+		// attempt first, then the breather — one live attempt per target at
+		// any moment, by construction, without an in-flight registry.
+		n.directProbes[session.remotePeerID] = now.Add(n.config.HandshakeTimeout())
 		targets = append(targets, session.remotePeerID)
 	}
 	return targets
@@ -523,4 +630,75 @@ func (n *Node) removeRelayedPeerLocked(session relayLocalSession) bool {
 	}
 	delete(n.peers, session.remotePeerID)
 	return true
+}
+
+// relayConsumerCapped charges bytes to the source peer's rolling per-minute
+// budget and reports whether it now exceeds NAT.RelayConsumerCapBytes. The
+// entry is dropped when it trips: the caller tears the session down, and a
+// fresh consumer gets a clean window rather than an inherited full one.
+// Zero cap (the default) disables the guard entirely — checked before any
+// lock is taken, so a default-config node never touches n.mu on this leg of
+// the relay hot path at all.
+//
+// Unlike relayBucketFor, the hit path cannot downgrade to RLock: charge
+// MUTATES the budget (rolling windows, adding bytes) and relayConsumer
+// carries no lock of its own, so n.mu's write side is what serializes
+// charges — including the duplicate-peer handoff window in which one peer
+// id briefly has two dispatch workers. The section is held to lookup +
+// charge and nothing else; the only operation that may grow it is the
+// rare first-packet insert and the trip delete, and moving either out
+// would race Stop's map reset and removePeer's delete, which share this
+// lock.
+func (n *Node) relayConsumerCapped(consumerID string, bytes int64, now time.Time) bool {
+	cap := n.config.NAT.RelayConsumerCapBytes
+	if cap <= 0 {
+		return false
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.relayConsumers == nil {
+		n.relayConsumers = make(map[string]*relayConsumer)
+	}
+	budget := n.relayConsumers[consumerID]
+	if budget == nil {
+		budget = &relayConsumer{windowStart: now}
+		n.relayConsumers[consumerID] = budget
+	}
+	if budget.charge(now, bytes) <= cap {
+		return false
+	}
+	delete(n.relayConsumers, consumerID)
+	return true
+}
+
+// closeRelayRouteWithClose reaps a middle-node route whose consumer tripped
+// the cap and tells both endpoints, so neither keeps sending into a route
+// that no longer exists. A silent drop here would leave the origin convinced
+// the relay still carries it: the refusal has to be observable, and an
+// explicit close on both legs is the only thing that propagates past the
+// relay itself.
+func (n *Node) closeRelayRouteWithClose(sessionID, source, target string) {
+	n.mu.Lock()
+	_, hadRoute := n.relayRoutes[sessionID]
+	delete(n.relayRoutes, sessionID)
+	sourcePeer := n.peers[source]
+	targetPeer := n.peers[target]
+	n.mu.Unlock()
+	if !hadRoute {
+		return
+	}
+	n.relaySessions.Release(sessionID)
+	n.refreshSupernodeStatus()
+	msg := gossip.Envelope{
+		Type:         gossip.TypeRelayClose,
+		RelaySession: sessionID,
+		RelaySource:  source,
+		RelayTarget:  target,
+	}
+	if sourcePeer != nil {
+		n.sendEnvelope(sourcePeer, msg)
+	}
+	if targetPeer != nil && targetPeer != sourcePeer {
+		n.sendEnvelope(targetPeer, msg)
+	}
 }

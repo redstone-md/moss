@@ -92,13 +92,25 @@ func (n *Node) refreshNATClassification(timeout time.Duration) bool {
 	return true
 }
 
+// maxBindingRefreshPeers bounds how many connected peers one external-address
+// refresh asks. The walk ran at every direct accept and inside every direct
+// upgrade's refresh phase — with no bound and no early exit, a node
+// accepting 100 peers in a burst walked every connected peer per accept
+// (O(N) goroutines each asking up to O(N) peers), and even a SUCCESS kept
+// walking: the address was confirmed by the first answer while the walk
+// kept firing binding requests at the rest.
+const maxBindingRefreshPeers = 3
+
 func (n *Node) refreshExternalAddress(deadline time.Time) bool {
 	n.mu.RLock()
-	peerIDs := make([]string, 0, len(n.peers))
+	peerIDs := make([]string, 0, maxBindingRefreshPeers)
 	for peerID := range n.peers {
 		peerIDs = append(peerIDs, peerID)
 	}
 	n.mu.RUnlock()
+	if len(peerIDs) > maxBindingRefreshPeers {
+		peerIDs = peerIDs[:maxBindingRefreshPeers]
+	}
 	updated := false
 	if len(peerIDs) == 0 {
 		if remaining := time.Until(deadline); remaining > 0 {
@@ -119,6 +131,14 @@ func (n *Node) refreshExternalAddress(deadline time.Time) bool {
 		// worthless as evidence about our NAT.
 		if observed, ok := n.requestUDPBindingObservation(peerID, remaining); ok {
 			updated = n.applyExternalObservation(observed, deadline) || updated
+			// One confirmed mapping is the answer: the walk was an
+			// address CONFIRMATION, not a census. Continuing past the first
+			// answer multiplied binding requests (and the re-announce storms
+			// an applied observation can trigger) by the number of connected
+			// peers on every accept.
+			if updated {
+				return updated
+			}
 			continue
 		}
 		if observed, ok := n.requestBindingObservation(peerID, remaining); ok {
