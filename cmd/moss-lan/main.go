@@ -63,23 +63,22 @@ func main() {
 		os.Exit(2)
 	}
 }
-
 func usage() {
 	fmt.Fprint(os.Stderr, `moss-lan — приватная LAN поверх moss
 
-  moss-lan create --nick <ник> --room <id> --psk <psk> [--cidr <cidr>] [--invitee <peerID>]… [--tun [--tun-name <name>]]
-        создать комнату; печатает свой peer ID, виртуальный IP и
-        moss-lan:// инвайты (по одному на --invitee)
+  moss-lan create --nick <ник> --room <id> [--psk <psk>] [--cidr <cidr>] [--invitee <peerID>]… [--tun [--tun-name <name>]] [--public]
+        создать комнату; --psk = приватная по паролю (без него — публичная по имени)
+        печатает свой peer ID, виртуальный IP и moss-lan:// инвайты (по одному на --invitee)
 
-  moss-lan join --nick <ник> --invite <moss-lan://…> [--cidr <cidr>] [--tun [--tun-name <name>]]
-        войти по инвайту; печатает свой виртуальный IP
+  moss-lan join --nick <ник> (--invite <moss-lan://…> | --room <id> [--psk <psk>]) [--cidr <cidr>] [--tun [--tun-name <name>]] [--public]
+        войти: либо по инвайту, либо по комнате+паролю (без инвайта — как у Tungle)
 
   Флаги:
     --nick     ник, 1–32 символа [a-zA-Z0-9_-]
-    --room     id комнаты (create)
-    --psk      пароль комнаты (create)
+    --room     id комнаты (create = её имя; join = вход по паролю)
+    --psk      пароль комнаты (create/join с --room; пусто = публичная)
     --invitee  peer ID приглашаемого; повторяется (create)
-    --invite   инвайт-строка moss-lan://… (join)
+    --invite   инвайт-строка moss-lan://… (join с инвайтом)
     --cidr     пул виртуальных IP (по умолчанию `+defaultCIDR+`)
     --tun      открыть реальный TUN-интерфейс вместо loopback;
                требует CAP_NET_ADMIN/root (Linux/macOS) или
@@ -149,8 +148,8 @@ func runCreate(args []string) {
 	if err := fs.Parse(args); err != nil {
 		log.Fatalf("create: %v", err)
 	}
-	if *nick == "" || *room == "" || *psk == "" {
-		log.Fatal("create: --nick, --room и --psk обязательны")
+	if *nick == "" || *room == "" {
+		log.Fatal("create: --nick и --room обязательны; --psk опционален (без него — публичная комната)")
 	}
 	if err := meshlan.ValidateNick(*nick); err != nil {
 		log.Fatalf("create: %v", err)
@@ -207,11 +206,16 @@ func runCreate(args []string) {
 	runUntilSignal()
 }
 
-// runJoin: accept the invite, run until signal.
+// runJoin enters a room two ways: by invite string (members-only room, random
+// key sealed to the joining peer) or by room id + password — the Tungle model,
+// where the room key is derived from both, so anyone who knows the password
+// joins with no invite. Pass exactly one of --invite or --room.
 func runJoin(args []string) {
 	fs := flag.NewFlagSet("join", flag.ExitOnError)
 	nick := fs.String("nick", "", "ник (1–32 символа [a-zA-Z0-9_-])")
 	inviteStr := fs.String("invite", "", "инвайт moss-lan://…")
+	room := fs.String("room", "", "id комнаты — вход по паролю, без инвайта")
+	psk := fs.String("psk", "", "пароль комнаты для --room (пусто = публичная комната)")
 	cidr := fs.String("cidr", defaultCIDR, "пул виртуальных IP")
 	useTun := fs.Bool("tun", false, "реальный TUN-интерфейс вместо loopback")
 	tunName := fs.String("tun-name", "", "имя TUN-интерфейса (пусто = авто)")
@@ -219,21 +223,37 @@ func runJoin(args []string) {
 	if err := fs.Parse(args); err != nil {
 		log.Fatalf("join: %v", err)
 	}
-	if *nick == "" || *inviteStr == "" {
-		log.Fatal("join: --nick и --invite обязательны")
+	if *nick == "" {
+		log.Fatal("join: --nick обязателен")
+	}
+	if (*inviteStr == "") == (*room == "") {
+		log.Fatal("join: укажи ровно одно — --invite или --room")
 	}
 	if err := meshlan.ValidateNick(*nick); err != nil {
 		log.Fatalf("join: %v", err)
 	}
 
-	// Unpack before the node exists: the mesh ID inside the invite names
-	// the room, and the node is born into it (empty PSK — the invite
-	// carries the room key; AcceptRoomInvite installs it).
-	meshID, _, err := meshlan.UnpackInvite(*inviteStr)
-	if err != nil {
-		log.Fatalf("join: %v", err)
+	byInvite := *inviteStr != ""
+	meshID := *room
+	if byInvite {
+		// Unpack before the node exists: the mesh ID inside the invite names
+		// the room, and the node is born into it (empty PSK — the invite
+		// carries the room key; AcceptRoomInvite installs it).
+		var err error
+		meshID, _, err = meshlan.UnpackInvite(*inviteStr)
+		if err != nil {
+			log.Fatalf("join: %v", err)
+		}
 	}
-	node, err := mesh.NewNode(meshID, nil, isolatedConfig(meshID, *public))
+
+	// By-room: the node is born into the room with the password as its PSK, so
+	// deriveRoomKey(room, psk) reproduces the host's key exactly — no invite,
+	// no per-peer sealing. An empty --psk is a public room keyed by name alone.
+	var pskBytes []byte
+	if !byInvite && *psk != "" {
+		pskBytes = []byte(*psk)
+	}
+	node, err := mesh.NewNode(meshID, pskBytes, isolatedConfig(meshID, *public))
 	if err != nil {
 		log.Fatalf("join: NewNode: %v", err)
 	}
@@ -252,11 +272,14 @@ func runJoin(args []string) {
 		log.Fatalf("join: NewLanNode: %v", err)
 	}
 
-	// Accept the invite BEFORE LanNode.Start: AcceptRoomInvite installs
-	// the room key, and the presence topic is an HMAC under that key —
-	// subscribing first would resolve no topic and hear nothing.
-	if err := lan.AcceptInvite(*inviteStr); err != nil {
-		log.Fatalf("join: инвайт не принят: %v", err)
+	// The invite must be accepted BEFORE LanNode.Start: AcceptRoomInvite
+	// installs the room key, and the presence topic is an HMAC under that key.
+	// By-room the key is already installed at NewNode, so there is nothing to
+	// accept — the password IS the credential.
+	if byInvite {
+		if err := lan.AcceptInvite(*inviteStr); err != nil {
+			log.Fatalf("join: инвайт не принят: %v", err)
+		}
 	}
 
 	if err := lan.Start(); err != nil {
