@@ -11,6 +11,22 @@ later. Nothing is deleted: the tags stay published because builds that already
 resolved them must keep resolving them.
 
 
+## [0.8.30] - 2026-09-16
+
+### Fixed
+- **One slow peer can no longer make another peer's DMs vanish.** The single
+  `dispatchLoop` invoked the application's packet/relay callback inline, and
+  that callback is a synchronous FFI call (decrypt, write to disk). One
+  application parked on sender A froze the only consumer, so every other
+  sender's payloads piled up behind it in the shared 1024-deep `dispatchCh`
+  until it filled — at which point the producers' non-blocking sends began
+  dropping messages from peers that had nothing to do with A. Directed delivery
+  now shunts each payload to a per-sender bounded queue drained by its own
+  worker (the directed twin of the per-channel `localQueues` split already used
+  for pub/sub): a slow sender drops only its own traffic once its queue fills,
+  and per-sender order is preserved. The map is bounded by `MaxPeers` so a
+  relay source spraying distinct keys cannot grow it without limit.
+
 ## [0.8.29] - 2026-09-16
 
 ### Fixed
