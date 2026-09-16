@@ -33,14 +33,19 @@ const directedQueueDepth = 256
 // lazily created and bounded by MaxPeers, so a relay source spraying distinct
 // keys cannot grow the map past the peer ceiling.
 func (n *Node) deliverDirected(item any) {
-	var sender [32]byte
+	var key [32]byte
 	var countDropped func()
 	switch v := item.(type) {
 	case dispatchRelay:
-		sender = v.sender
+		// The relay path already authenticated the source: the payload opened
+		// under the session's DM seal keyed to env.RelaySource, so this sender
+		// is route-authenticated and safe to key on directly.
+		key = v.sender
 		countDropped = func() { n.countInbound("__relay_dispatch_dropped__") }
 	case dispatchPacket:
-		sender = v.sender
+		// queueKey is the authenticated session identity; the claimed sender is
+		// unvalidated and must not grow the map. See dispatchPacket.
+		key = v.queueKey
 		countDropped = func() { n.countInbound("__packet_dispatch_dropped__") }
 	default:
 		return
@@ -49,7 +54,7 @@ func (n *Node) deliverDirected(item any) {
 	if n.directedQueues == nil {
 		n.directedQueues = make(map[[32]byte]chan any)
 	}
-	queue, ok := n.directedQueues[sender]
+	queue, ok := n.directedQueues[key]
 	if !ok {
 		if len(n.directedQueues) >= n.config.MaxPeers {
 			n.directedMu.Unlock()
@@ -57,9 +62,9 @@ func (n *Node) deliverDirected(item any) {
 			return
 		}
 		queue = make(chan any, directedQueueDepth)
-		n.directedQueues[sender] = queue
+		n.directedQueues[key] = queue
 		n.wg.Add(1)
-		go n.directedWorker(sender, queue)
+		go n.directedWorker(key, queue)
 	}
 	select {
 	case queue <- item:

@@ -48,28 +48,37 @@ func (n *Node) relayRateLimits() (int, int) {
 	if burst <= 0 {
 		burst = 1024
 	}
-	// A volunteer who raised the ceiling did so for supply; the old
-	// sustained derivation — burst/4, i.e. 64 KiB/s at 256 — stays as
-	// floor so such a node does not still bill at 64 KiB/s. A non-default
-	// RelaySustainedKiBPS overrides that floor, clamped to ≤ burst.
-	sustained := burst / 4
-	if n.config.NAT.RelaySustainedKiBPS > 0 {
-		wanted := n.config.NAT.RelaySustainedKiBPS * 1024
-		if wanted > burst {
-			wanted = burst
-		}
-		if wanted < 1 {
-			wanted = 1
-		}
-		sustained = wanted
+	// Sustained refill. Two sources, in precedence order:
+	//   1. NAT.RelaySustainedKiBPS — an explicit operator directive (a
+	//      volunteer raising supply). It wins outright, clamped only to the
+	//      burst ceiling so it can never exceed the token-bucket capacity.
+	//   2. otherwise burst/4 (64 KiB/s at the 256 KiB default), and the
+	//      legacy Security.RateLimitSustained acts as a governor cap on that
+	//      derived value — the pre-existing behavior.
+	// The legacy clamp deliberately does NOT apply to (1): otherwise an
+	// operator who set the new field could not raise relay throughput past
+	// Security.RateLimitSustained without also discovering and editing an
+	// unrelated security knob, defeating the point of exposing the field.
+	if wanted := n.config.NAT.RelaySustainedKiBPS * 1024; n.config.NAT.RelaySustainedKiBPS > 0 {
+		sustained := clampInt(wanted, 1, burst)
+		return burst, sustained
 	}
+	sustained := clampInt(burst/4, 1, burst)
 	if n.config.Security.RateLimitSustained > 0 && n.config.Security.RateLimitSustained < sustained {
 		sustained = n.config.Security.RateLimitSustained
 	}
-	if sustained <= 0 {
-		sustained = max(1, burst/4)
+	return burst, max(1, sustained)
+}
+
+// clampInt bounds v to [lo, hi].
+func clampInt(v, lo, hi int) int {
+	if v < lo {
+		return lo
 	}
-	return burst, sustained
+	if v > hi {
+		return hi
+	}
+	return v
 }
 
 // hostIP parses the IP out of a "host:port" (or bare host) address, or nil.

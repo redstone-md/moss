@@ -217,13 +217,18 @@ func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 			return
 		}
 		n.observeMeshDelivery(env.Channel, env.MessageID, peer.id)
+		// Append this node's hop before the store so the cached, replayable
+		// copy carries the full path: a peer that recovers the message via
+		// IWANT must see the serving node recorded, exactly as a peer that
+		// receives it forwarded. Untagged publishes pay two nil-checks.
+		n.appendTraceHop(&env)
 		if !n.cache.StoreIfNew(env) {
-			// Already seen: the message reached us by a second path. Not an error,
-			// but the reason a peer looks silent when it is in fact always second.
+			// Already seen: the message reached us by a second path. Not an
+			// error, but the reason a peer looks silent when it is in fact
+			// always second.
 			n.emitDrop(inspect.KindDedup, peer, env, "already seen this message")
 			return
 		}
-		n.appendTraceHop(&env)
 		n.deliverLocal(env)
 		if env.TraceID != "" {
 			n.debugBus.Emit(func() inspect.Event {

@@ -349,9 +349,18 @@ type dispatchRelay struct {
 // dispatchPacket is one directed payload on its way to the application's
 // packet callback: the sender's public key and the raw bytes. It is the
 // unified shape for direct (TypeDirect) and relayed directed delivery.
+//
+// queueKey is the identity the DELIVERY QUEUE is keyed by, deliberately
+// separate from sender: on a direct session the claimed SenderID is whatever
+// the connected peer wrote into the envelope — unvalidated — so keying the
+// per-sender queues on it would let one peer mint up to MaxPeers queues and
+// flood each. queueKey is the authenticated session identity instead (peer.id
+// decoded). sender stays the claimed one because that is what SendToPeer's
+// receive half reports to the application.
 type dispatchPacket struct {
-	sender [32]byte
-	data   []byte
+	sender   [32]byte
+	queueKey [32]byte
+	data     []byte
 }
 
 // PacketCallback is the unified application sink for directed payloads —
