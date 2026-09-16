@@ -3,6 +3,7 @@ package mesh
 import (
 	"errors"
 	"net"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -220,6 +221,28 @@ func PeerAddr(n *Node, peerID string) (net.IP, error) {
 	return net.IP(append([]byte(nil), a4[:]...)), nil
 }
 
+// RegisterPeerAddr forces peerID's virtual address to addr, overriding the
+// cursor assignment. It is the product layer's hook to place addresses by
+// rule rather than arrival order: a LAN overlay derives each peer's IP from
+// its identity (so every node maps the same peer to the same address with no
+// negotiation) and registers a remote peer's self-reported address learned
+// over presence, so the router can resolve it. Returns an error when no
+// interface is attached or addr is outside the pool.
+func RegisterPeerAddr(n *Node, peerID string, addr net.IP) error {
+	if n == nil {
+		return errors.New("node is required")
+	}
+	v, ok := tunBinds.Load(n)
+	if !ok {
+		return errors.New("no tun interface is attached to this node")
+	}
+	p4 := addr.To4()
+	if p4 == nil {
+		return errors.New("address must be IPv4")
+	}
+	ip, _ := netip.AddrFromSlice(p4)
+	return v.(*tunBinding).table.AssignAddr(peerID, ip)
+}
 // AddTunRoute registers peerID as a routing candidate for prefix (e.g.
 // "192.168.50.0/24") on node's attached intranet: packets whose destination
 // falls inside prefix — and is not an assigned virtual IP — are routed to

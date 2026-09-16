@@ -149,6 +149,45 @@ func (t *Table) Release(peerID string) {
 	}
 }
 
+// AssignAddr maps peerID to a specific address inside the pool, overriding
+// any earlier assignment for that peer or for the address. It is the hook a
+// product layer needs to place addresses by rule rather than by the cursor:
+// a LAN overlay can hand every peer the same virtual IP on every node by
+// deriving it from the peer's identity, and can claim a peer's self-reported
+// address learned out of band. Like assign it keeps byPeer and byAddr in
+// lockstep, and unlike the sequential path it does not advance the cursor or
+// consume the free list — a forced address is simply made to hold.
+//
+// addr must be inside the pool prefix (the network and broadcast addresses
+// are rejected, matching what the cursor path would never hand out).
+func (t *Table) AssignAddr(peerID string, addr netip.Addr) error {
+	if peerID == "" {
+		return errors.New("peer ID is required")
+	}
+	if !addr.Is4() || !t.prefix.Contains(addr) {
+		return fmt.Errorf("address %s outside intranet pool", addr)
+	}
+	if first, last := t.hostRange(); t.addrOffset(addr) < first || t.addrOffset(addr) > last {
+		return fmt.Errorf("address %s is the network or broadcast host", addr)
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	// Drop any prior binding on either side so the maps stay a bijection.
+	if old, ok := t.byPeer[peerID]; ok && old != addr {
+		if holder, held := t.byAddr[old]; held && holder == peerID {
+			delete(t.byAddr, old)
+			t.free = append(t.free, t.addrOffset(old))
+		}
+	}
+	if prev, ok := t.byAddr[addr]; ok && prev != peerID {
+		delete(t.byPeer, prev)
+		t.free = append(t.free, t.addrOffset(addr))
+	}
+	t.byPeer[peerID] = addr
+	t.byAddr[addr] = peerID
+	return nil
+}
+
 // Len returns the number of assigned peers.
 func (t *Table) Len() int {
 	t.mu.Lock()
