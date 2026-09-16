@@ -1,8 +1,10 @@
 // Command moss-lan is the LAN-shaped front door to moss: create or join a
 // private room, get a virtual IP inside it, and discover the other
-// participants by nickname. MVP scope: the intranet edge is an injected
-// tun.Loopback (no kernel TUN device yet), so packets are routable in-process
-// only; the wiring seam (tun.PacketIface) is where a real TUN device plugs in.
+// participants by nickname. By default the intranet edge is an injected
+// tun.Loopback, so packets are routable in-process only — enough to exercise
+// room membership, presence and invites without a kernel device. Pass --tun to
+// open a real kernel TUN interface instead (see internal/meshlan.OpenTun), so
+// the OS routes IP traffic over the mesh.
 //
 // The two subcommands:
 //
@@ -21,6 +23,7 @@ package main
 
 import (
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -64,20 +67,24 @@ func main() {
 func usage() {
 	fmt.Fprint(os.Stderr, `moss-lan — приватная LAN поверх moss
 
-  moss-lan create --nick <ник> --room <id> --psk <psk> [--cidr <cidr>] [--invitee <peerID>]…
+  moss-lan create --nick <ник> --room <id> --psk <psk> [--cidr <cidr>] [--invitee <peerID>]… [--tun [--tun-name <name>]]
         создать комнату; печатает свой peer ID, виртуальный IP и
         moss-lan:// инвайты (по одному на --invitee)
 
-  moss-lan join --nick <ник> --invite <moss-lan://…> [--cidr <cidr>]
+  moss-lan join --nick <ник> --invite <moss-lan://…> [--cidr <cidr>] [--tun [--tun-name <name>]]
         войти по инвайту; печатает свой виртуальный IP
 
   Флаги:
-    --nick    ник, 1–32 символа [a-zA-Z0-9_-]
-    --room    id комнаты (create)
-    --psk     пароль комнаты (create)
-    --invitee peer ID приглашаемого; повторяется (create)
-    --invite  инвайт-строка moss-lan://… (join)
-    --cidr    пул виртуальных IP (по умолчанию `+defaultCIDR+`)
+    --nick     ник, 1–32 символа [a-zA-Z0-9_-]
+    --room     id комнаты (create)
+    --psk      пароль комнаты (create)
+    --invitee  peer ID приглашаемого; повторяется (create)
+    --invite   инвайт-строка moss-lan://… (join)
+    --cidr     пул виртуальных IP (по умолчанию `+defaultCIDR+`)
+    --tun      открыть реальный TUN-интерфейс вместо loopback;
+               требует CAP_NET_ADMIN/root (Linux/macOS) или
+               wintun.dll рядом с бинарём (Windows, см. MOSS_WINTUN_DLL)
+    --tun-name имя интерфейса ("tun0", "utun5"); пусто = авто
 
   QR: инвайт — обычная строка. Любой внешний QR-энкодер
   (например `+"`"+`qrencode -t UTF8 <строка>`+"`"+`) закодирует её как есть.
@@ -97,6 +104,30 @@ func isolatedConfig(name string) mesh.Config {
 	return cfg
 }
 
+// openIface builds the intranet edge for a run: the real kernel TUN device
+// when --tun was passed, the in-process loopback otherwise. It is the seam the
+// MVP header points at — NewLanNode/AttachTun take any tun.PacketIface, so
+// toggling the device here is all it takes to make the OS route IP over the
+// mesh. A TUN that cannot be opened is fatal: silently falling back to the
+// loopback would print a virtual IP that ping can never reach, the worst kind
+// of "it worked" lie.
+func openIface(useTun bool, name string) tun.PacketIface {
+	if !useTun {
+		return tun.NewLoopback()
+	}
+	iface, err := meshlan.OpenTun(name)
+	if err != nil {
+		if errors.Is(err, meshlan.ErrNotImplemented) {
+			log.Fatalf("--tun: %v (эта ОС пока без драйвера TUN; убери --tun для loopback)", err)
+		}
+		log.Fatalf("--tun: не удалось открыть интерфейс: %v (нужны CAP_NET_ADMIN/root; на Windows — wintun.dll рядом с бинарём)", err)
+	}
+	if named, ok := iface.(meshlan.TunIface); ok {
+		log.Printf("tun: открыт реальный интерфейс %q", named.Name())
+	}
+	return iface
+}
+
 // runCreate: build the room, print identity + invites, run until signal.
 func runCreate(args []string) {
 	fs := flag.NewFlagSet("create", flag.ExitOnError)
@@ -104,6 +135,8 @@ func runCreate(args []string) {
 	room := fs.String("room", "", "id комнаты")
 	psk := fs.String("psk", "", "пароль комнаты")
 	cidr := fs.String("cidr", defaultCIDR, "пул виртуальных IP")
+	useTun := fs.Bool("tun", false, "реальный TUN-интерфейс вместо loopback")
+	tunName := fs.String("tun-name", "", "имя TUN-интерфейса (пусто = авто)")
 	invitees := multiFlag{}
 	fs.Var(&invitees, "invitee", "peer ID приглашаемого (повторяется)")
 	if err := fs.Parse(args); err != nil {
@@ -131,7 +164,8 @@ func runCreate(args []string) {
 		}
 	}()
 
-	lan, err := meshlan.NewLanNode(node, *nick, *room, *cidr, tun.NewLoopback())
+	iface := openIface(*useTun, *tunName)
+	lan, err := meshlan.NewLanNode(node, *nick, *room, *cidr, iface)
 	if err != nil {
 		log.Fatalf("create: NewLanNode: %v", err)
 	}
@@ -172,6 +206,8 @@ func runJoin(args []string) {
 	nick := fs.String("nick", "", "ник (1–32 символа [a-zA-Z0-9_-])")
 	inviteStr := fs.String("invite", "", "инвайт moss-lan://…")
 	cidr := fs.String("cidr", defaultCIDR, "пул виртуальных IP")
+	useTun := fs.Bool("tun", false, "реальный TUN-интерфейс вместо loopback")
+	tunName := fs.String("tun-name", "", "имя TUN-интерфейса (пусто = авто)")
 	if err := fs.Parse(args); err != nil {
 		log.Fatalf("join: %v", err)
 	}
@@ -203,7 +239,8 @@ func runJoin(args []string) {
 		}
 	}()
 
-	lan, err := meshlan.NewLanNode(node, *nick, meshID, *cidr, tun.NewLoopback())
+	iface := openIface(*useTun, *tunName)
+	lan, err := meshlan.NewLanNode(node, *nick, meshID, *cidr, iface)
 	if err != nil {
 		log.Fatalf("join: NewLanNode: %v", err)
 	}
