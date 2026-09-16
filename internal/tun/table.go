@@ -194,3 +194,50 @@ func (t *Table) Len() int {
 	defer t.mu.Unlock()
 	return len(t.byPeer)
 }
+
+// fnv1a is FNV-1a over the string: stable, allocation-free, no crypto needed.
+// An address derived from it is identical on every node, which is what lets a
+// LAN overlay map a peer to the same virtual IP everywhere with no exchange.
+func fnv1a(s string) uint64 {
+	const offset, prime = 14695981039346656037, 1099511628211
+	var h uint64 = offset
+	for i := 0; i < len(s); i++ {
+		h ^= uint64(s[i])
+		h *= prime
+	}
+	return h
+}
+
+// DeterministicAddr maps peerID to a host address inside prefix by hashing its
+// identity — a pure function, so every node computes the same address for the
+// same peer without coordinating. It is the collision-free replacement for
+// arrival-order assignment in an overlay where each node independently assigns
+// itself an address: two nodes can never pick the same self address unless two
+// peers' identities collide in the pool (a /24 gives 254 slots and a real LAN
+// is far below that; a genuine tie is resolved by presence registration, where
+// the incumbent keeps the address and the later peer is re-homed).
+//
+// prefix must be an IPv4 pool with at least two usable hosts; peerID non-empty.
+func DeterministicAddr(prefix netip.Prefix, peerID string) (netip.Addr, error) {
+	if peerID == "" {
+		return netip.Addr{}, errors.New("peer ID is required")
+	}
+	if !prefix.Addr().Is4() {
+		return netip.Addr{}, fmt.Errorf("intranet prefix %s is not IPv4", prefix)
+	}
+	prefix = prefix.Masked()
+	bits := prefix.Bits()
+	if bits > 30 {
+		return netip.Addr{}, fmt.Errorf("intranet prefix %s leaves fewer than two usable hosts", prefix)
+	}
+	// Usable host offsets are 1..(2^(32-bits)-2): the all-zeros host is the
+	// network and the all-ones host is broadcast, never assigned.
+	last := (uint32(1) << (32 - uint32(bits))) - 2
+	const first = uint32(1)
+	pool := last - first + 1
+	offset := first + uint32(fnv1a(peerID)%uint64(pool))
+	base := prefix.Addr().As4()
+	u := binary.BigEndian.Uint32(base[:])
+	binary.BigEndian.PutUint32(base[:], u+offset)
+	return netip.AddrFrom4(base), nil
+}
