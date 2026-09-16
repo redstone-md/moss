@@ -51,12 +51,14 @@ func TestSlowSenderDoesNotBlockOtherSenders(t *testing.T) {
 		}
 	})
 
-	// Drive delivery exactly as the transport read path does: hand A a payload
-	// whose callback parks, then several payloads from B. Before the fix, A
-	// occupies the sole consumer and B never arrives while it is parked.
-	node.dispatchCh <- dispatchPacket{sender: senderA, data: []byte("a-0")}
+	// Drive delivery as the transport read path does: the queue is keyed by
+	// the authenticated session identity (queueKey), while the callback still
+	// sees the claimed sender. Distinct sessions here, so A parking its own
+	// worker must not touch B's. Before the fix A occupied the sole consumer
+	// and B never arrived while it was parked.
+	node.dispatchCh <- dispatchPacket{sender: senderA, queueKey: senderA, data: []byte("a-0")}
 
-	// Wait until A's callback has actually entered (consumer is now parked).
+	// Wait until A's callback has actually entered (A's worker is now parked).
 	select {
 	case <-aEntered:
 	case <-time.After(3 * time.Second):
@@ -64,7 +66,7 @@ func TestSlowSenderDoesNotBlockOtherSenders(t *testing.T) {
 	}
 
 	for i := range 4 {
-		node.dispatchCh <- dispatchPacket{sender: senderB, data: []byte(string(rune('b'+i)))}
+		node.dispatchCh <- dispatchPacket{sender: senderB, queueKey: senderB, data: []byte(string(rune('b' + i)))}
 	}
 
 	// B's payloads must be delivered even though A's callback is still parked.
