@@ -9,100 +9,108 @@ import (
 
 	"github.com/flynn/noise"
 )
+// packetWorkers bounds the pool that off-loads per-datagram work from the
+// read loop. Fixed at 6: enough to spread distinct peers (hash-by-remote)
+// while each remote stays pinned to one worker (preserving handshake init→
+// resp→done ordering). Each worker has its own queue so a task keeps one
+// peer's ordering.
+const packetWorkers = 6
 
-// handshakeWorkers bounds the pool that off-loads Noise handshakes from the
-// read loop. Fixed at 6 (a modest fan-out; DH on ChaChaPoly/X25519 is ~tens
-// of microseconds but a 100-peer wave plus verify must not queue on one
-// goroutine). Each worker has its own queue so a task pinned to a worker keeps
-// one remote's init→done ordering.
-const handshakeWorkers = 6
+// packetQueueDepth bounds each worker's inbox. When a worker is saturated the
+// read loop runs the datagram inline instead of dropping it.
+const packetQueueDepth = 256
 
-// handshakeQueueDepth bounds each worker's inbox. Deep enough to absorb a
-// dial wave for that worker's share of remotes; when a worker is saturated the
-// read loop runs the handshake inline instead of dropping it (correctness over
-// latency — a dropped init just retries).
-const handshakeQueueDepth = 256
-
-// udpHandshakeTask is one handshake datagram handed to a pool worker.
-type udpHandshakeTask struct {
-	remote  *net.UDPAddr
-	kind    byte
-	payload []byte
+// udpPacketTask is one datagram handed to a pool worker — the raw wire bytes
+// straight from ReadFromUDP. The worker does STUN filtering, AEAD Open, and
+// the kind-specific handler.
+type udpPacketTask struct {
+	remote *net.UDPAddr
+	wire   []byte
 }
 
-// handshakeQueueDrops counts handshake dispatches that found their worker
-// saturated and fell back to running inline on the read loop. Monotonic.
-var handshakeQueueDrops atomic.Uint64
+// packetQueueDrops counts dispatches that found their worker saturated and fell
+// back to inline handling on the read loop.
+var packetQueueDrops atomic.Uint64
 
-// HandshakeQueueRetries reports how many handshake messages could not be
-// queued to the pool and were handled on the read loop instead. Nonzero means
-// the pool is a bottleneck worth sizing up, not data loss.
-func HandshakeQueueRetries() uint64 { return handshakeQueueDrops.Load() }
+// HandshakeQueueRetries is the legacy query name for packetQueueDrops (the pool
+// now handles every kind, but nonzero still means "the pool is a bottleneck").
+func HandshakeQueueRetries() uint64 { return packetQueueDrops.Load() }
 
-// startHandshakeWorkers builds the pool. Called once from ListenUDP before the
+// PacketQueueDrops reports the same counter under its new name.
+func PacketQueueDrops() uint64 { return packetQueueDrops.Load() }
+
+// startPacketWorkers builds the pool. Called once from ListenUDP before the
 // read loop begins; workers run until Close closes l.closed.
-func (l *UDPListener) startHandshakeWorkers() {
-	l.hsWork = make([]chan *udpHandshakeTask, handshakeWorkers)
-	for i := range l.hsWork {
-		q := make(chan *udpHandshakeTask, handshakeQueueDepth)
-		l.hsWork[i] = q
-		go l.handshakeWorker(q)
+func (l *UDPListener) startPacketWorkers() {
+	l.packetWork = make([]chan *udpPacketTask, packetWorkers)
+	for i := range l.packetWork {
+		q := make(chan *udpPacketTask, packetQueueDepth)
+		l.packetWork[i] = q
+		go l.packetWorker(q)
 	}
 }
 
-// handshakeWorker drains one pool queue, running each handshake it is given,
-// until the listener closes. It never blocks the read loop: the read loop only
-// ever does a non-blocking send to this queue.
-func (l *UDPListener) handshakeWorker(q chan *udpHandshakeTask) {
+// packetWorker drains one pool queue until the listener closes.
+func (l *UDPListener) packetWorker(q chan *udpPacketTask) {
 	for {
 		select {
 		case <-l.closed:
 			return
 		case task := <-q:
-			l.runHandshake(task)
+			l.handlePacket(task.remote, task.wire)
 		}
 	}
 }
 
-// runHandshake executes the handler for one handshake datagram. Split out so
-// the pool and the read-loop inline fallback share one dispatch table.
-func (l *UDPListener) runHandshake(task *udpHandshakeTask) {
-	switch task.kind {
+// handlePacket runs the full per-datagram path for one wire packet: STUN
+// filtering, AEAD open, and the kind-specific handler. Shared by pool workers
+// and the read-loop inline fallback so the work is identical on both paths.
+func (l *UDPListener) handlePacket(remote *net.UDPAddr, wire []byte) {
+	if l.handleSTUNResponse(wire) {
+		return
+	}
+	kind, payload, ok := l.codec.Open(wire)
+	if !ok {
+		return
+	}
+	switch kind {
 	case udpMessageHandshakeInit:
-		l.handleHandshakeInit(task.remote, task.payload)
+		l.handleHandshakeInit(remote, payload)
 	case udpMessageHandshakeResp:
-		l.handleHandshakeResp(task.remote, task.payload)
+		l.handleHandshakeResp(remote, payload)
 	case udpMessageHandshakeDone:
-		l.handleHandshakeDone(task.remote, task.payload)
+		l.handleHandshakeDone(remote, payload)
+	case udpMessageData:
+		l.handleData(remote, payload)
+	case udpMessageObserveReq:
+		l.handleObserveReq(remote, payload)
+	case udpMessageObserveResp:
+		l.handleObserveResp(payload)
 	}
 }
 
-// dispatchHandshake pins a handshake to a worker by hashing the remote
-// address, so every message from one peer — init, resp, done — runs on the
-// same goroutine and keeps the handshake's strict ordering, while different
-// peers spread across the pool for parallel DH. Returns false when there is no
-// pool or the chosen worker is saturated; the caller then runs it inline, so a
-// full pool degrades to the old serialized behavior rather than dropping a
-// handshake. The payload aliases the read loop's reusable buffer, so it is
-// copied for the queued task; the inline fallback runs against the live buffer
-// before the next read, so it needs no copy.
-func (l *UDPListener) dispatchHandshake(remote *net.UDPAddr, kind byte, payload []byte) bool {
-	if len(l.hsWork) == 0 {
+// dispatchPacket pins a datagram to a worker by hashing the remote address, so
+// every datagram from one peer — its handshakes and its data — runs on the
+// same goroutine and keeps ordering, while distinct peers parallelize. Returns
+// false when there is no pool or the worker is saturated; the caller then runs
+// it inline, degrading to the old serialized path rather than dropping.
+func (l *UDPListener) dispatchPacket(remote *net.UDPAddr, wire []byte) bool {
+	if len(l.packetWork) == 0 {
 		return false
 	}
-	idx := hashRemote(remote.String()) % uint64(len(l.hsWork))
-	task := &udpHandshakeTask{remote: remote, kind: kind, payload: append([]byte(nil), payload...)}
+	idx := hashRemote(remote.String()) % uint64(len(l.packetWork))
+	task := &udpPacketTask{remote: remote, wire: append([]byte(nil), wire...)}
 	select {
-	case l.hsWork[idx] <- task:
+	case l.packetWork[idx] <- task:
 		return true
 	default:
-		handshakeQueueDrops.Add(1)
+		packetQueueDrops.Add(1)
 		return false
 	}
 }
 
 // hashRemote folds an address string into a small uint with FNV-1a; stable
-// across the process so a peer's messages always land on one worker.
+// across the process so a peer's datagrams always land on one worker.
 func hashRemote(s string) uint64 {
 	const offset, prime = 14695981039346656037, 1099511628211
 	var h uint64 = offset
@@ -123,31 +131,17 @@ func (l *UDPListener) readLoop() {
 		if n < 1 {
 			continue
 		}
+		// The read loop now does nothing but pull datagrams off the socket and
+		// hand them to a pool worker keyed by remote. STUN filtering, AEAD
+		// open, and the kind handler all run on the worker, so a 100-peer
+		// dial wave parallelizes its DH+verify across workers instead of
+		// serializing behind one goroutine and starving the data path.
 		packet := append([]byte(nil), buf[:n]...)
-		if l.handleSTUNResponse(packet) {
-			continue
-		}
-		kind, payload, ok := l.codec.Open(packet)
-		if !ok {
-			continue
-		}
-		switch kind {
-		case udpMessageHandshakeInit, udpMessageHandshakeResp, udpMessageHandshakeDone:
-			// Handshake is the DH-heavy work: hand it to the pool keyed by
-			// remote so distinct peers parallelize (dispatchHandshake copies
-			// the payload off the reusable buffer for the queued task). On a
-			// saturated worker, run it inline against the live buffer before
-            // the next read — degrading to the old serialized path, never
-			// dropping a handshake.
-			if !l.dispatchHandshake(remote, kind, payload) {
-				l.runHandshake(&udpHandshakeTask{remote: remote, kind: kind, payload: payload})
-			}
-		case udpMessageData:
-			l.handleData(remote, payload)
-		case udpMessageObserveReq:
-			l.handleObserveReq(remote, payload)
-		case udpMessageObserveResp:
-			l.handleObserveResp(payload)
+		if !l.dispatchPacket(remote, packet) {
+			// Pool absent or this worker is saturated: handle inline against
+			// the private copy (degrades to the old serialized path; never
+			// drops a datagram).
+			l.handlePacket(remote, packet)
 		}
 	}
 }

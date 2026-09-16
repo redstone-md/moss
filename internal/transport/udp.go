@@ -113,17 +113,17 @@ type UDPListener struct {
 	stunTx   map[string]chan string
 	closeErr error
 
-	// hsWork is the handshake off-load pool (see udp_handshake.go). The
-	// listener's single read loop runs the AEAD open for every datagram and,
-	// before this pool, every Noise XX/IK handshake on the same goroutine —
-	// so a 100-peer dial wave serialized ~100 DH-heavy handshakes behind the
-	// one loop, delaying the cheap data enqueues that share it and letting the
-	// per-session carrier buffers overflow into drops. Handshake messages are
-	// dispatched to a pool worker keyed by remote address, so a peer's
-	// init→done stays ordered while distinct peers run in parallel. Workers
-	// exit with l.closed; there are none until startHandshakeWorkers runs.
-	hsWork []chan *udpHandshakeTask
-
+	// packetWork is the per-remote datagram off-load pool (see
+	// udp_handshake.go). Before it, the listener's single read loop did
+	// everything for every session on one goroutine: the AEAD Open of each
+	// datagram and the full Noise XX/IK handshake (DH + identity verify)
+	// inline. A 100-peer dial wave serialized ~100 DH-heavy handshakes behind
+	// the one loop, delaying the cheap data enqueues that share it and letting
+	// per-session carrier buffers overflow into drops. Every datagram now
+	// dispatches to a pool worker keyed by remote address, so one peer's
+	// packets stay ordered on one worker while distinct peers run in parallel.
+	// Workers exit with l.closed; the slice is empty until startPacketWorkers.
+	packetWork []chan *udpPacketTask
 }
 
 type udpClientHandshake struct {
@@ -212,7 +212,7 @@ func ListenUDP(port int, cfg HandshakeConfig) (*UDPListener, int, error) {
 		return nil, 0, err
 	}
 	listener.codec = codec
-	listener.startHandshakeWorkers()
+	listener.startPacketWorkers()
 	go listener.readLoop()
 	return listener, conn.LocalAddr().(*net.UDPAddr).Port, nil
 }
