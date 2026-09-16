@@ -112,6 +112,18 @@ type UDPListener struct {
 	observes map[string]chan string
 	stunTx   map[string]chan string
 	closeErr error
+
+	// hsWork is the handshake off-load pool (see udp_handshake.go). The
+	// listener's single read loop runs the AEAD open for every datagram and,
+	// before this pool, every Noise XX/IK handshake on the same goroutine —
+	// so a 100-peer dial wave serialized ~100 DH-heavy handshakes behind the
+	// one loop, delaying the cheap data enqueues that share it and letting the
+	// per-session carrier buffers overflow into drops. Handshake messages are
+	// dispatched to a pool worker keyed by remote address, so a peer's
+	// init→done stays ordered while distinct peers run in parallel. Workers
+	// exit with l.closed; there are none until startHandshakeWorkers runs.
+	hsWork []chan *udpHandshakeTask
+
 }
 
 type udpClientHandshake struct {
@@ -200,6 +212,7 @@ func ListenUDP(port int, cfg HandshakeConfig) (*UDPListener, int, error) {
 		return nil, 0, err
 	}
 	listener.codec = codec
+	listener.startHandshakeWorkers()
 	go listener.readLoop()
 	return listener, conn.LocalAddr().(*net.UDPAddr).Port, nil
 }
@@ -209,8 +222,8 @@ func (l *UDPListener) Addr() net.Addr {
 }
 
 // Accept returns one inbound session, draining any that finished their
-// handshake before Close, then io.EOF once the listener is closed. The
-// accept channel is never closed (see Close); l.closed is the end signal.
+// handshake but not yet been picked up by the mesh's Accept loop. The accept
+// channel is never closed (see Close); l.closed is the end signal.
 func (l *UDPListener) Accept() (*Session, error) {
 	select {
 	case <-l.closed:
