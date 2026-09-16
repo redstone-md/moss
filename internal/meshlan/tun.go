@@ -74,6 +74,29 @@ type TunIface interface {
 	Name() string
 }
 
+// AddressConfigurer is the optional capability of a real OS interface: give
+// it an intranet address and bring it up. OpenTun's device exists after
+// creation but is administratively down with no address, so nothing routes to
+// it until ConfigureAddress runs. A loopback edge does not implement it —
+// there is no OS interface to configure — which is how callers distinguish a
+// real device from an in-process one without a type registry.
+type AddressConfigurer interface {
+	// ConfigureAddress assigns ip/bits to the interface and marks it up.
+	// Needs CAP_NET_ADMIN (Linux), root (macOS), or administrator
+	// (Windows); a caller without it gets an error wrapping
+	// os.ErrPermission.
+	ConfigureAddress(ip net.IP, bits int) error
+}
+
+// interfaceName is the kernel name of a real device, or "loopback" for an
+// injected edge with no name — the string that goes in operator-facing errors.
+func interfaceName(iface tun.PacketIface) string {
+	if named, ok := iface.(TunIface); ok {
+		return named.Name()
+	}
+	return "loopback"
+}
+
 // asNetClosed maps the os package's closing error to the net.ErrClosed
 // sentinel the PacketIface contract names: an os.File reports
 // os.ErrClosed ("file already closed") after Close, while the contract

@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"sync"
 
 	"github.com/redstone-md/moss/internal/mesh"
@@ -111,13 +112,37 @@ func (l *LanNode) Start() error {
 	if err := mesh.AttachTun(l.node, l.iface, l.cidr); err != nil {
 		return err
 	}
-	// Assign our own virtual IP from the pool — read-only consumption of
-	// mesh.PeerAddr. The peer ID is the hex of our public key.
-	peerID := l.peerID()
-	selfIP, err := mesh.PeerAddr(l.node, peerID)
+	// Assign our own virtual IP deterministically from our peer ID (hex of
+	// our public key), not by arrival-order cursor. Every node derives the
+	// same address for the same peer, so two nodes joining independently can
+	// never collide on the same self IP — the collision that broke a two-node
+	// LAN. Claim the derived address in the routing table so our own packets
+	// sourced from it are recognised.
+	prefix, err := netip.ParsePrefix(l.cidr)
 	if err != nil {
 		_ = mesh.DetachTun(l.node)
 		return err
+	}
+	peerID := l.peerID()
+	selfAddr, err := tun.DeterministicAddr(prefix.Masked(), peerID)
+	if err != nil {
+		_ = mesh.DetachTun(l.node)
+		return err
+	}
+	selfIP := net.IP(selfAddr.AsSlice())
+	if err := mesh.RegisterPeerAddr(l.node, peerID, selfIP); err != nil {
+		_ = mesh.DetachTun(l.node)
+		return err
+	}
+	// A real OS interface comes up down and addressless: without this the OS
+	// has no route to the intranet pool and ping can never reach a peer. The
+	// loopback edge does not implement AddressConfigurer, so an in-process run
+	// skips it — there is no interface to program.
+	if cfg, ok := l.iface.(AddressConfigurer); ok {
+		if err := cfg.ConfigureAddress(selfIP, prefix.Bits()); err != nil {
+			_ = mesh.DetachTun(l.node)
+			return fmt.Errorf("configure interface %s with %s/%d: %w", interfaceName(l.iface), selfIP, prefix.Bits(), err)
+		}
 	}
 
 	// Presence: heartbeat {nick, peerID, selfIP} on the room's presence
@@ -130,6 +155,14 @@ func (l *LanNode) Start() error {
 		return err
 	}
 	l.presence = presence
+	// Register each discovered peer's self-reported virtual IP in the routing
+	// table so packets destined for that peer resolve without a separate
+	// lookup. The address is the sender's deterministic self-IP; two nodes
+	// that hash to the same address (astronomically unlikely with real
+	// Ed25519 keys in a /24) are last-writer-wins, same as the nick table.
+	presence.OnPeer(func(peerID string, ip net.IP) {
+		_ = mesh.RegisterPeerAddr(l.node, peerID, ip)
+	})
 
 	// Take over the message callback for the lifetime of the LanNode: the
 	// node exposes a single callback slot and no getter to chain by hand,

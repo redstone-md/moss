@@ -149,6 +149,13 @@ type Presence struct {
 	done    chan struct{}
 	started bool // guarded by mu; set when the ticker launches
 
+	// onPeer, when set, is called for every accepted remote heartbeat
+	// with that peer's ID and self-reported virtual IP. LanNode wires it
+	// to register the address into the routing table so packets to a
+	// discovered peer resolve without a separate lookup. It runs outside
+	// the table lock.
+	onPeer func(peerID string, ip net.IP)
+
 	// startOnce / stopOnce make Start and Stop idempotent.
 	startOnce sync.Once
 	stopOnce  sync.Once
@@ -299,7 +306,6 @@ func (p *Presence) Observe(data []byte) {
 	}
 
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	// The cap: at capacity the stalest entry is evicted — even a live one —
 	// because a table that refuses all comers loses every new peer.
 	if len(p.table) >= NickTableCap {
@@ -309,15 +315,15 @@ func (p *Presence) Observe(data []byte) {
 				staleNick, staleSeen = nick, entry.LastSeen
 			}
 		}
-		if staleNick != "" {
-			delete(p.table, staleNick)
-			p.counts.evictions.Add(1)
-		} else {
+		if staleNick == "" {
 			// Defensive: a full-but-unscannable table rejects rather
 			// than corrupts; unreachable while the map is well-formed.
+			p.mu.Unlock()
 			p.counts.heartbeatsRejected.Add(1)
 			return
 		}
+		delete(p.table, staleNick)
+		p.counts.evictions.Add(1)
 	}
 	p.table[env.Nick] = PeerInfo{
 		Nick:     env.Nick,
@@ -325,7 +331,24 @@ func (p *Presence) Observe(data []byte) {
 		IP:       append(net.IP(nil), ip...),
 		LastSeen: now,
 	}
+	hook := p.onPeer
+	p.mu.Unlock()
 	p.counts.heartbeatsSeen.Add(1)
+	// Hand the discovered address to the wiring callback outside the lock:
+	// LanNode uses it to register the peer in the routing table.
+	if hook != nil {
+		hook(env.PeerID, ip)
+	}
+}
+
+// OnPeer installs a callback fired for every accepted remote heartbeat
+// with that peer's ID and self-reported virtual IP. Set it before Start.
+// Passing nil clears it. It is stored under the table lock and invoked
+// outside it, so the callback must not re-enter Presence.
+func (p *Presence) OnPeer(fn func(peerID string, ip net.IP)) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.onPeer = fn
 }
 
 // ResolveNick returns the virtual intranet IP of a remote participant by

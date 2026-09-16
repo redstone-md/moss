@@ -122,12 +122,18 @@ func TestLanNodePresenceRoundTrip(t *testing.T) {
 	if b2a == nil {
 		t.Fatal("alice never resolved bob within 20s")
 	}
-	// The first pool address is .1 on both independent assignments.
-	if !a2b.Equal(net.ParseIP("10.66.0.1").To4()) {
-		t.Errorf("alice as seen by bob = %v, want 10.66.0.1", a2b)
+	// Deterministic placement: each node derives its own address from its
+	// peer ID, so the two are distinct and the address a node advertises is
+	// the address its peers route to. (Arrival-order assignment handed both
+	// independent nodes 10.66.0.1 — the collision that broke a two-node LAN.)
+	if want := lanA.SelfIP(); !a2b.Equal(want) {
+		t.Errorf("alice as seen by bob = %v, want her self IP %v", a2b, want)
 	}
-	if !b2a.Equal(net.ParseIP("10.66.0.1").To4()) {
-		t.Errorf("bob as seen by alice = %v, want 10.66.0.1", b2a)
+	if want := lanB.SelfIP(); !b2a.Equal(want) {
+		t.Errorf("bob as seen by alice = %v, want his self IP %v", b2a, want)
+	}
+	if a2b.Equal(b2a) {
+		t.Errorf("both nodes claimed the same virtual IP %v", a2b)
 	}
 
 	// Stats flowed through the presence layer on both sides. The mesh's
