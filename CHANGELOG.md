@@ -11,6 +11,21 @@ later. Nothing is deleted: the tags stay published because builds that already
 resolved them must keep resolving them.
 
 
+## [0.8.31] - 2026-09-16
+
+### Fixed
+- **The UDP handshake hot path no longer scans the pending table on every
+  init.** `handleHandshakeInit` called `prunePendingServerHandshakes` — an
+  O(pending) walk (up to 1024) under its own lock — on every handshake
+  initiation, and even on a retry from an already-tracked peer whose slot was
+  about to be overwritten regardless. All of that ran on the single read-loop
+  goroutine that already serializes AEAD and Noise for every session, so a
+  100-peer join wave paid 100 full scans in the hottest path in the node. The
+  reap is now conditional: it fires only when a genuinely new peer finds the
+  table full, inside the lock section that checks capacity, and it reaps only
+  entries past the TTL (previously the unconditional per-init scan pointlessly
+  expired other peers' live handshakes during a retry).
+
 ## [0.8.30] - 2026-09-16
 
 ### Fixed
