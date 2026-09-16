@@ -64,7 +64,6 @@ func (l *UDPListener) handleHandshakeInit(remote *net.UDPAddr, payload []byte) {
 	switch mode {
 	case HandshakeModeXX:
 		now := time.Now()
-		l.prunePendingServerHandshakes(now)
 		if _, _, _, err := hs.ReadMessage(nil, body); err != nil {
 			return
 		}
@@ -74,8 +73,15 @@ func (l *UDPListener) handleHandshakeInit(remote *net.UDPAddr, payload []byte) {
 		}
 		l.mu.Lock()
 		if _, exists := l.servers[key]; !exists && len(l.servers) >= maxPendingUDPServerHandshakes {
-			l.mu.Unlock()
-			return
+			// Out of room only now that we know this is a NEW peer: reap
+			// expired handshakes before refusing. The scan is O(pending), so
+			// it stays off the common path (a below-cap init, or a retry from
+			// an already-tracked peer, never touches it).
+			l.prunePendingServerHandshakesLocked(now)
+			if len(l.servers) >= maxPendingUDPServerHandshakes {
+				l.mu.Unlock()
+				return
+			}
 		}
 		l.servers[key] = &udpServerHandshake{hs: hs, mode: mode, createdAt: now}
 		l.mu.Unlock()
@@ -105,11 +111,15 @@ func (l *UDPListener) handleHandshakeInit(remote *net.UDPAddr, payload []byte) {
 			return
 		}
 		now := time.Now()
-		l.prunePendingServerHandshakes(now)
 		l.mu.Lock()
 		if _, exists := l.servers[key]; !exists && len(l.servers) >= maxPendingUDPServerHandshakes {
-			l.mu.Unlock()
-			return
+			// Same conditional reap as the XX path: only pay the O(pending)
+			// scan when a new peer actually finds the table full.
+			l.prunePendingServerHandshakesLocked(now)
+			if len(l.servers) >= maxPendingUDPServerHandshakes {
+				l.mu.Unlock()
+				return
+			}
 		}
 		l.servers[key] = &udpServerHandshake{
 			hs:        hs,
@@ -126,9 +136,13 @@ func (l *UDPListener) handleHandshakeInit(remote *net.UDPAddr, payload []byte) {
 	}
 }
 
-func (l *UDPListener) prunePendingServerHandshakes(now time.Time) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+// prunePendingServerHandshakesLocked drops expired pending server handshakes.
+// l.mu must be held by the caller. It is reached only when a new peer finds
+// the pending table full, so the O(pending) scan stays off the common
+// below-cap init path — previously it ran on every handshake init, and even on
+// a retry from an already-tracked peer, where it pointlessly reaped other
+// peers' live entries.
+func (l *UDPListener) prunePendingServerHandshakesLocked(now time.Time) {
 	for key, pending := range l.servers {
 		if now.Sub(pending.createdAt) > pendingUDPServerHandshakeTTL {
 			delete(l.servers, key)
