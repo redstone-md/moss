@@ -37,6 +37,7 @@ func statTestEnv(t *testing.T, d stat.Delta, budget uint64) gossip.Envelope {
 func telemetryConfig() Config {
 	cfg := DefaultConfig()
 	cfg.Trackers = nil
+	cfg.MasqConfig = MasqConfig{}
 	cfg.AnnounceIntervalSec = 1
 	cfg.GossipSub.HeartbeatMS = 50
 	cfg.Telemetry = TelemetryConfig{

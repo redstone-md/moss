@@ -11,6 +11,7 @@ import (
 
 func TestDirectPeerConnectionMigratesRelaySession(t *testing.T) {
 	cfgRelay := DefaultConfig()
+	cfgRelay.MasqConfig = MasqConfig{}
 	cfgRelay.Trackers = nil
 	cfgRelay.GossipSub.HeartbeatMS = 50
 	relayNode, err := NewNode("mesh-migrate", nil, cfgRelay)
@@ -23,6 +24,7 @@ func TestDirectPeerConnectionMigratesRelaySession(t *testing.T) {
 	defer relayNode.Stop()
 
 	cfgA := DefaultConfig()
+	cfgA.MasqConfig = MasqConfig{}
 	cfgA.Trackers = nil
 	cfgA.GossipSub.HeartbeatMS = 50
 	cfgA.MaxPeers = 1
@@ -37,6 +39,7 @@ func TestDirectPeerConnectionMigratesRelaySession(t *testing.T) {
 	defer nodeA.Stop()
 
 	cfgB := DefaultConfig()
+	cfgB.MasqConfig = MasqConfig{}
 	cfgB.Trackers = nil
 	cfgB.GossipSub.HeartbeatMS = 50
 	cfgB.MaxPeers = 1
@@ -83,6 +86,7 @@ func TestDirectPeerConnectionMigratesRelaySession(t *testing.T) {
 
 func TestRelaySessionAutoPromotesToDirectConnection(t *testing.T) {
 	cfgRelay := DefaultConfig()
+	cfgRelay.MasqConfig = MasqConfig{}
 	cfgRelay.Trackers = nil
 	cfgRelay.GossipSub.HeartbeatMS = 50
 	relayNode, err := NewNode("mesh-auto-migrate", nil, cfgRelay)
@@ -95,6 +99,7 @@ func TestRelaySessionAutoPromotesToDirectConnection(t *testing.T) {
 	defer relayNode.Stop()
 
 	cfgA := DefaultConfig()
+	cfgA.MasqConfig = MasqConfig{}
 	cfgA.Trackers = nil
 	cfgA.GossipSub.HeartbeatMS = 50
 	cfgA.MaxPeers = 1
@@ -109,6 +114,7 @@ func TestRelaySessionAutoPromotesToDirectConnection(t *testing.T) {
 	defer nodeA.Stop()
 
 	cfgB := DefaultConfig()
+	cfgB.MasqConfig = MasqConfig{}
 	cfgB.Trackers = nil
 	cfgB.GossipSub.HeartbeatMS = 50
 	cfgB.MaxPeers = 1
@@ -148,6 +154,7 @@ func TestRelaySessionAutoPromotesToDirectConnection(t *testing.T) {
 
 func TestOpportunisticGraftingPrefersHighScoringNonMeshPeer(t *testing.T) {
 	cfgA := DefaultConfig()
+	cfgA.MasqConfig = MasqConfig{}
 	cfgA.Trackers = nil
 	cfgA.GossipSub.HeartbeatMS = 50
 	cfgA.GossipSub.D = 2
@@ -165,6 +172,7 @@ func TestOpportunisticGraftingPrefersHighScoringNonMeshPeer(t *testing.T) {
 
 	makePeer := func() *Node {
 		cfg := DefaultConfig()
+		cfg.MasqConfig = MasqConfig{}
 		cfg.Trackers = nil
 		cfg.LANDiscoveryEnabled = false
 		cfg.GossipSub.HeartbeatMS = 50
@@ -251,6 +259,7 @@ func TestOpportunisticGraftingPrefersHighScoringNonMeshPeer(t *testing.T) {
 
 func TestFiveNodeMeshPropagatesPublishedMessage(t *testing.T) {
 	cfg0 := DefaultConfig()
+	cfg0.MasqConfig = MasqConfig{}
 	cfg0.Trackers = nil
 	cfg0.GossipSub.HeartbeatMS = 50
 	root, err := NewNode("mesh-five", nil, cfg0)
@@ -265,6 +274,7 @@ func TestFiveNodeMeshPropagatesPublishedMessage(t *testing.T) {
 	nodes := []*Node{root}
 	for i := 0; i < 4; i++ {
 		cfg := DefaultConfig()
+		cfg.MasqConfig = MasqConfig{}
 		cfg.Trackers = nil
 		cfg.GossipSub.HeartbeatMS = 50
 		cfg.MaxPeers = 1
@@ -320,6 +330,7 @@ func TestFiveNodeMeshPropagatesPublishedMessage(t *testing.T) {
 
 func TestLocalPublishFloodsToNonMeshSubscribers(t *testing.T) {
 	cfgRoot := DefaultConfig()
+	cfgRoot.MasqConfig = MasqConfig{}
 	cfgRoot.Trackers = nil
 	cfgRoot.GossipSub.HeartbeatMS = 50
 	cfgRoot.GossipSub.D = 1
@@ -337,6 +348,7 @@ func TestLocalPublishFloodsToNonMeshSubscribers(t *testing.T) {
 	nodes := []*Node{root}
 	for i := 0; i < 3; i++ {
 		cfg := DefaultConfig()
+		cfg.MasqConfig = MasqConfig{}
 		cfg.Trackers = nil
 		cfg.GossipSub.HeartbeatMS = 50
 		cfg.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(root.ListenPort()))}
@@ -387,6 +399,7 @@ func TestLocalPublishFloodsToNonMeshSubscribers(t *testing.T) {
 
 func TestTenNodeLanPublishPropagatesToAllSubscribers(t *testing.T) {
 	cfgRoot := DefaultConfig()
+	cfgRoot.MasqConfig = MasqConfig{}
 	cfgRoot.Trackers = nil
 	cfgRoot.GossipSub.HeartbeatMS = 50
 	cfgRoot.MaxPeers = 16
@@ -402,6 +415,7 @@ func TestTenNodeLanPublishPropagatesToAllSubscribers(t *testing.T) {
 	nodes := []*Node{root}
 	for i := 0; i < 9; i++ {
 		cfg := DefaultConfig()
+		cfg.MasqConfig = MasqConfig{}
 		cfg.Trackers = nil
 		cfg.GossipSub.HeartbeatMS = 50
 		cfg.MaxPeers = 1

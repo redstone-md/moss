@@ -49,6 +49,7 @@ func TestHundredNodeStarDeliversBurst(t *testing.T) {
 	runtime.ReadMemStats(&heapBefore)
 
 	cfgRoot := DefaultConfig()
+	cfgRoot.MasqConfig = MasqConfig{}
 	cfgRoot.Trackers = nil
 	cfgRoot.GossipSub.HeartbeatMS = 50
 	cfgRoot.MaxPeers = 128
@@ -69,6 +70,7 @@ func TestHundredNodeStarDeliversBurst(t *testing.T) {
 	}()
 	for range leaves {
 		cfg := DefaultConfig()
+		cfg.MasqConfig = MasqConfig{}
 		cfg.Trackers = nil
 		cfg.GossipSub.HeartbeatMS = 50
 		cfg.MaxPeers = 1

@@ -11,6 +11,25 @@ later. Nothing is deleted: the tags stay published because builds that already
 resolved them must keep resolving them.
 
 
+## [0.8.32] - 2026-09-16
+
+### Changed
+- **Masq (the peer-to-peer uTLS Chrome masquerade) is now on by default —
+  opt-out, not opt-in.** `mesh.DefaultConfig()` returns
+  `MasqConfig{Enabled: true, CoverSNI: "en.wikipedia.org"}`, so every direct
+  TCP leg (dial and listener) rides inside a Chrome-shaped TLS stream unless
+  a deployment explicitly asks for the bare Noise path with
+  `{"masq":{"enabled":false}}`. The public `moss.Config`/FFI path inherits
+  this: a nil `Masq` pointer or a JSON config that omits the `masq` block
+  means "the default" (masked), never "off" — only an explicit block
+  overrides. `DefaultOfflineConfig` (the air-gapped preset) pins masq OFF:
+  an isolated site has no DPI to hide from, and the TLS layer would only
+  tax loopback/LAN traffic that never leaves the host. The shared cover SNI
+  (`en.wikipedia.org`) means two stock nodes interoperate without
+  coordinating; a node that opts out can only talk to peers that also
+  opted out, since the masquerade replaces the plain TCP ear.
+
+
 ## [0.8.31] - 2026-09-16
 
 ### Fixed

@@ -24,6 +24,9 @@ func TestDefaultOfflineConfigIsOffline(t *testing.T) {
 	if !cfg.LANDiscoveryEnabled {
 		t.Fatal("LAN discovery should stay on for isolated-site use")
 	}
+	if cfg.MasqConfig.IsMasq() {
+		t.Fatal("masq should be off: an air-gapped stand has no DPI threat and must not pay the TLS wrapper on local traffic")
+	}
 }
 
 func TestDefaultConfigIsNotOffline(t *testing.T) {
@@ -98,6 +101,7 @@ func TestOfflinePresetThreeNodesStaticLoopback(t *testing.T) {
 
 func TestTraceHopsRecordedAcrossForward(t *testing.T) {
 	cfgA := DefaultConfig()
+	cfgA.MasqConfig = MasqConfig{}
 	cfgA.Trackers = nil
 	cfgA.GossipSub.HeartbeatMS = 50
 	a, err := NewNode("trace-test", nil, cfgA)
@@ -110,6 +114,7 @@ func TestTraceHopsRecordedAcrossForward(t *testing.T) {
 	defer a.Stop()
 
 	cfgB := DefaultConfig()
+	cfgB.MasqConfig = MasqConfig{}
 	cfgB.Trackers = nil
 	cfgB.GossipSub.HeartbeatMS = 50
 	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(a.ListenPort()))}

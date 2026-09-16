@@ -75,6 +75,7 @@ func TestTwentyFiveNodeChurnRepairsMesh(t *testing.T) {
 	}
 
 	cfgRoot := DefaultConfig()
+	cfgRoot.MasqConfig = MasqConfig{}
 	cfgRoot.Trackers = nil
 	cfgRoot.GossipSub.HeartbeatMS = 50
 	cfgRoot.MaxPeers = 32
@@ -91,6 +92,7 @@ func TestTwentyFiveNodeChurnRepairsMesh(t *testing.T) {
 	// separately so the initial fleet can converge first (sample order).
 	newLeaf := func() *Node {
 		cfg := DefaultConfig()
+		cfg.MasqConfig = MasqConfig{}
 		cfg.Trackers = nil
 		cfg.GossipSub.HeartbeatMS = 50
 		cfg.MaxPeers = 1

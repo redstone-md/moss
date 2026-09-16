@@ -85,6 +85,7 @@ func TestRelayedGossipPayloadIsSealed(t *testing.T) {
 
 func TestRelayedPeerTransportDeliversPubSub(t *testing.T) {
 	cfgRelay := DefaultConfig()
+	cfgRelay.MasqConfig = MasqConfig{}
 	cfgRelay.Trackers = nil
 	cfgRelay.GossipSub.HeartbeatMS = 50
 	cfgRelay.NAT.SuperNodeMinUptimeSec = 0
@@ -99,6 +100,7 @@ func TestRelayedPeerTransportDeliversPubSub(t *testing.T) {
 
 	makeLeaf := func() *Node {
 		cfg := DefaultConfig()
+		cfg.MasqConfig = MasqConfig{}
 		cfg.Trackers = nil
 		cfg.GossipSub.HeartbeatMS = 50
 		cfg.MaxPeers = 1

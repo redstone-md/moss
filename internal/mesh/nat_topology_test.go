@@ -33,6 +33,7 @@ func TestShouldPreferRelayBetweenSymmetricAndCGNATPeers(t *testing.T) {
 
 func TestSymmetricNATPeersRelayWithinFiveSeconds(t *testing.T) {
 	cfgRelay := DefaultConfig()
+	cfgRelay.MasqConfig = MasqConfig{}
 	cfgRelay.Trackers = nil
 	cfgRelay.GossipSub.HeartbeatMS = 50
 	relayNode, err := NewNode("mesh-symmetric-relay", nil, cfgRelay)
@@ -45,6 +46,7 @@ func TestSymmetricNATPeersRelayWithinFiveSeconds(t *testing.T) {
 	defer relayNode.Stop()
 
 	cfgA := DefaultConfig()
+	cfgA.MasqConfig = MasqConfig{}
 	cfgA.Trackers = nil
 	cfgA.GossipSub.HeartbeatMS = 50
 	cfgA.MaxPeers = 1
@@ -59,6 +61,7 @@ func TestSymmetricNATPeersRelayWithinFiveSeconds(t *testing.T) {
 	defer nodeA.Stop()
 
 	cfgB := DefaultConfig()
+	cfgB.MasqConfig = MasqConfig{}
 	cfgB.Trackers = nil
 	cfgB.GossipSub.HeartbeatMS = 50
 	cfgB.MaxPeers = 1
@@ -140,6 +143,7 @@ func TestSymmetricNATPeersRelayWithinFiveSeconds(t *testing.T) {
 
 func TestPortRestrictedPeersConnectDirectWithinFiveSeconds(t *testing.T) {
 	cfgRelay := DefaultConfig()
+	cfgRelay.MasqConfig = MasqConfig{}
 	cfgRelay.Trackers = nil
 	cfgRelay.GossipSub.HeartbeatMS = 50
 	relayNode, err := NewNode("mesh-port-restricted-direct", nil, cfgRelay)
@@ -152,6 +156,7 @@ func TestPortRestrictedPeersConnectDirectWithinFiveSeconds(t *testing.T) {
 	defer relayNode.Stop()
 
 	cfgA := DefaultConfig()
+	cfgA.MasqConfig = MasqConfig{}
 	cfgA.Trackers = nil
 	cfgA.GossipSub.HeartbeatMS = 50
 	cfgA.MaxPeers = 2
@@ -166,6 +171,7 @@ func TestPortRestrictedPeersConnectDirectWithinFiveSeconds(t *testing.T) {
 	defer nodeA.Stop()
 
 	cfgB := DefaultConfig()
+	cfgB.MasqConfig = MasqConfig{}
 	cfgB.Trackers = nil
 	cfgB.GossipSub.HeartbeatMS = 50
 	cfgB.MaxPeers = 2

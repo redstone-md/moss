@@ -19,6 +19,7 @@ import (
 func e2eNewNode(t *testing.T, psk []byte) *mesh.Node {
 	t.Helper()
 	cfg := mesh.DefaultConfig()
+	cfg.MasqConfig = mesh.MasqConfig{}
 	cfg.Trackers = nil
 	cfg.LANDiscoveryEnabled = false
 	cfg.GossipSub.HeartbeatMS = 50

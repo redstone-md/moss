@@ -13,12 +13,15 @@ import (
 
 // overlayTestConfig is the discovery-free topology every overlay test wires by
 // hand: no trackers, no LAN, no DHT, so the only peers are the ones the test
-// connects itself.
+// connects itself. Plain TCP is part of that contract — session-origin tests
+// assert the inbound_tcp/dial_tcp labels — so the masq default is explicitly
+// opted out (a masked ear would relabel accepted sessions inbound_masq).
 func overlayTestConfig() Config {
 	cfg := DefaultConfig()
 	cfg.Trackers = nil
 	cfg.LANDiscoveryEnabled = false
 	cfg.DHTEnabled = false
+	cfg.MasqConfig = MasqConfig{}
 	return cfg
 }
 

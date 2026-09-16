@@ -11,6 +11,7 @@ import (
 
 func TestRelaySessionEstablishesPromptly(t *testing.T) {
 	cfgRelay := DefaultConfig()
+	cfgRelay.MasqConfig = MasqConfig{}
 	cfgRelay.Trackers = nil
 	cfgRelay.GossipSub.HeartbeatMS = 50
 	relayNode, err := NewNode("mesh-relay-latency", nil, cfgRelay)
@@ -23,6 +24,7 @@ func TestRelaySessionEstablishesPromptly(t *testing.T) {
 	defer relayNode.Stop()
 
 	cfgA := DefaultConfig()
+	cfgA.MasqConfig = MasqConfig{}
 	cfgA.Trackers = nil
 	cfgA.GossipSub.HeartbeatMS = 50
 	cfgA.MaxPeers = 1
@@ -37,6 +39,7 @@ func TestRelaySessionEstablishesPromptly(t *testing.T) {
 	defer nodeA.Stop()
 
 	cfgB := DefaultConfig()
+	cfgB.MasqConfig = MasqConfig{}
 	cfgB.Trackers = nil
 	cfgB.GossipSub.HeartbeatMS = 50
 	cfgB.MaxPeers = 1
@@ -79,6 +82,7 @@ func TestRelaySessionEstablishesPromptly(t *testing.T) {
 
 func TestPeerLatencyProbeUpdatesRTT(t *testing.T) {
 	cfgA := DefaultConfig()
+	cfgA.MasqConfig = MasqConfig{}
 	cfgA.Trackers = nil
 	cfgA.GossipSub.HeartbeatMS = 50
 	nodeA, err := NewNode("mesh-rtt", nil, cfgA)
@@ -91,6 +95,7 @@ func TestPeerLatencyProbeUpdatesRTT(t *testing.T) {
 	defer nodeA.Stop()
 
 	cfgB := DefaultConfig()
+	cfgB.MasqConfig = MasqConfig{}
 	cfgB.Trackers = nil
 	cfgB.GossipSub.HeartbeatMS = 50
 	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(nodeA.ListenPort()))}
@@ -114,6 +119,7 @@ func TestPeerLatencyProbeUpdatesRTT(t *testing.T) {
 
 func TestInboundConnectionsRespectMaxPeers(t *testing.T) {
 	cfgHub := DefaultConfig()
+	cfgHub.MasqConfig = MasqConfig{}
 	cfgHub.Trackers = nil
 	cfgHub.LANDiscoveryEnabled = false
 	cfgHub.GossipSub.HeartbeatMS = 50
@@ -128,6 +134,7 @@ func TestInboundConnectionsRespectMaxPeers(t *testing.T) {
 	defer hub.Stop()
 
 	cfgA := DefaultConfig()
+	cfgA.MasqConfig = MasqConfig{}
 	cfgA.Trackers = nil
 	cfgA.LANDiscoveryEnabled = false
 	cfgA.GossipSub.HeartbeatMS = 50
@@ -145,6 +152,7 @@ func TestInboundConnectionsRespectMaxPeers(t *testing.T) {
 	waitForPeerCount(t, nodeA, 1)
 
 	cfgB := DefaultConfig()
+	cfgB.MasqConfig = MasqConfig{}
 	cfgB.Trackers = nil
 	cfgB.LANDiscoveryEnabled = false
 	cfgB.GossipSub.HeartbeatMS = 50
@@ -167,6 +175,7 @@ func TestInboundConnectionsRespectMaxPeers(t *testing.T) {
 
 func TestHighLatencyPeerIsPruned(t *testing.T) {
 	cfgA := DefaultConfig()
+	cfgA.MasqConfig = MasqConfig{}
 	cfgA.Trackers = nil
 	cfgA.GossipSub.HeartbeatMS = 50
 	nodeA, err := NewNode("mesh-prune-latency", nil, cfgA)
@@ -179,6 +188,7 @@ func TestHighLatencyPeerIsPruned(t *testing.T) {
 	defer nodeA.Stop()
 
 	cfgB := DefaultConfig()
+	cfgB.MasqConfig = MasqConfig{}
 	cfgB.Trackers = nil
 	cfgB.GossipSub.HeartbeatMS = 50
 	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(nodeA.ListenPort()))}
@@ -219,6 +229,7 @@ func TestHighLatencyPeerIsPruned(t *testing.T) {
 
 func TestNegativeScorePeerIsPrunedFromMeshWithoutDisconnect(t *testing.T) {
 	cfgA := DefaultConfig()
+	cfgA.MasqConfig = MasqConfig{}
 	cfgA.Trackers = nil
 	cfgA.GossipSub.HeartbeatMS = 50
 	nodeA, err := NewNode("mesh-negative-score", nil, cfgA)
@@ -231,6 +242,7 @@ func TestNegativeScorePeerIsPrunedFromMeshWithoutDisconnect(t *testing.T) {
 	defer nodeA.Stop()
 
 	cfgB := DefaultConfig()
+	cfgB.MasqConfig = MasqConfig{}
 	cfgB.Trackers = nil
 	cfgB.GossipSub.HeartbeatMS = 50
 	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(nodeA.ListenPort()))}
@@ -271,6 +283,7 @@ func TestNegativeScorePeerIsPrunedFromMeshWithoutDisconnect(t *testing.T) {
 
 func TestSimultaneousDirectDialsResolveToSingleConnection(t *testing.T) {
 	cfgA := DefaultConfig()
+	cfgA.MasqConfig = MasqConfig{}
 	cfgA.Trackers = nil
 	cfgA.GossipSub.HeartbeatMS = 50
 	nodeA, err := NewNode("mesh-simultaneous-dial", nil, cfgA)
@@ -283,6 +296,7 @@ func TestSimultaneousDirectDialsResolveToSingleConnection(t *testing.T) {
 	defer nodeA.Stop()
 
 	cfgB := DefaultConfig()
+	cfgB.MasqConfig = MasqConfig{}
 	cfgB.Trackers = nil
 	cfgB.GossipSub.HeartbeatMS = 50
 	nodeB, err := NewNode("mesh-simultaneous-dial", nil, cfgB)

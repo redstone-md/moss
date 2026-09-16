@@ -51,6 +51,45 @@ func TestParseConfigPreservesExplicitPortMappingOptIn(t *testing.T) {
 	}
 }
 
+// TestDefaultConfigMasksByDefault pins the opt-out masq contract: DefaultConfig
+// turns the uTLS masquerade on with the shared cover SNI, an absent "masq"
+// field in parsed JSON keeps that default (the FFI/host path — a config that
+// never mentions masq must not silently lose the mask), an explicit
+// {"masq":{"enabled":false}} opts out, and the offline preset stays bare.
+func TestDefaultConfigMasksByDefault(t *testing.T) {
+	cfg := DefaultConfig()
+	if !cfg.MasqConfig.IsMasq() {
+		t.Fatal("DefaultConfig must mask direct peer legs: a plain TCP ear is a DPI beacon")
+	}
+	if cfg.MasqConfig.CoverSNI != "en.wikipedia.org" {
+		t.Fatalf("default cover SNI = %q, want en.wikipedia.org", cfg.MasqConfig.CoverSNI)
+	}
+
+	// Absent field: the JSON-config path (FFI hosts) keeps the default on.
+	parsed, err := ParseConfig(`{"trackers":[],"listen_port":41030}`)
+	if err != nil {
+		t.Fatalf("ParseConfig failed: %v", err)
+	}
+	if !parsed.MasqConfig.IsMasq() || parsed.MasqConfig.CoverSNI != "en.wikipedia.org" {
+		t.Fatalf("absent masq field must inherit the masked default, got %+v", parsed.MasqConfig)
+	}
+
+	// Explicit opt-out is honoured.
+	off, err := ParseConfig(`{"masq":{"enabled":false}}`)
+	if err != nil {
+		t.Fatalf("ParseConfig failed: %v", err)
+	}
+	if off.MasqConfig.IsMasq() {
+		t.Fatalf("explicit {\"masq\":{\"enabled\":false}} must disable the masquerade, got %+v", off.MasqConfig)
+	}
+
+	// The air-gapped preset never masks: local traffic has no DPI to hide
+	// from, and inheriting the default would silently tax it with TLS.
+	if DefaultOfflineConfig().MasqConfig.IsMasq() {
+		t.Fatal("DefaultOfflineConfig must not mask: an isolated stand has no DPI threat")
+	}
+}
+
 func TestTransportBufferConfigAppliesHighThroughputPreset(t *testing.T) {
 	buffers := transportBufferConfig(TransportConfig{HighThroughput: true})
 	if buffers.StreamBufferSize != highThroughputBufferSize {

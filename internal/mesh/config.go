@@ -98,13 +98,14 @@ type Config struct {
 	PeerCachePath   string          `json:"peer_cache_path"`
 	Veil            VeilConfig      `json:"veil"`
 	Telemetry       TelemetryConfig `json:"telemetry"`
-	// MasqConfig opts direct peer connections into Chrome-shaped TLS
+	// MasqConfig carries direct peer connections inside Chrome-shaped TLS
 	// masquerading: every TCP dial and listener accept is carried inside
 	// a uTLS stream whose ClientHello carries the Chrome fingerprint
 	// aimed at CoverSNI, with the Noise session running inside. Unlike
 	// Veil it is peer-to-peer — no relays, no Reality splice, no extra
-	// infrastructure: a node needs only its peers' addresses. Disabled by
-	// default (zero value).
+	// infrastructure: a node needs only its peers' addresses. ON by
+	// default (DefaultConfig masks every node; plain Noise requires an
+	// explicit {"masq":{"enabled":false}} opt-out).
 	MasqConfig MasqConfig `json:"masq"`
 	// Debug opens the loopback debug plane MossScope attaches to: a structured
 	// event bus, a ring buffer of recent history, and a WebSocket. It is OFF by
@@ -171,7 +172,8 @@ func (v VeilConfig) IsDialer() bool { return v.Enabled && len(v.Relays) > 0 }
 // listeners answer with a self-signed certificate, so the Noise session
 // rides inside an ordinary-looking TLS stream. Both sides must set the
 // same CoverSNI. This is the p2p story Veil cannot serve — no relay, no
-// Reality splice, no third party needed. Disabled by default.
+// Reality splice, no third party needed. Enabled by default; disable with
+// {"masq":{"enabled":false}} for the bare Noise path.
 type MasqConfig struct {
 	Enabled  bool   `json:"enabled"`
 	CoverSNI string `json:"cover_sni"`
@@ -307,7 +309,15 @@ func DefaultConfig() Config {
 		// address or stable identity, and the stat-delta path is bounded-fanout
 		// gossip — but at fleet scale even bounded background traffic is traffic
 		// nobody asked for, so opt in with telemetry_enabled=true.
-		Telemetry:       TelemetryConfig{},
+		Telemetry: TelemetryConfig{},
+		// Masq is the one transport default that is opt-OUT: a plain TCP ear
+		// is a beacon that DPI can fingerprint and reset, so every node masks
+		// its direct peer legs inside a Chrome-shaped uTLS stream unless it
+		// explicitly asks for the bare Noise path ({"masq":{"enabled":false}}).
+		// en.wikipedia.org is the shared cover: a plausible, globally
+		// reachable, high-volume HTTPS domain both sides can name without
+		// coordinating, and matching SNIs are what makes the ruse coherent.
+		MasqConfig:      MasqConfig{Enabled: true, CoverSNI: "en.wikipedia.org"},
 		ObfsPadMax:      256,
 		DHTEnabled:      true,
 		DHTPort:         0,
@@ -328,6 +338,15 @@ func DefaultOfflineConfig() Config {
 	c.Trackers = nil
 	c.DHTEnabled = false
 	c.Veil.Enabled = false
+	// Masq stays off here on purpose, unlike DefaultConfig. An isolated
+	// deployment has no DPI threat to hide from — everything stays on the
+	// loopback/LAN — so the masquerade buys nothing while its TLS layer
+	// adds handshake latency, per-listener certificate generation, and
+	// debug friction to exactly the traffic (local static peers) that is
+	// easiest to inspect. The preset is deliberately explicit about this
+	// rather than inheriting the new opt-out default, so an air-gapped stand
+	// never silently re-encrypts what was never going to leave the host.
+	c.MasqConfig = MasqConfig{}
 	return c
 }
 

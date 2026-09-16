@@ -17,6 +17,7 @@ import (
 // floor.
 func TestBootstrapLoopSurvivesZeroAnnounceInterval(t *testing.T) {
 	cfg := DefaultConfig()
+	cfg.MasqConfig = MasqConfig{}
 	cfg.Trackers = nil
 	cfg.LANDiscoveryEnabled = false
 	// The two fields a raw Config{} leaves at zero.

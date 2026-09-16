@@ -85,6 +85,7 @@ func benchScenarioCipherStates() (*noise.CipherState, *noise.CipherState) {
 // topology connects explicitly over loopback.
 func benchScenarioConfig(networkID string) Config {
 	cfg := DefaultConfig()
+	cfg.MasqConfig = MasqConfig{}
 	cfg.Trackers = nil
 	cfg.DHTEnabled = false
 	cfg.LANDiscoveryEnabled = false

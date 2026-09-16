@@ -23,6 +23,7 @@ func TestRelayPreferenceGovernsTheConnectButNotTheUpgrade(t *testing.T) {
 	// But the upgrade path must not consult it. Verify by policy, not by name:
 	// tryDirectUpgrade forces past the preference, tryDirectConnect does not.
 	cfg := DefaultConfig()
+	cfg.MasqConfig = MasqConfig{}
 	cfg.Trackers = nil
 	cfg.LANDiscoveryEnabled = false
 	cfg.DHTEnabled = false

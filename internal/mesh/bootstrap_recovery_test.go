@@ -12,6 +12,7 @@ func TestTrackerBootstrapRecoversAfterClientRestart(t *testing.T) {
 	defer tracker.Close()
 
 	cfgServer := DefaultConfig()
+	cfgServer.MasqConfig = MasqConfig{}
 	cfgServer.Trackers = nil
 	cfgServer.LANDiscoveryEnabled = false
 	cfgServer.GossipSub.HeartbeatMS = 50
@@ -32,6 +33,7 @@ func TestTrackerBootstrapRecoversAfterClientRestart(t *testing.T) {
 
 	newClient := func() *Node {
 		cfg := DefaultConfig()
+		cfg.MasqConfig = MasqConfig{}
 		cfg.Trackers = []string{tracker.URL()}
 		cfg.LANDiscoveryEnabled = false
 		cfg.GossipSub.HeartbeatMS = 50

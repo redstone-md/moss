@@ -56,6 +56,7 @@ func BenchmarkTwoHundredPeerSteadyStateMemory(b *testing.B) {
 		runtime.ReadMemStats(&before)
 
 		cfgRoot := DefaultConfig()
+		cfgRoot.MasqConfig = MasqConfig{}
 		cfgRoot.Trackers = nil
 		cfgRoot.GossipSub.HeartbeatMS = 250
 		cfgRoot.MaxPeers = 256
@@ -71,6 +72,7 @@ func BenchmarkTwoHundredPeerSteadyStateMemory(b *testing.B) {
 		nodes = append(nodes, root)
 		for peerIndex := range 200 {
 			cfg := DefaultConfig()
+			cfg.MasqConfig = MasqConfig{}
 			cfg.Trackers = nil
 			cfg.GossipSub.HeartbeatMS = 250
 			cfg.MaxPeers = 1
@@ -135,6 +137,7 @@ func TestTwentyFiveNodeLoadSoakSustainsPublishing(t *testing.T) {
 	window := loadSoakWindow()
 
 	cfgRoot := DefaultConfig()
+	cfgRoot.MasqConfig = MasqConfig{}
 	cfgRoot.Trackers = nil
 	cfgRoot.GossipSub.HeartbeatMS = 50
 	cfgRoot.MaxPeers = 32
@@ -155,6 +158,7 @@ func TestTwentyFiveNodeLoadSoakSustainsPublishing(t *testing.T) {
 	}()
 	for range 24 {
 		cfg := DefaultConfig()
+		cfg.MasqConfig = MasqConfig{}
 		cfg.Trackers = nil
 		cfg.GossipSub.HeartbeatMS = 50
 		cfg.MaxPeers = 1

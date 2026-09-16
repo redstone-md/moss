@@ -14,6 +14,7 @@ import (
 // A node with debug enabled must open a loopback plane that announces itself.
 func TestDebugPlaneOpensAndAnnounces(t *testing.T) {
 	cfg := DefaultConfig()
+	cfg.MasqConfig = MasqConfig{}
 	cfg.Trackers = nil
 	cfg.LANDiscoveryEnabled = false
 	cfg.DHTEnabled = false
@@ -57,6 +58,7 @@ func TestDebugPlaneOpensAndAnnounces(t *testing.T) {
 // Default config must leave the plane shut.
 func TestDebugPlaneOffByDefault(t *testing.T) {
 	cfg := DefaultConfig()
+	cfg.MasqConfig = MasqConfig{}
 	cfg.Trackers = nil
 	cfg.LANDiscoveryEnabled = false
 	cfg.DHTEnabled = false
@@ -80,6 +82,7 @@ func TestDebugPlaneOffByDefault(t *testing.T) {
 // the same connection.
 func TestDebugSessionStreamsPublishAndServesMetrics(t *testing.T) {
 	cfg := DefaultConfig()
+	cfg.MasqConfig = MasqConfig{}
 	cfg.Trackers = nil
 	cfg.LANDiscoveryEnabled = false
 	cfg.DHTEnabled = false
@@ -166,6 +169,7 @@ func TestNodeServesEveryMetricTheDashboardQueries(t *testing.T) {
 	}
 
 	cfg := DefaultConfig()
+	cfg.MasqConfig = MasqConfig{}
 	cfg.Trackers = nil
 	cfg.LANDiscoveryEnabled = false
 	cfg.DHTEnabled = false
@@ -204,6 +208,7 @@ func TestNodeServesEveryMetricTheDashboardQueries(t *testing.T) {
 // to nobody is diagnosable at all.
 func TestFailedDialEmitsExplanation(t *testing.T) {
 	cfg := DefaultConfig()
+	cfg.MasqConfig = MasqConfig{}
 	cfg.Trackers = nil
 	cfg.LANDiscoveryEnabled = false
 	cfg.DHTEnabled = false

@@ -120,6 +120,7 @@ func TestStarTopologyResumesDeliveryAfterLeafRestart(t *testing.T) {
 func startStarTopology(t *testing.T, meshID string, leafCount int) (*Node, []*Node) {
 	t.Helper()
 	cfgRoot := DefaultConfig()
+	cfgRoot.MasqConfig = MasqConfig{}
 	cfgRoot.Trackers = nil
 	cfgRoot.GossipSub.HeartbeatMS = 50
 	cfgRoot.MaxPeers = max(leafCount+1, 16)
@@ -146,6 +147,7 @@ func startStarTopology(t *testing.T, meshID string, leafCount int) (*Node, []*No
 func startStarLeaf(t *testing.T, meshID string, rootPort int) *Node {
 	t.Helper()
 	cfg := DefaultConfig()
+	cfg.MasqConfig = MasqConfig{}
 	cfg.Trackers = nil
 	cfg.GossipSub.HeartbeatMS = 50
 	cfg.MaxPeers = 1

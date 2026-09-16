@@ -90,6 +90,7 @@ func TestVeilBearerPSKMatchFormsSession(t *testing.T) {
 	newCfg := func() Config {
 		cfg := DefaultConfig()
 		cfg.Trackers = nil
+		cfg.MasqConfig = MasqConfig{}
 		cfg.LANDiscoveryEnabled = false
 		cfg.AnnounceIntervalSec = 1
 		cfg.GossipSub.HeartbeatMS = 50
@@ -139,6 +140,7 @@ func TestVeilBearerPSKMismatchRejected(t *testing.T) {
 	newCfg := func() Config {
 		cfg := DefaultConfig()
 		cfg.Trackers = nil
+		cfg.MasqConfig = MasqConfig{}
 		cfg.LANDiscoveryEnabled = false
 		cfg.AnnounceIntervalSec = 1
 		cfg.GossipSub.HeartbeatMS = 50

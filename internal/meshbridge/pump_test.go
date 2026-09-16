@@ -15,6 +15,7 @@ import (
 func newBridgeNode(t *testing.T, meshID string) *mesh.Node {
 	t.Helper()
 	cfg := mesh.DefaultConfig()
+	cfg.MasqConfig = mesh.MasqConfig{}
 	cfg.Trackers = nil
 	cfg.LANDiscoveryEnabled = false
 	cfg.GossipSub.HeartbeatMS = 50

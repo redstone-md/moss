@@ -11,6 +11,7 @@ import (
 
 func TestTwentyFiveNodePublishBurstPropagatesToAllSubscribers(t *testing.T) {
 	cfgRoot := DefaultConfig()
+	cfgRoot.MasqConfig = MasqConfig{}
 	cfgRoot.Trackers = nil
 	cfgRoot.GossipSub.HeartbeatMS = 50
 	cfgRoot.MaxPeers = 32
@@ -26,6 +27,7 @@ func TestTwentyFiveNodePublishBurstPropagatesToAllSubscribers(t *testing.T) {
 	nodes := []*Node{root}
 	for i := 0; i < 24; i++ {
 		cfg := DefaultConfig()
+		cfg.MasqConfig = MasqConfig{}
 		cfg.Trackers = nil
 		cfg.GossipSub.HeartbeatMS = 50
 		cfg.MaxPeers = 1
@@ -74,6 +76,7 @@ func TestTwentyFiveNodePublishBurstPropagatesToAllSubscribers(t *testing.T) {
 
 func TestRelayBurstDeliveryRemainsStable(t *testing.T) {
 	cfgRelay := DefaultConfig()
+	cfgRelay.MasqConfig = MasqConfig{}
 	cfgRelay.Trackers = nil
 	cfgRelay.GossipSub.HeartbeatMS = 50
 	relayNode, err := NewNode("mesh-relay-burst", nil, cfgRelay)
@@ -86,6 +89,7 @@ func TestRelayBurstDeliveryRemainsStable(t *testing.T) {
 	defer relayNode.Stop()
 
 	cfgA := DefaultConfig()
+	cfgA.MasqConfig = MasqConfig{}
 	cfgA.Trackers = nil
 	cfgA.GossipSub.HeartbeatMS = 50
 	cfgA.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(relayNode.ListenPort()))}
@@ -99,6 +103,7 @@ func TestRelayBurstDeliveryRemainsStable(t *testing.T) {
 	defer nodeA.Stop()
 
 	cfgB := DefaultConfig()
+	cfgB.MasqConfig = MasqConfig{}
 	cfgB.Trackers = nil
 	cfgB.GossipSub.HeartbeatMS = 50
 	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(relayNode.ListenPort()))}
@@ -162,6 +167,7 @@ func TestRelayBurstDeliveryRemainsStable(t *testing.T) {
 
 func TestMixedTopologyPubSubAndRelayRemainStable(t *testing.T) {
 	cfgRelay := DefaultConfig()
+	cfgRelay.MasqConfig = MasqConfig{}
 	cfgRelay.Trackers = nil
 	cfgRelay.GossipSub.HeartbeatMS = 50
 	cfgRelay.MaxPeers = 8
@@ -175,6 +181,7 @@ func TestMixedTopologyPubSubAndRelayRemainStable(t *testing.T) {
 	defer relayNode.Stop()
 
 	cfgRoot := DefaultConfig()
+	cfgRoot.MasqConfig = MasqConfig{}
 	cfgRoot.Trackers = nil
 	cfgRoot.GossipSub.HeartbeatMS = 50
 	cfgRoot.MaxPeers = 4
@@ -190,6 +197,7 @@ func TestMixedTopologyPubSubAndRelayRemainStable(t *testing.T) {
 
 	newStaticNode := func(port int) *Node {
 		cfg := DefaultConfig()
+		cfg.MasqConfig = MasqConfig{}
 		cfg.Trackers = nil
 		cfg.GossipSub.HeartbeatMS = 50
 		cfg.MaxPeers = 1
@@ -298,6 +306,7 @@ func TestMixedTopologyPubSubAndRelayRemainStable(t *testing.T) {
 
 func TestMixedTopologySteadyStateSoakRetainsConnectivity(t *testing.T) {
 	cfgRelay := DefaultConfig()
+	cfgRelay.MasqConfig = MasqConfig{}
 	cfgRelay.Trackers = nil
 	cfgRelay.GossipSub.HeartbeatMS = 50
 	cfgRelay.MaxPeers = 8
@@ -311,6 +320,7 @@ func TestMixedTopologySteadyStateSoakRetainsConnectivity(t *testing.T) {
 	defer relayNode.Stop()
 
 	cfgRoot := DefaultConfig()
+	cfgRoot.MasqConfig = MasqConfig{}
 	cfgRoot.Trackers = nil
 	cfgRoot.GossipSub.HeartbeatMS = 50
 	cfgRoot.MaxPeers = 4
@@ -326,6 +336,7 @@ func TestMixedTopologySteadyStateSoakRetainsConnectivity(t *testing.T) {
 
 	newStaticNode := func(port int) *Node {
 		cfg := DefaultConfig()
+		cfg.MasqConfig = MasqConfig{}
 		cfg.Trackers = nil
 		cfg.GossipSub.HeartbeatMS = 50
 		cfg.MaxPeers = 1

@@ -557,6 +557,7 @@ func twoFFINodes(t *testing.T, name string) (a, b *mesh.Node) {
 	t.Helper()
 	cfg := func(static string) mesh.Config {
 		c := mesh.DefaultConfig()
+		c.MasqConfig = mesh.MasqConfig{}
 		c.NetworkID = "moss-ffi-test-" + name
 		c.Trackers = nil
 		c.DHTEnabled = false

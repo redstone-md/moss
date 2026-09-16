@@ -13,6 +13,7 @@ import (
 
 func TestRelaySendToAutoOpensRelaySession(t *testing.T) {
 	cfgRelay := DefaultConfig()
+	cfgRelay.MasqConfig = MasqConfig{}
 	cfgRelay.Trackers = nil
 	cfgRelay.GossipSub.HeartbeatMS = 50
 	relayNode, err := NewNode("mesh-relay-auto", nil, cfgRelay)
@@ -25,6 +26,7 @@ func TestRelaySendToAutoOpensRelaySession(t *testing.T) {
 	defer relayNode.Stop()
 
 	cfgA := DefaultConfig()
+	cfgA.MasqConfig = MasqConfig{}
 	cfgA.Trackers = nil
 	cfgA.GossipSub.HeartbeatMS = 50
 	cfgA.MaxPeers = 1
@@ -39,6 +41,7 @@ func TestRelaySendToAutoOpensRelaySession(t *testing.T) {
 	defer nodeA.Stop()
 
 	cfgB := DefaultConfig()
+	cfgB.MasqConfig = MasqConfig{}
 	cfgB.Trackers = nil
 	cfgB.GossipSub.HeartbeatMS = 50
 	cfgB.MaxPeers = 1
@@ -92,6 +95,7 @@ func TestRelaySendToAutoOpensRelaySession(t *testing.T) {
 
 func TestRelayNodeEnforcesSessionLimit(t *testing.T) {
 	cfgRelay := DefaultConfig()
+	cfgRelay.MasqConfig = MasqConfig{}
 	cfgRelay.Trackers = nil
 	cfgRelay.GossipSub.HeartbeatMS = 5000
 	cfgRelay.NAT.RelayMaxSessions = 1
@@ -106,6 +110,7 @@ func TestRelayNodeEnforcesSessionLimit(t *testing.T) {
 
 	makeLeaf := func() *Node {
 		cfg := DefaultConfig()
+		cfg.MasqConfig = MasqConfig{}
 		cfg.Trackers = nil
 		cfg.GossipSub.HeartbeatMS = 5000
 		cfg.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(relayNode.ListenPort()))}
@@ -148,6 +153,7 @@ func TestRelayNodeEnforcesSessionLimit(t *testing.T) {
 
 func TestRelayNodeEnforcesConfiguredBandwidth(t *testing.T) {
 	cfgRelay := DefaultConfig()
+	cfgRelay.MasqConfig = MasqConfig{}
 	cfgRelay.Trackers = nil
 	cfgRelay.GossipSub.HeartbeatMS = 5000
 	cfgRelay.NAT.RelayMaxBandwidthKBPS = 1
@@ -163,6 +169,7 @@ func TestRelayNodeEnforcesConfiguredBandwidth(t *testing.T) {
 	defer relayNode.Stop()
 
 	cfgA := DefaultConfig()
+	cfgA.MasqConfig = MasqConfig{}
 	cfgA.Trackers = nil
 	cfgA.GossipSub.HeartbeatMS = 5000
 	cfgA.MaxPeers = 1
@@ -177,6 +184,7 @@ func TestRelayNodeEnforcesConfiguredBandwidth(t *testing.T) {
 	defer nodeA.Stop()
 
 	cfgB := DefaultConfig()
+	cfgB.MasqConfig = MasqConfig{}
 	cfgB.Trackers = nil
 	cfgB.GossipSub.HeartbeatMS = 5000
 	cfgB.MaxPeers = 1
@@ -266,6 +274,7 @@ func TestRelayNodeEnforcesConfiguredBandwidth(t *testing.T) {
 
 func TestRelayBandwidthOverloadDemotesAndRecoversSupernode(t *testing.T) {
 	cfgRelay := DefaultConfig()
+	cfgRelay.MasqConfig = MasqConfig{}
 	cfgRelay.Trackers = nil
 	cfgRelay.GossipSub.HeartbeatMS = 50
 	cfgRelay.NAT.SuperNodeMinUptimeSec = 0
@@ -282,6 +291,7 @@ func TestRelayBandwidthOverloadDemotesAndRecoversSupernode(t *testing.T) {
 	defer relayNode.Stop()
 
 	cfgA := DefaultConfig()
+	cfgA.MasqConfig = MasqConfig{}
 	cfgA.Trackers = nil
 	cfgA.GossipSub.HeartbeatMS = 50
 	cfgA.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(relayNode.ListenPort()))}
@@ -295,6 +305,7 @@ func TestRelayBandwidthOverloadDemotesAndRecoversSupernode(t *testing.T) {
 	defer nodeA.Stop()
 
 	cfgB := DefaultConfig()
+	cfgB.MasqConfig = MasqConfig{}
 	cfgB.Trackers = nil
 	cfgB.GossipSub.HeartbeatMS = 50
 	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(relayNode.ListenPort()))}
@@ -344,6 +355,7 @@ func TestRelayBandwidthOverloadDemotesAndRecoversSupernode(t *testing.T) {
 
 func TestSupernodeStatusAnnounceAndRevokePropagatesOnce(t *testing.T) {
 	cfgA := DefaultConfig()
+	cfgA.MasqConfig = MasqConfig{}
 	cfgA.Trackers = nil
 	cfgA.GossipSub.HeartbeatMS = 50
 	cfgA.NAT.SuperNodeMinUptimeSec = 0
@@ -357,6 +369,7 @@ func TestSupernodeStatusAnnounceAndRevokePropagatesOnce(t *testing.T) {
 	defer nodeA.Stop()
 
 	cfgB := DefaultConfig()
+	cfgB.MasqConfig = MasqConfig{}
 	cfgB.Trackers = nil
 	cfgB.GossipSub.HeartbeatMS = 50
 	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(nodeA.ListenPort()))}
@@ -429,6 +442,7 @@ func TestSupernodeStatusAnnounceAndRevokePropagatesOnce(t *testing.T) {
 
 func TestPeerAnnouncementsPopulateKnownPeerDirectory(t *testing.T) {
 	cfgRelay := DefaultConfig()
+	cfgRelay.MasqConfig = MasqConfig{}
 	cfgRelay.Trackers = nil
 	cfgRelay.GossipSub.HeartbeatMS = 50
 	relayNode, err := NewNode("mesh-directory", nil, cfgRelay)
@@ -441,6 +455,7 @@ func TestPeerAnnouncementsPopulateKnownPeerDirectory(t *testing.T) {
 	defer relayNode.Stop()
 
 	cfgA := DefaultConfig()
+	cfgA.MasqConfig = MasqConfig{}
 	cfgA.Trackers = nil
 	cfgA.GossipSub.HeartbeatMS = 50
 	cfgA.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(relayNode.ListenPort()))}
@@ -454,6 +469,7 @@ func TestPeerAnnouncementsPopulateKnownPeerDirectory(t *testing.T) {
 	defer nodeA.Stop()
 
 	cfgB := DefaultConfig()
+	cfgB.MasqConfig = MasqConfig{}
 	cfgB.Trackers = nil
 	cfgB.GossipSub.HeartbeatMS = 50
 	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(relayNode.ListenPort()))}

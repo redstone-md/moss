@@ -121,11 +121,16 @@ func TestMasqNodesFormAMesh(t *testing.T) {
 	}
 }
 
-// TestMasqDisabledKeepsPlainTCP pins the default: a zero MasqConfig must
-// produce exactly the pre-masq topology — ListenPair's plain TCP listener
-// present, no masq listener, no masq dialer.
+// TestMasqDisabledKeepsPlainTCP pins the opt-out: an EXPLICIT MasqConfig zero
+// must produce exactly the pre-masq topology — ListenPair's plain TCP listener
+// present, no masq listener, no masq dialer. Since DefaultConfig (and therefore
+// every helper built on it) now masks by default, the disabled path is only
+// reachable through the explicit opt-out this test sets — which is also the
+// contract a plain-Noise deployment relies on.
 func TestMasqDisabledKeepsPlainTCP(t *testing.T) {
-	n := startMasqNode(t, "room", isolatedTestConfig("masq-off"))
+	cfg := isolatedTestConfig("masq-off")
+	cfg.MasqConfig = MasqConfig{} // explicit opt-out; the default is now ON
+	n := startMasqNode(t, "room", cfg)
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 	if n.listener == nil {

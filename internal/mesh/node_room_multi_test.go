@@ -75,6 +75,7 @@ func TestRoomsOnOneNodeStayIsolated(t *testing.T) {
 // the intended peers do not read — a silent misdelivery rather than an error.
 func TestUnjoinedRoomIsRefusedRatherThanSubstituted(t *testing.T) {
 	cfg := DefaultConfig()
+	cfg.MasqConfig = MasqConfig{}
 	cfg.Trackers = nil
 	cfg.LANDiscoveryEnabled = false
 	node, err := NewNode("room-a", nil, cfg)

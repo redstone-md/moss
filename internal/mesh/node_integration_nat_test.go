@@ -14,6 +14,7 @@ import (
 
 func TestSupernodeDemotesWhenRelayCapacityIsSaturated(t *testing.T) {
 	cfgA := DefaultConfig()
+	cfgA.MasqConfig = MasqConfig{}
 	cfgA.Trackers = nil
 	cfgA.GossipSub.HeartbeatMS = 50
 	cfgA.NAT.SuperNodeMinUptimeSec = 0
@@ -28,6 +29,7 @@ func TestSupernodeDemotesWhenRelayCapacityIsSaturated(t *testing.T) {
 	defer nodeA.Stop()
 
 	cfgB := DefaultConfig()
+	cfgB.MasqConfig = MasqConfig{}
 	cfgB.Trackers = nil
 	cfgB.GossipSub.HeartbeatMS = 50
 	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(nodeA.ListenPort()))}
@@ -102,6 +104,7 @@ func TestSupernodeDemotesWhenRelayCapacityIsSaturated(t *testing.T) {
 // join, or it never learns the node can relay for it.
 func TestSupernodeAnnounceReachesPeerJoiningAfterPromotion(t *testing.T) {
 	cfgA := DefaultConfig()
+	cfgA.MasqConfig = MasqConfig{}
 	cfgA.Trackers = nil
 	cfgA.GossipSub.HeartbeatMS = 50
 	cfgA.NAT.SuperNodeMinUptimeSec = 0
@@ -125,6 +128,7 @@ func TestSupernodeAnnounceReachesPeerJoiningAfterPromotion(t *testing.T) {
 	// B connects only now — after promotion. It must still converge to seeing A
 	// as relay-capable.
 	cfgB := DefaultConfig()
+	cfgB.MasqConfig = MasqConfig{}
 	cfgB.Trackers = nil
 	cfgB.GossipSub.HeartbeatMS = 50
 	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(nodeA.ListenPort()))}
@@ -146,6 +150,7 @@ func TestSupernodeAnnounceReachesPeerJoiningAfterPromotion(t *testing.T) {
 
 func TestRefreshExternalAddressPreservesListenPort(t *testing.T) {
 	cfgRelay := DefaultConfig()
+	cfgRelay.MasqConfig = MasqConfig{}
 	cfgRelay.Trackers = nil
 	cfgRelay.GossipSub.HeartbeatMS = 50
 	relayNode, err := NewNode("mesh-binding", nil, cfgRelay)
@@ -158,6 +163,7 @@ func TestRefreshExternalAddressPreservesListenPort(t *testing.T) {
 	defer relayNode.Stop()
 
 	cfgA := DefaultConfig()
+	cfgA.MasqConfig = MasqConfig{}
 	cfgA.Trackers = nil
 	cfgA.GossipSub.HeartbeatMS = 50
 	cfgA.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(relayNode.ListenPort()))}
@@ -191,6 +197,7 @@ func TestRefreshExternalAddressPreservesListenPort(t *testing.T) {
 
 func TestReachabilityProbeReportsReachableAddress(t *testing.T) {
 	cfgA := DefaultConfig()
+	cfgA.MasqConfig = MasqConfig{}
 	cfgA.Trackers = nil
 	nodeA, err := NewNode("mesh-reachability", nil, cfgA)
 	if err != nil {
@@ -202,6 +209,7 @@ func TestReachabilityProbeReportsReachableAddress(t *testing.T) {
 	defer nodeA.Stop()
 
 	cfgB := DefaultConfig()
+	cfgB.MasqConfig = MasqConfig{}
 	cfgB.Trackers = nil
 	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(nodeA.ListenPort()))}
 	nodeB, err := NewNode("mesh-reachability", nil, cfgB)
@@ -225,6 +233,7 @@ func TestReachabilityProbeReportsReachableAddress(t *testing.T) {
 
 func TestReachabilityProbeReportsUnreachableAddress(t *testing.T) {
 	cfgA := DefaultConfig()
+	cfgA.MasqConfig = MasqConfig{}
 	cfgA.Trackers = nil
 	nodeA, err := NewNode("mesh-reachability-fail", nil, cfgA)
 	if err != nil {
@@ -236,6 +245,7 @@ func TestReachabilityProbeReportsUnreachableAddress(t *testing.T) {
 	defer nodeA.Stop()
 
 	cfgB := DefaultConfig()
+	cfgB.MasqConfig = MasqConfig{}
 	cfgB.Trackers = nil
 	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(nodeA.ListenPort()))}
 	nodeB, err := NewNode("mesh-reachability-fail", nil, cfgB)
@@ -259,6 +269,7 @@ func TestReachabilityProbeReportsUnreachableAddress(t *testing.T) {
 
 func TestDirectUDPConnectRegistersPeer(t *testing.T) {
 	cfgA := DefaultConfig()
+	cfgA.MasqConfig = MasqConfig{}
 	cfgA.Trackers = nil
 	nodeA, err := NewNode("mesh-udp-direct", nil, cfgA)
 	if err != nil {
@@ -270,6 +281,7 @@ func TestDirectUDPConnectRegistersPeer(t *testing.T) {
 	defer nodeA.Stop()
 
 	cfgB := DefaultConfig()
+	cfgB.MasqConfig = MasqConfig{}
 	cfgB.Trackers = nil
 	nodeB, err := NewNode("mesh-udp-direct", nil, cfgB)
 	if err != nil {
@@ -292,6 +304,7 @@ func TestDirectUDPConnectRegistersPeer(t *testing.T) {
 
 func TestTryHolePunchDialEstablishesDirectPeer(t *testing.T) {
 	cfgRelay := DefaultConfig()
+	cfgRelay.MasqConfig = MasqConfig{}
 	cfgRelay.Trackers = nil
 	cfgRelay.GossipSub.HeartbeatMS = 50
 	relayNode, err := NewNode("mesh-holepunch", nil, cfgRelay)
@@ -304,6 +317,7 @@ func TestTryHolePunchDialEstablishesDirectPeer(t *testing.T) {
 	defer relayNode.Stop()
 
 	cfgA := DefaultConfig()
+	cfgA.MasqConfig = MasqConfig{}
 	cfgA.Trackers = nil
 	cfgA.GossipSub.HeartbeatMS = 50
 	cfgA.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(relayNode.ListenPort()))}
@@ -317,6 +331,7 @@ func TestTryHolePunchDialEstablishesDirectPeer(t *testing.T) {
 	defer nodeA.Stop()
 
 	cfgB := DefaultConfig()
+	cfgB.MasqConfig = MasqConfig{}
 	cfgB.Trackers = nil
 	cfgB.GossipSub.HeartbeatMS = 50
 	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(relayNode.ListenPort()))}
@@ -351,6 +366,7 @@ func TestTryHolePunchDialEstablishesDirectPeer(t *testing.T) {
 
 func TestHandleHolePunchCoordIgnoresUnsolicitedRequest(t *testing.T) {
 	cfg := DefaultConfig()
+	cfg.MasqConfig = MasqConfig{}
 	cfg.Trackers = nil
 	node, err := NewNode("mesh-holepunch-unsolicited", nil, cfg)
 	if err != nil {
@@ -388,6 +404,7 @@ func TestHandleHolePunchCoordIgnoresUnsolicitedRequest(t *testing.T) {
 
 func TestHandleHolePunchCoordKeepsPendingRequestAfterMismatchedReply(t *testing.T) {
 	cfg := DefaultConfig()
+	cfg.MasqConfig = MasqConfig{}
 	cfg.Trackers = nil
 	node, err := NewNode("mesh-holepunch-mismatch", nil, cfg)
 	if err != nil {
@@ -442,6 +459,7 @@ func TestHandleHolePunchCoordKeepsPendingRequestAfterMismatchedReply(t *testing.
 
 func TestHolePunchCoordDoesNotPoisonPredictionObservations(t *testing.T) {
 	cfg := DefaultConfig()
+	cfg.MasqConfig = MasqConfig{}
 	cfg.Trackers = nil
 	node, err := NewNode("mesh-holepunch-prediction-poison", nil, cfg)
 	if err != nil {

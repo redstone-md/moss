@@ -9,10 +9,15 @@ import (
 	"time"
 )
 
+// Both tests below pin the plain-TCP ear itself: they assert nodeB.listener
+// is present and close it to force the UDP fallback. The masq default would
+// replace that ear with a masq listener (n.listener == nil), so masq is
+// explicitly opted out here.
 func TestConnectBootstrapPeerFallsBackToUDPWithoutPeerHint(t *testing.T) {
 	cfgA := DefaultConfig()
 	cfgA.Trackers = nil
 	cfgA.LANDiscoveryEnabled = false
+	cfgA.MasqConfig = MasqConfig{}
 	nodeA, err := NewNode("mesh-bootstrap-udp", nil, cfgA)
 	if err != nil {
 		t.Fatalf("NewNode nodeA failed: %v", err)
@@ -25,6 +30,7 @@ func TestConnectBootstrapPeerFallsBackToUDPWithoutPeerHint(t *testing.T) {
 	cfgB := DefaultConfig()
 	cfgB.Trackers = nil
 	cfgB.LANDiscoveryEnabled = false
+	cfgB.MasqConfig = MasqConfig{}
 	nodeB, err := NewNode("mesh-bootstrap-udp", nil, cfgB)
 	if err != nil {
 		t.Fatalf("NewNode nodeB failed: %v", err)
@@ -63,6 +69,7 @@ func TestConnectBootstrapSeedPrefersTCPForLoopbackSeeds(t *testing.T) {
 	cfgA := DefaultConfig()
 	cfgA.Trackers = nil
 	cfgA.LANDiscoveryEnabled = false
+	cfgA.MasqConfig = MasqConfig{}
 	nodeA, err := NewNode("mesh-bootstrap-seed-tcp", nil, cfgA)
 	if err != nil {
 		t.Fatalf("NewNode nodeA failed: %v", err)
@@ -75,6 +82,7 @@ func TestConnectBootstrapSeedPrefersTCPForLoopbackSeeds(t *testing.T) {
 	cfgB := DefaultConfig()
 	cfgB.Trackers = nil
 	cfgB.LANDiscoveryEnabled = false
+	cfgB.MasqConfig = MasqConfig{}
 	nodeB, err := NewNode("mesh-bootstrap-seed-tcp", nil, cfgB)
 	if err != nil {
 		t.Fatalf("NewNode nodeB failed: %v", err)

@@ -13,6 +13,7 @@ import (
 
 func TestDiscoveredPeersAutoConnectIntoOverlay(t *testing.T) {
 	cfgB := DefaultConfig()
+	cfgB.MasqConfig = MasqConfig{}
 	cfgB.Trackers = nil
 	cfgB.GossipSub.HeartbeatMS = 50
 	nodeB, err := NewNode("mesh-overlay", nil, cfgB)
@@ -26,6 +27,7 @@ func TestDiscoveredPeersAutoConnectIntoOverlay(t *testing.T) {
 
 	makeLeaf := func(port int) *Node {
 		cfg := DefaultConfig()
+		cfg.MasqConfig = MasqConfig{}
 		cfg.Trackers = nil
 		cfg.GossipSub.HeartbeatMS = 50
 		cfg.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(nodeB.ListenPort()))}
@@ -59,6 +61,7 @@ func TestDiscoveredPeersAutoConnectIntoOverlay(t *testing.T) {
 
 func TestDiscoveredPeerReconnectsAfterRestartWithNewPort(t *testing.T) {
 	cfgHub := DefaultConfig()
+	cfgHub.MasqConfig = MasqConfig{}
 	cfgHub.Trackers = nil
 	cfgHub.GossipSub.HeartbeatMS = 50
 	hub, err := NewNode("mesh-overlay-restart", nil, cfgHub)
@@ -72,6 +75,7 @@ func TestDiscoveredPeerReconnectsAfterRestartWithNewPort(t *testing.T) {
 
 	newLeaf := func(identity *mcrypto.Identity) *Node {
 		cfg := DefaultConfig()
+		cfg.MasqConfig = MasqConfig{}
 		cfg.Trackers = nil
 		cfg.GossipSub.HeartbeatMS = 50
 		cfg.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(hub.ListenPort()))}
@@ -132,6 +136,7 @@ func TestDiscoveredPeerReconnectsAfterRestartWithNewPort(t *testing.T) {
 
 func TestRelaySendToFallsBackAfterDirectDialFailure(t *testing.T) {
 	cfgRelay := DefaultConfig()
+	cfgRelay.MasqConfig = MasqConfig{}
 	cfgRelay.Trackers = nil
 	cfgRelay.GossipSub.HeartbeatMS = 50
 	relayNode, err := NewNode("mesh-relay-known", nil, cfgRelay)
@@ -144,6 +149,7 @@ func TestRelaySendToFallsBackAfterDirectDialFailure(t *testing.T) {
 	defer relayNode.Stop()
 
 	cfgA := DefaultConfig()
+	cfgA.MasqConfig = MasqConfig{}
 	cfgA.Trackers = nil
 	cfgA.GossipSub.HeartbeatMS = 50
 	cfgA.MaxPeers = 1
@@ -158,6 +164,7 @@ func TestRelaySendToFallsBackAfterDirectDialFailure(t *testing.T) {
 	defer nodeA.Stop()
 
 	cfgB := DefaultConfig()
+	cfgB.MasqConfig = MasqConfig{}
 	cfgB.Trackers = nil
 	cfgB.GossipSub.HeartbeatMS = 50
 	cfgB.MaxPeers = 1
@@ -212,6 +219,7 @@ func TestRelaySendToFallsBackAfterDirectDialFailure(t *testing.T) {
 
 func TestRelaySendToFallsBackToSecondaryRelayPeer(t *testing.T) {
 	cfgRelay1 := DefaultConfig()
+	cfgRelay1.MasqConfig = MasqConfig{}
 	cfgRelay1.Trackers = nil
 	cfgRelay1.GossipSub.HeartbeatMS = 50
 	cfgRelay1.NAT.RelayMaxSessions = 1
@@ -225,6 +233,7 @@ func TestRelaySendToFallsBackToSecondaryRelayPeer(t *testing.T) {
 	defer relay1.Stop()
 
 	cfgRelay2 := DefaultConfig()
+	cfgRelay2.MasqConfig = MasqConfig{}
 	cfgRelay2.Trackers = nil
 	cfgRelay2.GossipSub.HeartbeatMS = 50
 	relay2, err := NewNode("mesh-relay-secondary", nil, cfgRelay2)
@@ -237,6 +246,7 @@ func TestRelaySendToFallsBackToSecondaryRelayPeer(t *testing.T) {
 	defer relay2.Stop()
 
 	cfgA := DefaultConfig()
+	cfgA.MasqConfig = MasqConfig{}
 	cfgA.Trackers = nil
 	cfgA.GossipSub.HeartbeatMS = 50
 	cfgA.MaxPeers = 2
@@ -254,6 +264,7 @@ func TestRelaySendToFallsBackToSecondaryRelayPeer(t *testing.T) {
 	defer nodeA.Stop()
 
 	cfgB := DefaultConfig()
+	cfgB.MasqConfig = MasqConfig{}
 	cfgB.Trackers = nil
 	cfgB.GossipSub.HeartbeatMS = 50
 	cfgB.MaxPeers = 2
@@ -327,6 +338,7 @@ func TestRelaySendToFallsBackToSecondaryRelayPeer(t *testing.T) {
 
 func TestRelaySessionAnyPrefersLessLoadedRelayPeer(t *testing.T) {
 	cfgRelay1 := DefaultConfig()
+	cfgRelay1.MasqConfig = MasqConfig{}
 	cfgRelay1.Trackers = nil
 	cfgRelay1.GossipSub.HeartbeatMS = 50
 	relay1, err := NewNode("mesh-relay-balance", nil, cfgRelay1)
@@ -339,6 +351,7 @@ func TestRelaySessionAnyPrefersLessLoadedRelayPeer(t *testing.T) {
 	defer relay1.Stop()
 
 	cfgRelay2 := DefaultConfig()
+	cfgRelay2.MasqConfig = MasqConfig{}
 	cfgRelay2.Trackers = nil
 	cfgRelay2.GossipSub.HeartbeatMS = 50
 	relay2, err := NewNode("mesh-relay-balance", nil, cfgRelay2)
@@ -351,6 +364,7 @@ func TestRelaySessionAnyPrefersLessLoadedRelayPeer(t *testing.T) {
 	defer relay2.Stop()
 
 	cfgA := DefaultConfig()
+	cfgA.MasqConfig = MasqConfig{}
 	cfgA.Trackers = nil
 	cfgA.GossipSub.HeartbeatMS = 50
 	cfgA.MaxPeers = 2
@@ -368,6 +382,7 @@ func TestRelaySessionAnyPrefersLessLoadedRelayPeer(t *testing.T) {
 	defer nodeA.Stop()
 
 	cfgB := DefaultConfig()
+	cfgB.MasqConfig = MasqConfig{}
 	cfgB.Trackers = nil
 	cfgB.GossipSub.HeartbeatMS = 50
 	cfgB.MaxPeers = 2

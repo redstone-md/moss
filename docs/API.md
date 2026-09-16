@@ -728,8 +728,8 @@ Top-level config schema:
     "degree_cap": 256,
   },
   "masq": {
-    "enabled": false,
-    "cover_sni": "yandex.ru"
+    "enabled": true,
+    "cover_sni": "en.wikipedia.org"
   }
 }
 ```
@@ -739,6 +739,8 @@ Notes:
 - omitting `trackers` uses the built-in default tracker set
 - explicitly passing `"trackers": []` disables tracker bootstrap
 - partial nested config objects are supported; unspecified fields fall back to defaults
+- omitting the `masq` block keeps the masquerade ON (it is the default);
+  pass `"masq": {"enabled": false}` to run the bare Noise transport
 
 ### Transport Tuning
 
@@ -788,18 +790,38 @@ NAT/degree histograms for client-side *simulation*, never as real edges.
 
 ### Masq (peer-to-peer Chrome TLS masquerade)
 
-The `masq` block is **off by default**. When `enabled` is `true` and
-`cover_sni` is set, the node's direct peer-to-peer TCP legs are carried
-inside a **Chrome uTLS fingerprint** TLS stream: outbound dials present a
-Chrome-shaped ClientHello aimed at `cover_sni`, and the listener answers
-with a locally generated certificate, so the Noise session inside is
-indistinguishable from ordinary HTTPS on the wire.
+The `masq` block is **on by default** — Masq is opt-OUT. A node built from
+the default config (or from JSON that omits the `masq` block) carries its
+direct peer-to-peer TCP legs inside a **Chrome uTLS fingerprint** TLS
+stream: outbound dials present a Chrome-shaped ClientHello aimed at
+`cover_sni` (default `en.wikipedia.org`), and the listener answers with a
+locally generated certificate, so the Noise session inside is
+indistinguishable from ordinary HTTPS on the wire. A plain TCP ear is a
+beacon an on-path DPI can fingerprint and reset; masking is the sane
+default for every fleet that did not explicitly ask for less.
 
 Unlike the Veil "Reality" bearer, Masq is purely peer-to-peer: no relays,
-no splice target, no third party to run. Both peers must set the same
-`cover_sni` — a plausible, non-suspicious domain such as `yandex.ru`
-(matching the Veil SNI pool) works; a node needs nothing but its peers'
-addresses.
+no splice target, no third party to run. Both peers must agree on the
+`cover_sni` they shape their camouflage against — the default
+`en.wikipedia.org` is chosen so two stock nodes interoperate without
+coordinating anything.
+
+To disable the masquerade (the bare Noise-over-TCP path), set:
+
+```json
+{ "masq": { "enabled": false } }
+```
+
+or, in the Go API, leave `moss.Config.Masq` unset and rely on the default,
+or set an explicit `&moss.MasqConfig{Enabled: false}`. A node that opts
+out can still talk to a masked peer only if that peer also opts out —
+the masquerade replaces the plain TCP ear, so both ends of a direct link
+must be in the same mode.
+
+The air-gapped preset (`DefaultOfflineConfig`) keeps masq **off**: an
+isolated site has no DPI to hide from, and TLS wrapping would only add
+handshake latency and certificate overhead to loopback/LAN traffic that
+was never going to leave the host.
 
 ## Current Examples
 

@@ -23,6 +23,11 @@ func isolatedTestConfig(name string) Config {
 	c.Trackers = nil
 	c.DHTEnabled = false
 	c.LANDiscoveryEnabled = false
+	// The plain-TCP topology every integration test here was written against.
+	// DefaultConfig now masks by default, so the plain path must be an explicit
+	// opt-out or the whole suite silently re-baselines onto the masquerade;
+	// the masked path has its own dedicated coverage (node_masq_test.go).
+	c.MasqConfig = MasqConfig{}
 	return c
 }
 

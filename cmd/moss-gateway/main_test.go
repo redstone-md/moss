@@ -12,6 +12,7 @@ import (
 func newTestManager(t *testing.T) *manager {
 	t.Helper()
 	cfg := mesh.DefaultConfig()
+	cfg.MasqConfig = mesh.MasqConfig{}
 	cfg.Trackers = nil
 	cfg.Telemetry = mesh.TelemetryConfig{Enabled: true, EpochSec: 60, KAnon: 1}
 	mgr := &manager{nodes: map[string]*mesh.Node{}, def: "gw-test", tmpl: cfg, max: 4}

@@ -18,6 +18,7 @@ import (
 // real substrate.
 func lanTestConfig(name string) mesh.Config {
 	cfg := mesh.DefaultConfig()
+	cfg.MasqConfig = mesh.MasqConfig{}
 	cfg.NetworkID = "moss-lan-test-" + name
 	cfg.Trackers = nil
 	cfg.DHTEnabled = false

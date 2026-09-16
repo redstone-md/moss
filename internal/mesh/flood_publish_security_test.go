@@ -9,6 +9,7 @@ import (
 
 func TestLocalPublishDoesNotLeakToUnsubscribedDirectPeer(t *testing.T) {
 	cfgPublisher := DefaultConfig()
+	cfgPublisher.MasqConfig = MasqConfig{}
 	cfgPublisher.Trackers = nil
 	cfgPublisher.GossipSub.HeartbeatMS = 50
 	publisher, err := NewNode("mesh-flood-publish-privacy", nil, cfgPublisher)
@@ -21,6 +22,7 @@ func TestLocalPublishDoesNotLeakToUnsubscribedDirectPeer(t *testing.T) {
 	defer publisher.Stop()
 
 	cfgSpy := DefaultConfig()
+	cfgSpy.MasqConfig = MasqConfig{}
 	cfgSpy.Trackers = nil
 	cfgSpy.GossipSub.HeartbeatMS = 50
 	cfgSpy.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(publisher.ListenPort()))}

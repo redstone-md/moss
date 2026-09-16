@@ -11,6 +11,7 @@ import (
 func BenchmarkDirectPublishThroughput(b *testing.B) {
 	payload := make([]byte, 32*1024)
 	cfgA := DefaultConfig()
+	cfgA.MasqConfig = MasqConfig{}
 	cfgA.Trackers = nil
 	cfgA.GossipSub.HeartbeatMS = 50
 	nodeA, err := NewNode("mesh-bench-direct", nil, cfgA)
@@ -23,6 +24,7 @@ func BenchmarkDirectPublishThroughput(b *testing.B) {
 	b.Cleanup(func() { nodeA.Stop() })
 
 	cfgB := DefaultConfig()
+	cfgB.MasqConfig = MasqConfig{}
 	cfgB.Trackers = nil
 	cfgB.GossipSub.HeartbeatMS = 50
 	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(nodeA.ListenPort()))}
@@ -73,6 +75,7 @@ func BenchmarkDirectPublishThroughput(b *testing.B) {
 func BenchmarkRelaySendThroughput(b *testing.B) {
 	payload := make([]byte, 16*1024)
 	cfgRelay := DefaultConfig()
+	cfgRelay.MasqConfig = MasqConfig{}
 	cfgRelay.Trackers = nil
 	cfgRelay.GossipSub.HeartbeatMS = 10_000
 	relayNode, err := NewNode("mesh-bench-relay", nil, cfgRelay)
@@ -85,6 +88,7 @@ func BenchmarkRelaySendThroughput(b *testing.B) {
 	b.Cleanup(func() { relayNode.Stop() })
 
 	cfgA := DefaultConfig()
+	cfgA.MasqConfig = MasqConfig{}
 	cfgA.Trackers = nil
 	cfgA.GossipSub.HeartbeatMS = 10_000
 	cfgA.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(relayNode.ListenPort()))}
@@ -98,6 +102,7 @@ func BenchmarkRelaySendThroughput(b *testing.B) {
 	b.Cleanup(func() { nodeA.Stop() })
 
 	cfgB := DefaultConfig()
+	cfgB.MasqConfig = MasqConfig{}
 	cfgB.Trackers = nil
 	cfgB.GossipSub.HeartbeatMS = 10_000
 	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(relayNode.ListenPort()))}

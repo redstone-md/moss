@@ -15,6 +15,7 @@ import (
 func TestPrivateRoomPSKIsolation(t *testing.T) {
 	newNode := func(psk []byte, static string) *Node {
 		cfg := DefaultConfig()
+		cfg.MasqConfig = MasqConfig{}
 		cfg.Trackers = nil
 		cfg.LANDiscoveryEnabled = false
 		cfg.GossipSub.HeartbeatMS = 50
@@ -86,6 +87,7 @@ func TestPrivateRoomPSKIsolation(t *testing.T) {
 // spore/gateway relies on to serve every room.
 func TestCrossRoomSubstrateConnects(t *testing.T) {
 	cfgA := DefaultConfig()
+	cfgA.MasqConfig = MasqConfig{}
 	cfgA.Trackers = nil
 	cfgA.LANDiscoveryEnabled = false
 	cfgA.GossipSub.HeartbeatMS = 50
@@ -99,6 +101,7 @@ func TestCrossRoomSubstrateConnects(t *testing.T) {
 	defer nodeA.Stop()
 
 	cfgB := DefaultConfig()
+	cfgB.MasqConfig = MasqConfig{}
 	cfgB.Trackers = nil
 	cfgB.LANDiscoveryEnabled = false
 	cfgB.GossipSub.HeartbeatMS = 50
@@ -122,6 +125,7 @@ func TestCrossRoomSubstrateConnects(t *testing.T) {
 // channel name, but a publish in one room is never delivered to the other.
 func TestCrossRoomPubSubIsolated(t *testing.T) {
 	cfgA := DefaultConfig()
+	cfgA.MasqConfig = MasqConfig{}
 	cfgA.Trackers = nil
 	cfgA.LANDiscoveryEnabled = false
 	cfgA.GossipSub.HeartbeatMS = 50
@@ -135,6 +139,7 @@ func TestCrossRoomPubSubIsolated(t *testing.T) {
 	defer nodeA.Stop()
 
 	cfgB := DefaultConfig()
+	cfgB.MasqConfig = MasqConfig{}
 	cfgB.Trackers = nil
 	cfgB.LANDiscoveryEnabled = false
 	cfgB.GossipSub.HeartbeatMS = 50

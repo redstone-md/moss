@@ -36,6 +36,7 @@ func TestVeilBearerFormsSessionAndCarriesPubSub(t *testing.T) {
 	// Relay: runs the Veil Reality listener. The auth secret derives from
 	// its own static Noise key, which the client reproduces below.
 	relayCfg := DefaultConfig()
+	relayCfg.MasqConfig = MasqConfig{}
 	relayCfg.Trackers = nil
 	relayCfg.LANDiscoveryEnabled = false
 	relayCfg.AnnounceIntervalSec = 1
@@ -57,6 +58,7 @@ func TestVeilBearerFormsSessionAndCarriesPubSub(t *testing.T) {
 
 	// Client: no Veil listener; reaches the relay through veilDial.
 	clientCfg := DefaultConfig()
+	clientCfg.MasqConfig = MasqConfig{}
 	clientCfg.Trackers = nil
 	clientCfg.LANDiscoveryEnabled = false
 	clientCfg.AnnounceIntervalSec = 1

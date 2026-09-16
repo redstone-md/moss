@@ -96,7 +96,9 @@ type Config struct {
 
 	// Masq configures the peer-to-peer uTLS masquerade: direct TCP dials and
 	// accepts are carried inside a Chrome-fingerprinted TLS stream (see
-	// mesh.MasqConfig). Omitted (nil) leaves it disabled.
+	// mesh.MasqConfig). Omitted (nil) inherits mesh.DefaultConfig's default,
+	// which is ON (cover_sni "en.wikipedia.org"); pass
+	// {"masq":{"enabled":false}} to opt out and run bare Noise.
 	Masq *MasqConfig `json:"masq,omitempty"`
 
 	IdentityPath string `json:"identity_path,omitempty"`
@@ -125,7 +127,8 @@ type VeilRelay struct {
 
 // MasqConfig is a public mirror of mesh.MasqConfig: the peer-to-peer
 // Chrome-fingerprint TLS masquerade for direct connections. CoverSNI must
-// be identical on both peers.
+// be identical on both peers. The zero value (Enabled=false) is the explicit
+// opt-out; a nil Config.Masq pointer inherits the mesh default, which is on.
 type MasqConfig struct {
 	Enabled  bool   `json:"enabled"`
 	CoverSNI string `json:"cover_sni,omitempty"`
@@ -224,6 +227,10 @@ func (c Config) toMeshConfig() mesh.Config {
 			})
 		}
 	}
+	// A nil Masq keeps base.MasqConfig — the mesh default, which is ON. That
+	// is the compatibility contract: existing consumers that never set the
+	// field get the masquerade, and only an explicit {"masq":{"enabled":false}}
+	// (or any non-nil block) overrides it.
 	if c.Masq != nil {
 		base.MasqConfig = mesh.MasqConfig{
 			Enabled:  c.Masq.Enabled,

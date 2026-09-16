@@ -14,6 +14,7 @@ import (
 
 func TestTwoNodesExchangePubSubMessages(t *testing.T) {
 	cfg1 := DefaultConfig()
+	cfg1.MasqConfig = MasqConfig{}
 	cfg1.Trackers = nil
 	cfg1.AnnounceIntervalSec = 1
 	cfg1.GossipSub.HeartbeatMS = 50
@@ -27,6 +28,7 @@ func TestTwoNodesExchangePubSubMessages(t *testing.T) {
 	defer node1.Stop()
 
 	cfg2 := DefaultConfig()
+	cfg2.MasqConfig = MasqConfig{}
 	cfg2.Trackers = nil
 	cfg2.AnnounceIntervalSec = 1
 	cfg2.GossipSub.HeartbeatMS = 50
@@ -74,6 +76,7 @@ func TestTwoNodesExchangePubSubMessages(t *testing.T) {
 
 func TestFreshPeerIsNotPrunedByNegativeScore(t *testing.T) {
 	cfgA := DefaultConfig()
+	cfgA.MasqConfig = MasqConfig{}
 	cfgA.Trackers = nil
 	cfgA.LANDiscoveryEnabled = false
 	cfgA.GossipSub.HeartbeatMS = 50
@@ -87,6 +90,7 @@ func TestFreshPeerIsNotPrunedByNegativeScore(t *testing.T) {
 	defer nodeA.Stop()
 
 	cfgB := DefaultConfig()
+	cfgB.MasqConfig = MasqConfig{}
 	cfgB.Trackers = nil
 	cfgB.LANDiscoveryEnabled = false
 	cfgB.GossipSub.HeartbeatMS = 50
@@ -120,6 +124,7 @@ func TestFreshPeerIsNotPrunedByNegativeScore(t *testing.T) {
 
 func TestLateSubscriberRequestsCachedMessageViaIHaveIWant(t *testing.T) {
 	cfg1 := DefaultConfig()
+	cfg1.MasqConfig = MasqConfig{}
 	cfg1.Trackers = nil
 	cfg1.GossipSub.HeartbeatMS = 50
 	node1, err := NewNode("mesh-catchup", nil, cfg1)
@@ -137,6 +142,7 @@ func TestLateSubscriberRequestsCachedMessageViaIHaveIWant(t *testing.T) {
 	node1.Publish("alpha", []byte("cached-payload"))
 
 	cfg2 := DefaultConfig()
+	cfg2.MasqConfig = MasqConfig{}
 	cfg2.Trackers = nil
 	cfg2.GossipSub.HeartbeatMS = 50
 	cfg2.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(node1.ListenPort()))}
@@ -177,6 +183,7 @@ func TestTrackerBootstrapPeersRelayPubSubThroughTransitServer(t *testing.T) {
 	defer tracker.Close()
 
 	cfgServer := DefaultConfig()
+	cfgServer.MasqConfig = MasqConfig{}
 	cfgServer.Trackers = nil
 	cfgServer.LANDiscoveryEnabled = false
 	cfgServer.GossipSub.HeartbeatMS = 50
@@ -196,6 +203,7 @@ func TestTrackerBootstrapPeersRelayPubSubThroughTransitServer(t *testing.T) {
 	tracker.SetPeers([]string{serverAddr})
 
 	cfgA := DefaultConfig()
+	cfgA.MasqConfig = MasqConfig{}
 	cfgA.Trackers = []string{tracker.URL()}
 	cfgA.LANDiscoveryEnabled = false
 	cfgA.GossipSub.HeartbeatMS = 50
@@ -211,6 +219,7 @@ func TestTrackerBootstrapPeersRelayPubSubThroughTransitServer(t *testing.T) {
 	defer nodeA.Stop()
 
 	cfgB := DefaultConfig()
+	cfgB.MasqConfig = MasqConfig{}
 	cfgB.Trackers = []string{tracker.URL()}
 	cfgB.LANDiscoveryEnabled = false
 	cfgB.GossipSub.HeartbeatMS = 50
@@ -266,6 +275,7 @@ func TestTrackerBootstrapPeerIsRetainedAfterNegativeScore(t *testing.T) {
 	defer tracker.Close()
 
 	cfgServer := DefaultConfig()
+	cfgServer.MasqConfig = MasqConfig{}
 	cfgServer.Trackers = nil
 	cfgServer.LANDiscoveryEnabled = false
 	server, err := NewNode("mesh-bootstrap-retain", nil, cfgServer)
@@ -281,6 +291,7 @@ func TestTrackerBootstrapPeerIsRetainedAfterNegativeScore(t *testing.T) {
 	tracker.SetPeers([]string{serverAddr})
 
 	cfgClient := DefaultConfig()
+	cfgClient.MasqConfig = MasqConfig{}
 	cfgClient.Trackers = []string{tracker.URL()}
 	cfgClient.LANDiscoveryEnabled = false
 	cfgClient.AnnounceIntervalSec = 1
@@ -312,6 +323,7 @@ func TestTrackerBootstrapPeerIsRetainedAfterNegativeScore(t *testing.T) {
 
 func TestDirectPeerAnnouncementDoesNotOverwriteSessionAddress(t *testing.T) {
 	cfgA := DefaultConfig()
+	cfgA.MasqConfig = MasqConfig{}
 	cfgA.Trackers = nil
 	cfgA.LANDiscoveryEnabled = false
 	nodeA, err := NewNode("mesh-direct-announce", nil, cfgA)
@@ -324,6 +336,7 @@ func TestDirectPeerAnnouncementDoesNotOverwriteSessionAddress(t *testing.T) {
 	defer nodeA.Stop()
 
 	cfgB := DefaultConfig()
+	cfgB.MasqConfig = MasqConfig{}
 	cfgB.Trackers = nil
 	cfgB.LANDiscoveryEnabled = false
 	cfgB.StaticPeers = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(nodeA.ListenPort()))}
@@ -375,6 +388,7 @@ func TestNodeRejectsSelfPeerConnection(t *testing.T) {
 	}
 
 	cfg := DefaultConfig()
+	cfg.MasqConfig = MasqConfig{}
 	cfg.Trackers = nil
 	cfg.LANDiscoveryEnabled = false
 	node, err := NewNode("mesh-self-peer", nil, cfg)
@@ -395,6 +409,7 @@ func TestNodeRejectsSelfPeerConnection(t *testing.T) {
 
 func TestRelaySessionDeliversThroughIntermediatePeer(t *testing.T) {
 	cfgRelay := DefaultConfig()
+	cfgRelay.MasqConfig = MasqConfig{}
 	cfgRelay.Trackers = nil
 	cfgRelay.GossipSub.HeartbeatMS = 50
 	relayNode, err := NewNode("mesh-relay", nil, cfgRelay)
@@ -407,6 +422,7 @@ func TestRelaySessionDeliversThroughIntermediatePeer(t *testing.T) {
 	defer relayNode.Stop()
 
 	cfgA := DefaultConfig()
+	cfgA.MasqConfig = MasqConfig{}
 	cfgA.Trackers = nil
 	cfgA.LANDiscoveryEnabled = false
 	cfgA.GossipSub.HeartbeatMS = 50
@@ -422,6 +438,7 @@ func TestRelaySessionDeliversThroughIntermediatePeer(t *testing.T) {
 	defer nodeA.Stop()
 
 	cfgB := DefaultConfig()
+	cfgB.MasqConfig = MasqConfig{}
 	cfgB.Trackers = nil
 	cfgB.GossipSub.HeartbeatMS = 50
 	cfgB.MaxPeers = 1
