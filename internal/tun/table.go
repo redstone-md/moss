@@ -214,8 +214,10 @@ func fnv1a(s string) uint64 {
 // arrival-order assignment in an overlay where each node independently assigns
 // itself an address: two nodes can never pick the same self address unless two
 // peers' identities collide in the pool (a /24 gives 254 slots and a real LAN
-// is far below that; a genuine tie is resolved by presence registration, where
-// the incumbent keeps the address and the later peer is re-homed).
+// is far below that; a genuine tie is resolved by last-writer-wins, the
+// same presence-registration rule the nick table applies: whichever node
+// registers the address later holds it, and the earlier owner is re-homed
+// on its next registration).
 //
 // prefix must be an IPv4 pool with at least two usable hosts; peerID non-empty.
 func DeterministicAddr(prefix netip.Prefix, peerID string) (netip.Addr, error) {
