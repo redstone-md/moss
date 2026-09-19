@@ -356,13 +356,26 @@ func (n *Node) connectBootstrapPeer(ctx context.Context, addr string) error {
 	}()
 	var firstErr error
 	for range 2 {
-		err := <-results
-		if err == nil {
-			cancel()
-			return nil
-		}
-		if firstErr == nil {
-			firstErr = err
+		// Never block forever on a hung dial: if the caller's context is
+		// cancelled while a goroutine is still dialing, bail out instead of
+		// waiting. The channel is buffered (cap 2), so both goroutines
+		// complete their send and exit once attemptCtx winds the dials down.
+		select {
+		case err := <-results:
+			if err == nil {
+				cancel()
+				return nil
+			}
+			if firstErr == nil {
+				firstErr = err
+			}
+		case <-ctx.Done():
+			// A real dial error already in hand explains the failure better
+			// than the context expiry that merely stopped the wait.
+			if firstErr != nil {
+				return firstErr
+			}
+			return ctx.Err()
 		}
 	}
 	if firstErr != nil {

@@ -365,19 +365,34 @@ func (n *Node) overlayLookup(ctx context.Context, key overlay.NodeID, wantValue 
 		}
 		results := make([]overlayQueryResult, len(batch))
 		var wg sync.WaitGroup
+		// Each query gets its own deadline so one slow peer cannot
+		// hold the whole round hostage: the fleet saw 150-minute
+		// wg.Wait stalls when a single overlayQuery never returned
+		// on node.ctx (which only cancels on Stop). 4s matches the
+		// overlayQuery dial+RPC budget.
 		for i, c := range batch {
 			queried[c.ID.String()] = true
 			wg.Add(1)
 			go func(i int, c overlay.Contact) {
 				defer wg.Done()
-				resp, err := n.overlayQuery(ctx, c, gossip.Envelope{
+				qctx, cancel := context.WithTimeout(ctx, 4*time.Second)
+				defer cancel()
+				resp, err := n.overlayQuery(qctx, c, gossip.Envelope{
 					Type:       queryType,
 					OverlayKey: append([]byte(nil), key[:]...),
 				})
 				results[i] = overlayQueryResult{resp: resp, err: err}
 			}(i, c)
 		}
-		wg.Wait()
+		// Bound the whole batch (alpha=3): even with per-query
+		// timeouts, do not wait forever on a wedged goroutine.
+		done := make(chan struct{})
+		go func() { wg.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-ctx.Done():
+		case <-time.After(12 * time.Second):
+		}
 		for _, result := range results {
 			resp, err := result.resp, result.err
 			if err != nil {

@@ -399,23 +399,39 @@ func (n *Node) confirmReachabilityParallel(addr string, deadline time.Time) bool
 	var wg sync.WaitGroup
 	for _, peerID := range peerIDs {
 		wg.Add(1)
-		go func() {
+		go func(peerID string) {
 			defer wg.Done()
 			results <- n.requestReachabilityProbe(peerID, addr, budget)
-		}()
+		}(peerID)
 	}
+	// Bound the parallel wait: if a probe goroutine hangs past its
+	// budget, bail out instead of blocking forever. The fleet saw
+	// confirmReachabilityParallel stuck in wg.Wait indefinitely.
+	done := make(chan struct{})
 	go func() {
 		wg.Wait()
 		close(results)
+		close(done)
 	}()
-	for reachable := range results {
-		if reachable {
-			n.countInbound("__reach_confirm_success__")
-			return true
+	// budget is the time we gave each probe, add 2s slop for scheduler.
+	timeout := time.NewTimer(budget + 2*time.Second)
+	defer timeout.Stop()
+	for {
+		select {
+		case reachable, ok := <-results:
+			if !ok {
+				n.countInbound("__reach_confirm_timeout__")
+				return false
+			}
+			if reachable {
+				n.countInbound("__reach_confirm_success__")
+				return true
+			}
+		case <-timeout.C:
+			n.countInbound("__reach_confirm_timeout__")
+			return false
 		}
 	}
-	n.countInbound("__reach_confirm_timeout__")
-	return false
 }
 
 // hasReachabilityProbePeers reports whether any connected peer can confirm
