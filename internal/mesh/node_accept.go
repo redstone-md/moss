@@ -251,9 +251,17 @@ func (n *Node) connectStaticPeer(ctx context.Context, addr string) error {
 	if knownPeerAddrRank(addr) >= 3 {
 		return n.connectBootstrapPeer(ctx, addr)
 	}
-	if err := n.connectPeer(ctx, addr); err == nil || n.hasPeerAddr(addr) {
+	err := n.connectPeer(ctx, addr)
+	if n.hasPeerAddr(addr) {
+		// Connected — either this leg or a racing sibling. No fallback needed.
 		return nil
 	}
+	// connectPeer's nil is NOT "connected": clientHandshakeAndRegister
+	// ignores registerPeerFrom's verdict, so a session the node refused
+	// (capacity, allowlist) still comes back nil (Api mismatch the review
+	// flagged). A refused TCP registration is exactly the static peer the
+	// UDP ear must still get a chance to reach.
+	_ = err
 	return n.connectPeerUDPWithHint(ctx, "", addr)
 }
 
@@ -400,7 +408,8 @@ func (n *Node) kickBootstrapPeers(ctx context.Context, peers []string) {
 			defer cancel()
 			n.noteHostDialStart(addr)
 			err := n.connectBootstrapSeed(attemptCtx, addr)
-			n.noteBootstrapDialOutcome(addr, n.bootstrapDialSucceeded(attemptCtx, addr, err))
+			alive, refused := n.bootstrapDialVerdict(addr, err)
+			n.noteBootstrapDialOutcomeCharge(addr, alive, !refused)
 		}(addr)
 	}
 }
@@ -414,17 +423,36 @@ func (n *Node) kickBootstrapPeers(ctx context.Context, peers []string) {
 // the refusal window keeps the two verdicts from racing: whatever the far
 // side is going to do, it has already done it by the time the answer is
 // read.
-func (n *Node) bootstrapDialSucceeded(ctx context.Context, addr string, err error) bool {
+// bootstrapDialVerdict reports how a finished kick/seed dial ended after the
+// refusal window. Charging only after the session outlived the window keeps
+// the two verdicts from racing: whatever the far side is going to do, it
+// has already done it by the time the answer is read. The refused flag is
+// the register-then-die-in-window shape: the far side closed the session
+// microseconds after the handshake, and removePeer's instant-refusal path
+// has ALREADY charged that host — the outcome note must not charge it a
+// second time for one event (the review's double-charge finding).
+func (n *Node) bootstrapDialVerdict(addr string, err error) (alive, refused bool) {
 	if err != nil {
-		return false
+		return false, false
 	}
+	if !n.hasPeerAddr(addr) {
+		// Never registered (self-dial, allowlist refusal at the door): no
+		// session ever closed through maintenance, so the outcome note is
+		// the only charger.
+		return false, false
+	}
+	// Wait out the refusal window on the window's own timer, NOT on the
+	// dial's context: a dial whose budget expired before the window closed
+	// used to return success right there — with the peer still alive and
+	// about to be refused — resetting the host's backoff seconds before
+	// the refusal charged it again. The window is short (3s default,
+	// 250ms in tests) and this goroutine is untracked by design, so it is
+	// never worth a verdict shortcut.
+	<-time.After(peerInstantRefusalWindow)
 	if n.hasPeerAddr(addr) {
-		select {
-		case <-ctx.Done():
-		case <-time.After(peerInstantRefusalWindow):
-		}
+		return true, false
 	}
-	return n.hasPeerAddr(addr)
+	return false, true
 }
 
 // kickTargets picks the raw announce response's addresses worth an immediate

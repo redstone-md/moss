@@ -146,6 +146,17 @@ func (n *Node) resetHostDialStateLocked(addr string) {
 // its host is otherwise alive; the host charge is what stops a pile of dead
 // ports on one dead machine from monopolising the seed budget.
 func (n *Node) noteBootstrapDialOutcome(addr string, ok bool) {
+	n.noteBootstrapDialOutcomeCharge(addr, ok, true)
+}
+
+// noteBootstrapDialOutcomeCharge is the refusal-aware core. chargeHost is
+// false exactly for the register-then-die-in-window verdict: that session's
+// close went through removePeer, whose instant-refusal path has already
+// charged the host, and a second charge here doubled the machine's backoff
+// for a single refusal event (the review's double-charge finding). The
+// addr record still spaces out — one dead port is one dead port, whoever
+// charged the machine.
+func (n *Node) noteBootstrapDialOutcomeCharge(addr string, ok, chargeHost bool) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if addr == "" {
@@ -164,7 +175,9 @@ func (n *Node) noteBootstrapDialOutcome(addr string, ok bool) {
 		// the eligible pool the instant it returns.
 		n.bootstrapDials[addr] = time.Now()
 	}
-	n.noteHostDialOutcomeLocked(dialHost(addr), ok, time.Now())
+	if chargeHost {
+		n.noteHostDialOutcomeLocked(dialHost(addr), ok, time.Now())
+	}
 }
 
 // bootstrapAddrInBackoffLocked reports whether a seed addr is still spacing

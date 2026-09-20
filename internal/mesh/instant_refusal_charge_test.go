@@ -109,7 +109,9 @@ func TestWindowDeathWithTrafficDoesNotCharge(t *testing.T) {
 }
 
 // A dial whose session dies inside the refusal window must be charged as a
-// failure: the far side closed it microseconds after the handshake.
+// failure: the far side closed it microseconds after the handshake — and the
+// outcome note must not re-charge the host removePeer's refusal close has
+// already charged for the same event.
 func TestBootstrapOutcomeWaitsForSurvival(t *testing.T) {
 	window := peerInstantRefusalWindow
 	peerInstantRefusalWindow = 250 * time.Millisecond
@@ -121,8 +123,12 @@ func TestBootstrapOutcomeWaitsForSurvival(t *testing.T) {
 	node.mu.Lock()
 	node.peers[peerID] = &peerConn{id: peerID, addr: addr, connectedAt: time.Now(), origin: originDialTCP}
 	node.mu.Unlock()
+	// The session close goes through removePeer's instant-refusal charge
+	// first — recorded here directly, one failure on the host.
+	node.noteHostDialOutcome(dialHost(addr), false)
 
 	result := make(chan bool, 1)
+	refusedCh := make(chan bool, 1)
 	go func() {
 		// The far side closes the session mid-grace: the dial "succeeded",
 		// the session is gone before the window is out.
@@ -131,9 +137,12 @@ func TestBootstrapOutcomeWaitsForSurvival(t *testing.T) {
 		delete(node.peers, peerID)
 		node.mu.Unlock()
 	}()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	go func() { result <- node.bootstrapDialSucceeded(ctx, addr, nil) }()
+	go func() {
+		alive, refused := node.bootstrapDialVerdict(addr, nil)
+		node.noteBootstrapDialOutcomeCharge(addr, alive, !refused)
+		result <- alive
+		refusedCh <- refused
+	}()
 
 	select {
 	case ok := <-result:
@@ -141,6 +150,29 @@ func TestBootstrapOutcomeWaitsForSurvival(t *testing.T) {
 			t.Fatal("a dial whose session died inside the refusal window was charged as a success — the reset wipes the refusal charge and the kick re-dials the same host every round")
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("bootstrapDialSucceeded did not return")
+		t.Fatal("bootstrapDialVerdict did not return")
+	}
+	select {
+	case refused := <-refusedCh:
+		if !refused {
+			t.Fatal("register-then-die-in-window must read as refused, not as a plain transport failure")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("refused verdict did not return")
+	}
+
+	// One refusal event, one host charge: removePeer's. A second failure
+	// here means the outcome note re-charged the host and its backoff
+	// escalates at twice the designed rate (the double-charge finding).
+	node.mu.Lock()
+	host := dialHost(addr)
+	hostFails := node.hostDialFailures[host]
+	addrFails := node.bootstrapDialFailures[addr]
+	node.mu.Unlock()
+	if hostFails != 1 {
+		t.Fatalf("host %s carries %d failures after one refusal event, want 1: the outcome note re-charged what removePeer already charged", host, hostFails)
+	}
+	if addrFails != 1 {
+		t.Fatalf("addr %s carries %d failures, want 1: the dead port must still space out", addr, addrFails)
 	}
 }

@@ -114,6 +114,19 @@ func (n *Node) awaitUDPConfirm(ctx context.Context, session *transport.Session) 
 			if res.err != nil {
 				return nil, false
 			}
+			// The confirm gate is "a mesh peer answered", not "anything at
+			// all arrived": the transport layer only promises decryption of
+			// Noise datagrams, and the review flagged that a malformed or
+			// unrelated packet would satisfy the old any-packet check and
+			// register a session the far side never spoke on. A packet is
+			// confirmation only if it parses as a mesh envelope — every
+			// legitimate reply (pong, announce, anything the dispatcher
+			// handles) is one, so a live peer is never delayed past it.
+			var probe gossip.Envelope
+			if err := json.Unmarshal(res.packet, &probe); err != nil {
+				reading = false // re-arm the read: the packet is consumed either way
+				continue
+			}
 			return res.packet, true
 		case <-probes.C:
 			n.sendUDPConfirmProbe(session)

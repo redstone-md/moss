@@ -305,6 +305,14 @@ func isVirtualOverlayInterfaceName(name string) bool {
 // contacted.
 const defaultRouteProbeEndpoint = "8.8.8.8:80"
 
+// defaultRouteProbeTimeout bounds one probe call. The connect is a local
+// route lookup measured in microseconds, so 250ms is three orders of
+// magnitude of headroom — but the probe runs inside mapping observations
+// (applyObservation, freshObservedUDPAddr) whose caller budgets are only a
+// few seconds; a wedged sandbox syscall must not eat into them. The
+// review flagged the original 2s as a silent budget overrun.
+const defaultRouteProbeTimeout = 250 * time.Millisecond
+
 // defaultRouteAdvertiseHostFn is the seam behind the advertise chain and the
 // NAT gate. Production consults the OS default route via a bound UDP dial;
 // tests substitute it to fabricate routing tables (the units stay hermetic).
@@ -312,7 +320,7 @@ var defaultRouteAdvertiseHostFn = func(bindIfIndex int) (string, bool) {
 	// Pin the probe to the mesh's NIC when one is configured: the egress
 	// must be the interface mesh traffic actually leaves through (the same
 	// rule probeTCPAddress applies to reachability dials).
-	conn, err := transport.DialerWithBind(net.Dialer{Timeout: 2 * time.Second}, bindIfIndex).Dial("udp", defaultRouteProbeEndpoint)
+	conn, err := transport.DialerWithBind(net.Dialer{Timeout: defaultRouteProbeTimeout}, bindIfIndex).Dial("udp", defaultRouteProbeEndpoint)
 	if err != nil {
 		return "", false
 	}

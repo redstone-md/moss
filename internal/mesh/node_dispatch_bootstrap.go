@@ -399,8 +399,10 @@ func (n *Node) connectBootstrapSeeds(ctx context.Context) {
 			// was refused outright; both are a failed attempt as far as the
 			// budget is concerned. A session at that addr is the only
 			// success — charged once it has outlived the instant-refusal
-			// window, see bootstrapDialSucceeded.
-			n.noteBootstrapDialOutcome(seed, n.bootstrapDialSucceeded(attemptCtx, seed, err))
+			// window, see bootstrapDialVerdict. A register-then-die verdict
+			// leaves the host charge to removePeer's refusal path.
+			alive, refused := n.bootstrapDialVerdict(seed, err)
+			n.noteBootstrapDialOutcomeCharge(seed, alive, !refused)
 		}(addr)
 	}
 }
