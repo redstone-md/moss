@@ -407,8 +407,29 @@ func (n *Node) connectBootstrapPeer(ctx context.Context, addr string) error {
 }
 
 func (n *Node) connectBootstrapSeed(ctx context.Context, addr string) error {
+	// Static peers keep the UDP fallback even below the public rank: the
+	// seed retries are the path that keeps a static pair alive, and the
+	// rank gate is what starved loopback/private static peers of it.
+	if knownPeerAddrRank(addr) < 3 && n.isStaticPeerAddr(addr) {
+		return n.connectStaticPeer(ctx, addr)
+	}
 	if knownPeerAddrRank(addr) < 3 {
 		return n.connectPeer(ctx, addr)
 	}
 	return n.connectBootstrapPeer(ctx, addr)
+}
+
+// isStaticPeerAddr reports whether an address is one of the configured
+// static peers — the operator's explicit intent, which the address-rank
+// transport gate must not strip of its UDP fallback.
+func (n *Node) isStaticPeerAddr(addr string) bool {
+	if addr == "" {
+		return false
+	}
+	for _, peer := range n.config.StaticPeers {
+		if peer == addr {
+			return true
+		}
+	}
+	return false
 }

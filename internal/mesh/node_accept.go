@@ -215,8 +215,39 @@ func (n *Node) announceRoundWait(consecutiveEmpty int) time.Duration {
 
 func (n *Node) connectStaticPeers(ctx context.Context) {
 	for _, peer := range n.config.StaticPeers {
-		n.connectPeer(ctx, peer)
+		// One bounded dial per static peer, in parallel: the initial dial
+		// used to run on the root context — an unbounded handshake budget —
+		// so a static peer that was down at Start held the transport's
+		// client slot for its address forever, every later retry to that
+		// address got "udp handshake is already in progress" without
+		// sending a packet, and a temporarily dead static peer could never
+		// recover.
+		go func(addr string) {
+			attemptCtx, cancel := context.WithTimeout(ctx, n.config.HandshakeTimeout())
+			defer cancel()
+			_ = n.connectStaticPeer(attemptCtx, addr)
+		}(peer)
 	}
+}
+
+// connectStaticPeer dials one operator-configured peer. A static peer is
+// intent, not discovery, so it keeps a UDP fallback below the public rank —
+// the rank gate used to send anything loopback or private to a TCP-only
+// dial, and a peer whose TCP was refused but whose UDP ear was alive never
+// formed (bug №6: 60s repro, zero peers against a live UDP endpoint). The
+// fallback is sequential, not a race: a parallel UDP leg on a LAN peer
+// churned the peer slot against a one-slot MaxPeers budget (two transports
+// registering where the topology expected one session), so TCP goes first
+// and UDP fires only when TCP produced nothing. Public static peers keep
+// the parallel dual dial the bootstrap path already used for them.
+func (n *Node) connectStaticPeer(ctx context.Context, addr string) error {
+	if knownPeerAddrRank(addr) >= 3 {
+		return n.connectBootstrapPeer(ctx, addr)
+	}
+	if err := n.connectPeer(ctx, addr); err == nil || n.hasPeerAddr(addr) {
+		return nil
+	}
+	return n.connectPeerUDPWithHint(ctx, "", addr)
 }
 
 // announceAndConnect runs one tracker announce round and dials the peers it
