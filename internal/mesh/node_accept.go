@@ -362,9 +362,31 @@ func (n *Node) kickBootstrapPeers(ctx context.Context, peers []string) {
 			defer cancel()
 			n.noteHostDialStart(addr)
 			err := n.connectBootstrapSeed(attemptCtx, addr)
-			n.noteBootstrapDialOutcome(addr, err == nil && n.hasPeerAddr(addr))
+			n.noteBootstrapDialOutcome(addr, n.bootstrapDialSucceeded(attemptCtx, addr, err))
 		}(addr)
 	}
+}
+
+// bootstrapDialSucceeded reports the outcome the dial budget should record
+// for a finished kick or seed dial. A completed handshake is not yet a
+// success: a full peer closes the session microseconds after registering
+// it, and the instant success reset would wipe the refusal charge that
+// death writes — the kick then re-dialled the same live host every announce
+// round for a whole census run. Charging only after the session outlived
+// the refusal window keeps the two verdicts from racing: whatever the far
+// side is going to do, it has already done it by the time the answer is
+// read.
+func (n *Node) bootstrapDialSucceeded(ctx context.Context, addr string, err error) bool {
+	if err != nil {
+		return false
+	}
+	if n.hasPeerAddr(addr) {
+		select {
+		case <-ctx.Done():
+		case <-time.After(peerInstantRefusalWindow):
+		}
+	}
+	return n.hasPeerAddr(addr)
 }
 
 // kickTargets picks the raw announce response's addresses worth an immediate
@@ -391,11 +413,20 @@ func (n *Node) kickTargets(peers []string) []string {
 	}
 	kicked := make([]string, 0, min(len(peers), limit))
 	seenHosts := make(map[string]struct{}, limit)
+	liveHosts := liveSessionHostsLocked(n.peers)
 	for _, addr := range peers {
 		if addr == "" {
 			continue
 		}
 		if hasPeerAddrLocked(n.peers, addr) {
+			continue
+		}
+		// Host-level skip, same reasoning as the seed pass: a masq host
+		// terminates every port at one listener, so dialling a connected
+		// host's other records is a full handshake into an instant
+		// "duplicate connection" yield — the census saw the kick repeat that
+		// on the same live hosts every announce round.
+		if _, live := liveHosts[dialHost(addr)]; live {
 			continue
 		}
 		// The kick honours a seed's OWN interval too, not just its host's: a

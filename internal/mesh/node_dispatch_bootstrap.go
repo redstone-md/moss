@@ -397,8 +397,10 @@ func (n *Node) connectBootstrapSeeds(ctx context.Context) {
 			err := n.connectBootstrapSeed(attemptCtx, seed)
 			// A seed that produced no session either failed its handshake or
 			// was refused outright; both are a failed attempt as far as the
-			// budget is concerned. A session at that addr is the only success.
-			n.noteBootstrapDialOutcome(seed, err == nil && n.hasPeerAddr(seed))
+			// budget is concerned. A session at that addr is the only
+			// success — charged once it has outlived the instant-refusal
+			// window, see bootstrapDialSucceeded.
+			n.noteBootstrapDialOutcome(seed, n.bootstrapDialSucceeded(attemptCtx, seed, err))
 		}(addr)
 	}
 }
@@ -419,6 +421,7 @@ func (n *Node) bootstrapSeedTargets() []string {
 	}
 
 	targets := make([]string, 0, len(n.trackerSeeds))
+	liveHosts := liveSessionHostsLocked(n.peers)
 	for addr, seenAt := range n.trackerSeeds {
 		if addr == "" {
 			continue
@@ -430,6 +433,19 @@ func (n *Node) bootstrapSeedTargets() []string {
 			continue
 		}
 		if addr == localAddr || hasPeerAddrLocked(n.peers, addr) {
+			continue
+		}
+		// A host that already has a live session is served. Its other port
+		// records are stale binds or — for a masq host, which terminates
+		// every port at one listener — the very same peer: dialling them
+		// completed a full handshake into an instant "duplicate connection"
+		// yield, and the seed pass spent both of its slots on that every
+		// round (~100 wasted handshakes per 150s census against the same
+		// handful of live hosts). The exact-addr check above is not enough:
+		// the live session sits at one port, the pool offers the host's
+		// others. A host running several distinct nodes is still reachable
+		// through the announced directory, which dials by peer identity.
+		if _, live := liveHosts[dialHost(addr)]; live {
 			continue
 		}
 		// A seed that keeps failing gets an interval that GROWS: the flat
@@ -492,6 +508,19 @@ func (n *Node) hasPeerAddr(addr string) bool {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 	return hasPeerAddrLocked(n.peers, addr)
+}
+
+// liveSessionHostsLocked indexes the hosts of every live session, so a seed
+// or kick pass can skip all of a connected host's port records at once.
+func liveSessionHostsLocked(peers map[string]*peerConn) map[string]struct{} {
+	hosts := make(map[string]struct{}, len(peers))
+	for _, peer := range peers {
+		if peer == nil || peer.addr == "" {
+			continue
+		}
+		hosts[dialHost(peer.addr)] = struct{}{}
+	}
+	return hosts
 }
 
 func hasPeerAddrLocked(peers map[string]*peerConn, addr string) bool {
