@@ -326,8 +326,12 @@ func (n *Node) connectPeerUDPWithHint(ctx context.Context, targetPeerID, addr st
 	if err != nil {
 		return err
 	}
-	n.registerPeerFrom(session, true, originHolePunchUDP)
-	return nil
+	// The handshake only proves the path at handshake time. The confirm phase
+	// demands a mesh-level reply through this same candidate before the
+	// session becomes a peer — a candidate that stays silent is returned as a
+	// dial failure, so the punch plan keeps hunting and the dial budget
+	// charges it instead of squatting a peer slot for six missed pings.
+	return n.confirmAndRegisterUDPPeer(ctx, session, true, originHolePunchUDP)
 }
 
 func (n *Node) connectBootstrapPeer(ctx context.Context, addr string) error {

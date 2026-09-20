@@ -72,7 +72,12 @@ func (n *Node) acceptUDPLoop(ctx context.Context) {
 			continue
 		}
 		backoff = time.Millisecond
-		n.registerPeerFrom(session, false, originInboundUDP)
+		// The confirm phase runs off the loop, one bounded goroutine per
+		// session: registration used to happen inline here, so a candidate
+		// waiting out its confirm window — or a refusal taking the node lock —
+		// would stall every later accepted handshake behind it.
+		n.wg.Add(1)
+		go n.confirmAcceptedUDPSession(ctx, session)
 	}
 }
 
@@ -563,7 +568,13 @@ const (
 	originWebRTC       = "webrtc"
 )
 
-func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origin string) {
+// registerPeerFrom is the funnel every direct session goes through. It
+// reports whether the session became a peer: every refusal path (stopped
+// node, self-dial, allowlist, duplicate yield, capacity) closes the session
+// and returns false, which is what lets the UDP confirm phase tell a live
+// peer from a candidate whose far side silently refused — a datagram carrier
+// never signals the refusal to the dialer across the wire.
+func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origin string) bool {
 	remoteID := session.RemoteID()
 	peerID := hex.EncodeToString(remoteID[:])
 	addr := session.RemoteAddr().String()
@@ -575,13 +586,13 @@ func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origi
 	if !n.started {
 		n.mu.Unlock()
 		_ = session.Close()
-		return
+		return false
 	}
 	if peerID == n.localPeerID() {
 		delete(n.trackerSeeds, addr)
 		n.mu.Unlock()
 		_ = session.Close()
-		return
+		return false
 	}
 	// Allowlist gate: an EMPTY-but-created map is strict (reject-all) while
 	// nil keeps the default open substrate. Checked after the self-loop guard
@@ -594,7 +605,7 @@ func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origi
 			n.countInbound("__allowlist_rejected__")
 			n.mu.Unlock()
 			_ = session.Close()
-			return
+			return false
 		}
 	}
 	if existing, exists := n.peers[peerID]; exists {
@@ -615,13 +626,13 @@ func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origi
 				if !keepNew {
 					n.mu.Unlock()
 					_ = session.Close()
-					return
+					return false
 				}
 				replacedPeer = existing
 			} else if !yieldsToNewConnection(n.localPeerID(), existing, outbound) {
 				n.mu.Unlock()
 				_ = session.Close()
-				return
+				return false
 			} else {
 				replacedPeer = existing
 			}
@@ -658,13 +669,13 @@ func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origi
 		if !n.started || n.peers[peerID] != replacedPeer {
 			n.mu.Unlock()
 			_ = session.Close()
-			return
+			return false
 		}
 		if n.directPeerCountLocked() >= n.config.MaxPeers {
 			if victim == nil || n.peers[victim.id] != victim {
 				n.mu.Unlock()
 				_ = session.Close()
-				return
+				return false
 			}
 			overflowPeer = victim
 			n.evictPeerLocked(victim)
@@ -769,6 +780,7 @@ func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origi
 	if replacedPeer == nil {
 		n.enqueueEvent(EventPeerJoined, map[string]string{"peer": peerID, "addr": addr})
 	}
+	return true
 }
 
 // pruneCandidate is one peer's snapshot for overflow eviction ranking: the
