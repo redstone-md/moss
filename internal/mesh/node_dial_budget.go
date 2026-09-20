@@ -2,6 +2,7 @@ package mesh
 
 import (
 	"net"
+	"net/netip"
 	"time"
 )
 
@@ -13,11 +14,19 @@ import (
 // budget: a failed dial backs off every record of that host, and a session
 // proving the host alive reopens all of them.
 
-// dialHost extracts the host key of a dial address. An unparseable address
-// keys itself, so it can never accidentally share a budget with a real host.
+// dialHost extracts the budget key of a dial address: the host an IP shares,
+// except on loopback, where the FULL ADDRESS is the key. A CI runner and a
+// dev box run whole moss fleets on 127.0.0.1 — one node per port — and
+// keying them by IP made one node's failed dial back every other loopback
+// node off with it. On loopback the port is the machine; anywhere else the
+// IP is. An unparseable address keys itself, so it can never accidentally
+// share a budget with a real host.
 func dialHost(addr string) string {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil || host == "" {
+		return addr
+	}
+	if ip, ipErr := netip.ParseAddr(host); ipErr == nil && ip.IsLoopback() {
 		return addr
 	}
 	return host
@@ -32,10 +41,15 @@ const hostDialStateCap = 4096
 // out. base is the pass cooldown (the smallest retry interval the caller
 // honours); the interval grows with consecutive failures exactly like
 // peerDialBackoff, so a dead host settles at one attempt per
-// peerDialBackoffMax instead of one per pass. Callers hold n.mu.
+// peerDialBackoffMax instead of one per pass. An attempt still in flight
+// blocks unconditionally: one machine, one burning dial, whatever else the
+// host's state says. Callers hold n.mu.
 func (n *Node) hostInBackoffLocked(host string, base time.Duration, now time.Time) bool {
 	if base <= 0 {
 		base = time.Second
+	}
+	if n.hostDialInFlight[host] > 0 {
+		return true
 	}
 	last, ok := n.hostDials[host]
 	if !ok {
@@ -45,6 +59,34 @@ func (n *Node) hostInBackoffLocked(host string, base time.Duration, now time.Tim
 	// A stale anchor with no recent failure only spaces attempts apart; a
 	// growing one keeps the host quiet for its whole backoff window.
 	return now.Sub(last) < peerDialBackoff(base, failures)
+}
+
+// noteHostDialStart claims the host's single in-flight dial slot for an
+// attempt that is about to burn. Paired with the outcome charge in
+// noteHostDialOutcomeLocked, which releases the claim when the attempt
+// reports — success or failure, in any order relative to other attempts
+// at the same machine.
+func (n *Node) noteHostDialStart(addr string) {
+	host := dialHost(addr)
+	if host == "" {
+		return
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.hostDialInFlight[host]++
+}
+
+// releaseHostDialInFlightLocked drops one in-flight claim for host.
+// Callers hold n.mu.
+func (n *Node) releaseHostDialInFlightLocked(host string) {
+	if host == "" {
+		return
+	}
+	if left := n.hostDialInFlight[host]; left > 1 {
+		n.hostDialInFlight[host] = left - 1
+	} else {
+		delete(n.hostDialInFlight, host)
+	}
 }
 
 // noteHostDialOutcome records how a dial attempt to addr's host ended. A
@@ -62,6 +104,13 @@ func (n *Node) noteHostDialOutcomeLocked(host string, ok bool, now time.Time) {
 	if host == "" {
 		return
 	}
+	// The attempt that is reporting held the host's in-flight claim. The
+	// release comes FIRST: a success below wipes the failure history, but it
+	// must never release another attempt's still-burning claim — and a
+	// failure charges into whatever history a sibling success left behind,
+	// which is the fresh, correct state for a machine one leg just proved
+	// alive.
+	n.releaseHostDialInFlightLocked(host)
 	if ok {
 		delete(n.hostDials, host)
 		delete(n.hostDialFailures, host)
@@ -103,9 +152,17 @@ func (n *Node) noteBootstrapDialOutcome(addr string, ok bool) {
 		return
 	}
 	if ok {
+		// A seed that answered is dialable again at once if it drops; the
+		// in-flight marker from its selection is spent either way.
 		delete(n.bootstrapDialFailures, addr)
+		delete(n.bootstrapDials, addr)
 	} else {
 		n.bootstrapDialFailures[addr]++
+		// Time the cooldown from when the attempt ENDED, not when the
+		// selection marked it in flight (same reasoning as noteDialOutcome):
+		// a burn of a full HandshakeTimeout must not land straight back in
+		// the eligible pool the instant it returns.
+		n.bootstrapDials[addr] = time.Now()
 	}
 	n.noteHostDialOutcomeLocked(dialHost(addr), ok, time.Now())
 }

@@ -355,6 +355,7 @@ func (n *Node) kickBootstrapPeers(ctx context.Context, peers []string) {
 		go func(addr string) {
 			attemptCtx, cancel := context.WithTimeout(ctx, n.config.HandshakeTimeout())
 			defer cancel()
+			n.noteHostDialStart(addr)
 			err := n.connectBootstrapSeed(attemptCtx, addr)
 			n.noteBootstrapDialOutcome(addr, err == nil && n.hasPeerAddr(addr))
 		}(addr)
@@ -390,6 +391,13 @@ func (n *Node) kickTargets(peers []string) []string {
 			continue
 		}
 		if hasPeerAddrLocked(n.peers, addr) {
+			continue
+		}
+		// The kick honours a seed's OWN interval too, not just its host's: a
+		// failed port on a live host has a growing addr backoff, and the kick
+		// used to re-dial it at every announce round the moment a sibling
+		// port's success cleared the host-level state.
+		if n.bootstrapAddrInBackoffLocked(addr, cooldown, now) {
 			continue
 		}
 		host := dialHost(addr)

@@ -120,6 +120,7 @@ func NewNodeWithIdentity(meshID string, psk []byte, cfg Config, identity *mcrypt
 		peerDials:             make(map[string]time.Time),
 		peerDialFailures:      make(map[string]int),
 		hostDials:             make(map[string]time.Time),
+		hostDialInFlight:      make(map[string]int),
 		hostDialFailures:      make(map[string]int),
 		announceForwards:      make(map[string]time.Time),
 		explicitTargets:       make(map[string]time.Time),

@@ -400,6 +400,7 @@ func (n *Node) dialKnownPeer(peerID, addr string) {
 	if dialAddr == "" {
 		dialAddr = addr
 	}
+	n.noteHostDialStart(dialAddr)
 	if n.tryDirectConnect(peerID, n.config.HandshakeTimeout()) {
 		n.reportConnectAttempt(outcomeDirect, reasonNone, started, false)
 		n.noteDialOutcome(peerID, true)

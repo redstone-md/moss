@@ -156,6 +156,10 @@ type Node struct {
 	// window, not one per record. See node_dial_budget.go.
 	hostDials        map[string]time.Time
 	hostDialFailures map[string]int
+	// hostDialInFlight counts burning dial attempts per HOST: while one
+	// attempt is in flight no path may start another at the same machine —
+	// not even after a sibling record's success clears the host backoff.
+	hostDialInFlight map[string]int
 	// bootstrapDialFailures grows the retry interval of a single seed addr
 	// past the flat HandshakeTimeout cooldown. See node_dial_budget.go.
 	bootstrapDialFailures map[string]int

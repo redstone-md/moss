@@ -371,6 +371,7 @@ func (n *Node) connectBootstrapSeeds(ctx context.Context) {
 		go func(seed string) {
 			attemptCtx, cancel := context.WithTimeout(ctx, n.config.HandshakeTimeout())
 			defer cancel()
+			n.noteHostDialStart(seed)
 			err := n.connectBootstrapSeed(attemptCtx, seed)
 			// A seed that produced no session either failed its handshake or
 			// was refused outright; both are a failed attempt as far as the

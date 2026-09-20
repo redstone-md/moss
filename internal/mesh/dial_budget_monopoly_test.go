@@ -195,6 +195,131 @@ func TestFailedBootstrapSeedBacksOffAndLeavesLiveSeedsAlone(t *testing.T) {
 	}
 }
 
+// Loopback is not one machine: a CI runner and a dev box run whole fleets
+// on 127.0.0.1, one node per port. Keying the host budget by IP glued them
+// together there, so one node's failed dial backed every other loopback
+// node off with it — the FFI pair on CI missed its meeting window on the
+// first retry. On loopback the PORT is the machine: budgets key per addr.
+func TestLoopbackNodesDoNotShareHostBudget(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Trackers = nil
+	cfg.GossipSub.DOut = 2
+
+	// Discovered pool: a failed dial at one loopback node must not back off
+	// a different loopback node's record.
+	disc, err := NewNode("mesh-dial-budget-loopback-disc", nil, cfg)
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+	now := time.Now()
+	disc.mu.Lock()
+	disc.knownPeers["loop-a"] = knownPeer{id: "loop-a", addr: "127.0.0.1:41001", verified: true, lastSeen: now}
+	disc.knownPeers["loop-b"] = knownPeer{id: "loop-b", addr: "127.0.0.1:41002", verified: true, lastSeen: now}
+	disc.mu.Unlock()
+
+	disc.noteHostDialOutcome("127.0.0.1:41001", false)
+
+	targets := disc.discoveredPeerTargets()
+	if !targeted(targets, "loop-b") {
+		t.Fatalf("a failed dial at one loopback node backed off a different node: %v", targets)
+	}
+	if targeted(targets, "loop-a") {
+		t.Fatalf("the failed loopback node itself must still be in its own backoff: %v", targets)
+	}
+
+	// Kick pool, fresh node so no in-flight marker from the pass above
+	// interferes: the round must skip only the backed-off loopback node and
+	// may dial the other, because they are different machines.
+	kick, err := NewNode("mesh-dial-budget-loopback-kick", nil, cfg)
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+	kick.noteHostDialOutcome("127.0.0.1:41001", false)
+
+	kicked := kick.kickTargets([]string{"127.0.0.1:41001", "127.0.0.1:41002"})
+	if len(kicked) != 1 || kicked[0] != "127.0.0.1:41002" {
+		t.Fatalf("kick round must skip only the backed-off loopback node: %v", kicked)
+	}
+}
+
+// The kick path must honour a seed address's OWN backoff, not just its
+// host's. A failed port on a live host has a growing personal interval
+// (bootstrapDialFailures); a sibling port's success clears the host-level
+// state, and without the addr check the kick re-dials the failed port at
+// once — every announce round — the moment its host looks alive again.
+func TestKickSkipsSeedAddressesStillInAddrBackoff(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.GossipSub.DOut = 2
+	node, err := NewNode("mesh-dial-budget-kick-addr", nil, cfg)
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+	now := time.Now()
+	deadA := fmt.Sprintf(deadHostAddrFmt, 40026)
+	deadB := fmt.Sprintf(deadHostAddrFmt, 40027)
+	node.mu.Lock()
+	node.trackerSeeds[deadA] = now
+	node.trackerSeeds[deadB] = now
+	node.trackerSeeds[liveHostA] = now
+	node.mu.Unlock()
+
+	for range 3 {
+		node.noteBootstrapDialOutcome(deadA, false)
+	}
+	// A sibling port at the same host connects (inbound session): the host
+	// is alive again and its host-level backoff is cleared…
+	node.mu.Lock()
+	node.resetHostDialStateLocked(deadB)
+	node.mu.Unlock()
+
+	kicked := node.kickTargets([]string{deadA, deadB, liveHostA})
+	for _, addr := range kicked {
+		if addr == deadA {
+			t.Fatalf("kick re-dialled a seed address inside its own addr backoff: %s", addr)
+		}
+	}
+	if len(kicked) == 0 {
+		t.Fatalf("the live sibling and the live host must still be kicked: %v", kicked)
+	}
+}
+
+// While one dial to a host is burning, a success at that same host (an
+// inbound session proving the machine alive) must NOT let the next pass
+// pile another attempt onto it. The in-flight attempt owns the host's
+// single slot until it reports; the success clears the failure history,
+// never the in-flight claim.
+func TestInFlightHostDialBlocksNewAttemptsUntilItReports(t *testing.T) {
+	node := dialBudgetTestNode(t, 2)
+	deadAddr := fmt.Sprintf(deadHostAddrFmt, 40026)
+
+	// A discovered dial starts the way connectKnownPeers starts it.
+	node.noteHostDialStart(deadAddr)
+	// …and mid-burn, a sibling record's INBOUND session proves the host
+	// alive. registerPeerFrom resets the shared host state (anchor and
+	// failures); it never claims or releases the in-flight slot, which
+	// belongs to the still-burning attempt.
+	node.mu.Lock()
+	node.resetHostDialStateLocked(fmt.Sprintf(deadHostAddrFmt, 40027))
+	node.mu.Unlock()
+
+	targets := node.discoveredPeerTargets()
+	for _, target := range targets {
+		if testDialHost(target.addr) == testDialHost(deadAddr) {
+			t.Fatalf("a new dial was started at a host with an attempt still in flight: %v", target.addr)
+		}
+	}
+
+	// The burning attempt reports its outcome; the host slot is released
+	// and ordinary (anchor-based) backoff takes over again.
+	node.noteHostDialOutcome(deadAddr, false)
+	node.mu.RLock()
+	inFlight := node.hostDialInFlight[testDialHost(deadAddr)]
+	node.mu.RUnlock()
+	if inFlight != 0 {
+		t.Fatalf("a reported dial left its host in-flight count at %d, want 0", inFlight)
+	}
+}
+
 // kickBootstrapPeers fires on every tracker announce round, straight from the
 // raw announce response, with no cooldown of its own. The filter must keep the
 // same promises as the maintenance path: never kick a host in backoff, and
