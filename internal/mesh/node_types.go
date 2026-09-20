@@ -52,11 +52,14 @@ type Node struct {
 	udpListener *transport.UDPListener
 	// masqListener and masqDialer hold the uTLS masquerade bearer created by
 	// Start when MasqConfig opts the node in (and Veil is not the listener).
-	// Both are immutable for the lifetime of a started run — built once
-	// under n.mu, read by the dial path without locking, cleared by Stop —
-	// so a mid-run restart swaps them atomically rather than racing dials.
+	// Both are built once under n.mu and cleared by Stop. The dialer is an
+	// atomic pointer because dial goroutines are NOT wg-tracked: a dial can
+	// still be burning when Stop clears the bearer, and the race detector
+	// (and Go's memory model) require the swap to be atomic — a dial either
+	// sees the whole bearer or nil and falls back to the plain path, never a
+	// half-torn read.
 	masqListener *transport.MasqListener
-	masqDialer   *transport.MasqDialer
+	masqDialer   atomic.Pointer[transport.MasqDialer]
 	// veilListener holds the Veil "Reality" DPI-mask listener when this
 	// node runs the relay role. Typed as a bare Closer so the field
 	// stays free of the uTLS-heavy vtransport import on js/wasm builds,
@@ -151,6 +154,18 @@ type Node struct {
 	directProbes     map[string]time.Time
 	peerDials        map[string]time.Time
 	peerDialFailures map[string]int
+	// hostDials/hostDialFailures carry the dial budget per HOST: one dead
+	// machine with a pile of port records must burn one attempt per backoff
+	// window, not one per record. See node_dial_budget.go.
+	hostDials        map[string]time.Time
+	hostDialFailures map[string]int
+	// hostDialInFlight counts burning dial attempts per HOST: while one
+	// attempt is in flight no path may start another at the same machine —
+	// not even after a sibling record's success clears the host backoff.
+	hostDialInFlight map[string]int
+	// bootstrapDialFailures grows the retry interval of a single seed addr
+	// past the flat HandshakeTimeout cooldown. See node_dial_budget.go.
+	bootstrapDialFailures map[string]int
 
 	// announceForwards throttles re-flooding per advertised peer. See
 	// shouldForwardAnnounce.

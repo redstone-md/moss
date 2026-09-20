@@ -55,7 +55,7 @@ func TestMasqNodesFormAMesh(t *testing.T) {
 		a.mu.RUnlock()
 		t.Fatal("masq node opened a plain TCP listener — the masquerade must replace it")
 	}
-	if a.masqDialer == nil || a.masqDialer.CoverSNI != a.config.MasqConfig.CoverSNI {
+	if d := a.masqDialer.Load(); d == nil || d.CoverSNI != a.config.MasqConfig.CoverSNI {
 		a.mu.RUnlock()
 		t.Fatal("masq node has no dialer or its cover SNI is wrong")
 	}
@@ -136,7 +136,7 @@ func TestMasqDisabledKeepsPlainTCP(t *testing.T) {
 	if n.listener == nil {
 		t.Fatal("plain node lost its plain TCP listener")
 	}
-	if n.masqListener != nil || n.masqDialer != nil {
+	if n.masqListener != nil || n.masqDialer.Load() != nil {
 		t.Fatal("masq bearer created although MasqConfig is disabled")
 	}
 }

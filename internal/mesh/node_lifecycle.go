@@ -115,24 +115,28 @@ func NewNodeWithIdentity(meshID string, psk []byte, cfg Config, identity *mcrypt
 		overlayDiscovery: make(map[string]time.Time),
 		// The overlay keyspace is the peer id itself: localPeerID is the hex of
 		// this same Ed25519 public key, so a peer id is already a point in it.
-		overlayTable:     overlay.NewTable(overlay.NodeID(identity.PublicKey()), 0),
-		directProbes:     make(map[string]time.Time),
-		peerDials:        make(map[string]time.Time),
-		peerDialFailures: make(map[string]int),
-		announceForwards: make(map[string]time.Time),
-		explicitTargets:  make(map[string]time.Time),
-		bootstrapDials:   make(map[string]time.Time),
-		lanBeaconBuckets: make(map[string]*lanBeaconRateBucket),
-		lanBeaconGlobal:  nat.NewTokenBucket(lanBeaconGlobalBurst, lanBeaconGlobalRate),
-		meshDeliveries:   make(map[string]*meshDeliveryObservation),
-		bindingHistory:   make([]string, 0, 4),
-		knownPeers:       make(map[string]knownPeer),
-		trackerSeeds:     make(map[string]time.Time),
-		bindingWait:      make(map[string]chan string),
-		reachabilityWait: make(map[string]chan bool),
-		holePunchWait:    make(map[string]holePunchRequest),
-		dispatchCh:       make(chan any, 1024),
-		localQueues:      make(map[string]chan dispatchMessage),
+		overlayTable:          overlay.NewTable(overlay.NodeID(identity.PublicKey()), 0),
+		directProbes:          make(map[string]time.Time),
+		peerDials:             make(map[string]time.Time),
+		peerDialFailures:      make(map[string]int),
+		hostDials:             make(map[string]time.Time),
+		hostDialInFlight:      make(map[string]int),
+		hostDialFailures:      make(map[string]int),
+		announceForwards:      make(map[string]time.Time),
+		explicitTargets:       make(map[string]time.Time),
+		bootstrapDials:        make(map[string]time.Time),
+		bootstrapDialFailures: make(map[string]int),
+		lanBeaconBuckets:      make(map[string]*lanBeaconRateBucket),
+		lanBeaconGlobal:       nat.NewTokenBucket(lanBeaconGlobalBurst, lanBeaconGlobalRate),
+		meshDeliveries:        make(map[string]*meshDeliveryObservation),
+		bindingHistory:        make([]string, 0, 4),
+		knownPeers:            make(map[string]knownPeer),
+		trackerSeeds:          make(map[string]time.Time),
+		bindingWait:           make(map[string]chan string),
+		reachabilityWait:      make(map[string]chan bool),
+		holePunchWait:         make(map[string]holePunchRequest),
+		dispatchCh:            make(chan any, 1024),
+		localQueues:           make(map[string]chan dispatchMessage),
 	}
 	node.natProfile.Store(nat.Profile{Type: nat.TypeUnknown})
 	// The bus exists whether or not the debug plane is enabled: Emit is a single
@@ -221,11 +225,11 @@ func (n *Node) Start() int32 {
 	}
 	if masqLn != nil {
 		n.masqListener = masqLn
-		n.masqDialer = &transport.MasqDialer{
+		n.masqDialer.Store(&transport.MasqDialer{
 			CoverSNI:    n.config.MasqConfig.CoverSNI,
 			BindIfIndex: n.bindIfIndex,
 			Timeout:     n.config.HandshakeTimeout(),
-		}
+		})
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	n.listener = ln
@@ -361,7 +365,7 @@ func (n *Node) Stop() int32 {
 	udpListener := n.udpListener
 	masqListener := n.masqListener
 	n.masqListener = nil
-	n.masqDialer = nil
+	n.masqDialer.Store(nil)
 	veilListener := n.veilListener
 	n.veilListener = nil
 	portMapper := n.portMapper

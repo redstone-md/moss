@@ -347,26 +347,75 @@ func (n *Node) rememberTrackerSeeds(peers []string) {
 }
 
 func (n *Node) kickBootstrapPeers(ctx context.Context, peers []string) {
-	if len(peers) == 0 {
-		return
+	// The kick path fires on every tracker announce round, straight from the
+	// raw response. It bypasses the maintenance pass — but not the dial
+	// budget: hosts in backoff are skipped, one host takes at most one slot
+	// per round, and every attempt reports its outcome.
+	for _, addr := range n.kickTargets(peers) {
+		go func(addr string) {
+			attemptCtx, cancel := context.WithTimeout(ctx, n.config.HandshakeTimeout())
+			defer cancel()
+			n.noteHostDialStart(addr)
+			err := n.connectBootstrapSeed(attemptCtx, addr)
+			n.noteBootstrapDialOutcome(addr, err == nil && n.hasPeerAddr(addr))
+		}(addr)
+	}
+}
+
+// kickTargets picks the raw announce response's addresses worth an immediate
+// dial: up to DOut of them, at most one per host, none whose host is spacing
+// out from a failed attempt. The kick used to take peers[:DOut] blindly, which
+// is exactly where a dead litter host (41 port records at one IP) monopolised
+// the fleet's dial budget.
+func (n *Node) kickTargets(peers []string) []string {
+	now := time.Now()
+	cooldown := n.config.HandshakeTimeout()
+	if cooldown < 2*time.Second {
+		cooldown = 2 * time.Second
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.directPeerCountLocked() >= n.config.MaxPeers {
+		// Full before any attempt: nothing to dial and nothing to charge —
+		// a capacity refusal is not a host failure.
+		return nil
 	}
 	limit := n.config.GossipSub.DOut
 	if limit <= 0 {
 		limit = 2
 	}
-	if limit > len(peers) {
-		limit = len(peers)
-	}
-	for _, peer := range peers[:limit] {
-		if peer == "" {
+	kicked := make([]string, 0, min(len(peers), limit))
+	seenHosts := make(map[string]struct{}, limit)
+	for _, addr := range peers {
+		if addr == "" {
 			continue
 		}
-		go func(addr string) {
-			attemptCtx, cancel := context.WithTimeout(ctx, n.config.HandshakeTimeout())
-			defer cancel()
-			_ = n.connectBootstrapSeed(attemptCtx, addr)
-		}(peer)
+		if hasPeerAddrLocked(n.peers, addr) {
+			continue
+		}
+		// The kick honours a seed's OWN interval too, not just its host's: a
+		// failed port on a live host has a growing addr backoff, and the kick
+		// used to re-dial it at every announce round the moment a sibling
+		// port's success cleared the host-level state.
+		if n.bootstrapAddrInBackoffLocked(addr, cooldown, now) {
+			continue
+		}
+		host := dialHost(addr)
+		if _, ok := seenHosts[host]; ok {
+			continue
+		}
+		if n.hostInBackoffLocked(host, cooldown, now) {
+			continue
+		}
+		seenHosts[host] = struct{}{}
+		n.bootstrapDials[addr] = now
+		n.hostDials[host] = now
+		kicked = append(kicked, addr)
+		if len(kicked) >= limit {
+			break
+		}
 	}
+	return kicked
 }
 
 func (n *Node) connectPeer(ctx context.Context, addr string) error {
@@ -447,11 +496,12 @@ func (n *Node) connectPeerOnce(ctx context.Context, addr string, remoteStatic []
 	// handshake below runs inside the TLS stream. Veil dialers keep the plain
 	// path: their masked legs go through veilDial (node_veil.go), and a
 	// second masquerade here would desynchronise the bootstrap's fingerprint
-	// story. The dialer is Start-created and immutable; reading it without
-	// the lock matches how Stop guarantees quiescence (cancel first, then
-	// nil, then wg.Wait), so no dial can observe a half-torn bearer.
+	// story. The dialer is swapped via atomic.Pointer because dial
+	// goroutines are not wg-tracked: a dial can still be burning when Stop
+	// clears the bearer, and it then falls through to the plain path instead
+	// of racing the swap.
 	started := time.Now()
-	if d := n.masqDialer; d != nil && !n.config.Veil.IsDialer() {
+	if d := n.masqDialer.Load(); d != nil && !n.config.Veil.IsDialer() {
 		conn, err := d.Dial(ctx, addr)
 		if err != nil {
 			n.emitDial(addr, "", "dial", err, time.Since(started))
@@ -635,6 +685,12 @@ func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origi
 	}
 	n.peers[peerID] = peer
 	n.emitSessionOpen(peer)
+	// A session at this addr — inbound dial, outbound masq, UDP punch, any
+	// leg — is the host proving itself alive: drop the host's dial backoff so
+	// the rest of that machine's records are immediately worth dialling
+	// again. Registered here, in the single funnel every direct session goes
+	// through, so inbound dials reset the budget too.
+	n.resetHostDialStateLocked(addr)
 	n.knownPeers[peerID] = knownPeer{
 		id:                     peerID,
 		addr:                   knownAddr,

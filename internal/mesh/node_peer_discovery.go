@@ -45,6 +45,13 @@ func (n *Node) discoveredPeerTargets() []discoveredPeerTarget {
 			if _, connected := n.peers[peerID]; connected {
 				continue
 			}
+			// Host budget: one machine that keeps failing its dials must not
+			// be re-offered per record. The directory had 41 records of one
+			// dead host and every pass spent its whole dial budget there,
+			// because each record looked like a fresh candidate.
+			if n.hostInBackoffLocked(dialHost(info.addr), cooldown, now) {
+				continue
+			}
 			// Glare avoidance: when both ends are publicly dialable, only the
 			// lower-id node initiates. Otherwise both dial each other's listen port,
 			// producing two duplicate sessions; the direction-based dedup then closes
@@ -90,6 +97,10 @@ func (n *Node) discoveredPeerTargets() []discoveredPeerTarget {
 		}
 		return candidates[i].peerID < candidates[j].peerID
 	})
+	// One host, one slot: the ranking decides which record represents each
+	// host, and the surplus records of the same machine — the dead-port
+	// litter — stop competing with different hosts for the pass's slots.
+	candidates = dedupeDiscoveredTargetsPerHost(candidates)
 
 	limit := n.config.GossipSub.DOut
 	if limit <= 0 {
@@ -121,10 +132,37 @@ func (n *Node) discoveredPeerTargets() []discoveredPeerTarget {
 			continue
 		}
 		n.peerDials[target.peerID] = now
+		// In-flight spacing for the host: the pass below this one must not
+		// hand a second candidate of the same machine to a dial that has
+		// not finished burning yet. The outcome charge overwrites this
+		// anchor with the real backoff when the attempt reports.
+		n.hostDials[dialHost(target.addr)] = now
 		picked = append(picked, target)
 	}
 	n.mu.Unlock()
 	return picked
+}
+
+// dedupeDiscoveredTargetsPerHost keeps, per host, only the first target of
+// the ordered candidate list — the ranking's own choice of representative.
+// A host running many peer records must not turn "DOut slots per pass" into
+// "DOut dials into one machine", which is how a dead litter host ate the
+// whole fleet budget.
+func dedupeDiscoveredTargetsPerHost(ordered []discoveredPeerTarget) []discoveredPeerTarget {
+	if len(ordered) <= 1 {
+		return ordered
+	}
+	seen := make(map[string]struct{}, len(ordered))
+	deduped := make([]discoveredPeerTarget, 0, len(ordered))
+	for _, target := range ordered {
+		host := dialHost(target.addr)
+		if _, ok := seen[host]; ok {
+			continue
+		}
+		seen[host] = struct{}{}
+		deduped = append(deduped, target)
+	}
+	return deduped
 }
 
 // ---- known-peers directory bounding ----
@@ -355,30 +393,53 @@ func (n *Node) noteDialOutcome(peerID string, ok bool) {
 }
 
 func (n *Node) dialKnownPeer(peerID, addr string) {
-	_ = addr
 	// Discovered peers use direct/NAT/hole-punch first. If that path does not
 	// materialize, promote an encrypted relay session into the pubsub peer set.
 	started := time.Now()
+	dialAddr := n.knownPeerAddr(peerID)
+	if dialAddr == "" {
+		dialAddr = addr
+	}
+	n.noteHostDialStart(dialAddr)
 	if n.tryDirectConnect(peerID, n.config.HandshakeTimeout()) {
 		n.reportConnectAttempt(outcomeDirect, reasonNone, started, false)
 		n.noteDialOutcome(peerID, true)
-	} else if n.establishedRelaySession(peerID) != "" {
-		n.reportConnectAttempt(outcomeRelayed, reasonNone, started, false)
-		n.noteDialOutcome(peerID, true)
-	} else if _, err := n.OpenRelaySessionAny(peerID, n.config.HandshakeTimeout()); err == nil {
-		n.reportConnectAttempt(outcomeRelayed, reasonPunchTimeout, started, false)
-		n.noteDialOutcome(peerID, true)
+		// A working direct path is the host's own success: every other
+		// record on that machine is immediately worth a dial again.
+		n.noteHostDialOutcome(dialAddr, true)
 	} else {
-		// No overlay lookup here, deliberately. dialKnownPeer runs per known
-		// peer on a cooldown measured in seconds, so anything it does is paid
-		// for by the whole peer set on repeat — and a Kademlia lookup costs up
-		// to alpha × the query timeout. Putting one here added ~12s to every
-		// attempt against every peer, which is exactly the stall players
-		// measured. Rendezvous belongs on the topic path, where it is bounded
-		// by a per-topic cooldown and nobody is waiting on it.
-		n.reportConnectAttempt(outcomeFailed, reasonNoRelayPeer, started, false)
-		n.noteDialOutcome(peerID, false)
+		// The direct leg burned and produced nothing, so the host gets the
+		// failure — charged here and not after the relay attempts, because a
+		// relayed session proves the PEER is reachable, never that the host's
+		// direct path works. Relay-dependent peers keep their per-peer reset;
+		// the dead-port litter of their host keeps its growing quiet period.
+		n.noteHostDialOutcome(dialAddr, false)
+		if n.establishedRelaySession(peerID) != "" {
+			n.reportConnectAttempt(outcomeRelayed, reasonNone, started, false)
+			n.noteDialOutcome(peerID, true)
+		} else if _, err := n.OpenRelaySessionAny(peerID, n.config.HandshakeTimeout()); err == nil {
+			n.reportConnectAttempt(outcomeRelayed, reasonPunchTimeout, started, false)
+			n.noteDialOutcome(peerID, true)
+		} else {
+			// No overlay lookup here, deliberately. dialKnownPeer runs per known
+			// peer on a cooldown measured in seconds, so anything it does is paid
+			// for by the whole peer set on repeat — and a Kademlia lookup costs up
+			// to alpha × the query timeout. Putting one here added ~12s to every
+			// attempt against every peer, which is exactly the stall players
+			// measured. Rendezvous belongs on the topic path, where it is bounded
+			// by a per-topic cooldown and nobody is waiting on it.
+			n.reportConnectAttempt(outcomeFailed, reasonNoRelayPeer, started, false)
+			n.noteDialOutcome(peerID, false)
+		}
 	}
+}
+
+// knownPeerAddr snapshots the address a discovered dial would currently
+// reach the peer at — the same address tryDirectConnect dials.
+func (n *Node) knownPeerAddr(peerID string) string {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.knownPeers[peerID].addr
 }
 
 func (n *Node) rememberSuppression(peerID string, ids []string, fallback string) {

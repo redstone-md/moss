@@ -511,6 +511,7 @@ func (n *Node) maintenanceLoop(ctx context.Context) {
 			// backoff-eligible peers as soon as their cooldowns expired,
 			// together.
 			if dialPhase++; dialPhase%maintenancePhaseDialEvery == 0 {
+				n.refreshStaticPeerSeeds(time.Now())
 				n.connectKnownPeers()
 				n.dialExplicitTargets()
 				n.connectBootstrapSeeds(ctx)
