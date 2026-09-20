@@ -49,6 +49,13 @@ func (n *Node) acceptLoop(ctx context.Context) {
 
 func (n *Node) acceptUDPLoop(ctx context.Context) {
 	defer n.wg.Done()
+	// Snapshot once: this loop belongs to one run, and the field is swapped
+	// by the next run's Start while the previous loop is still draining —
+	// reading it per iteration is a data race the restart census caught.
+	listener := n.udpListener.Load()
+	if listener == nil {
+		return
+	}
 	// A transient Accept error must not end the loop: a closed accept channel
 	// or a hiccup in the listener used to return for good, and every UDP peer
 	// this node would have accepted afterwards silently never happened. The
@@ -56,7 +63,7 @@ func (n *Node) acceptUDPLoop(ctx context.Context) {
 	// bounded backoff and a retry, so only shutdown stops this loop.
 	backoff := time.Millisecond
 	for {
-		session, err := n.udpListener.Accept()
+		session, err := listener.Accept()
 		if err != nil {
 			if ctx.Err() != nil || errors.Is(err, io.EOF) {
 				return

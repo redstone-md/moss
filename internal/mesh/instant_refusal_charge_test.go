@@ -54,7 +54,7 @@ func TestInstantRefusalDeathChargesDialBackoff(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
-	session, err := node.udpListener.DialPeerContext(ctx, ghostAddr, nil)
+	session, err := node.udpListener.Load().DialPeerContext(ctx, ghostAddr, nil)
 	if err != nil {
 		t.Fatalf("ghost dial failed: %v", err)
 	}

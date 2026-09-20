@@ -28,7 +28,12 @@ import (
 // targets it could never reach — ~10s burnt per attempt, and the bulk of the
 // failures the fleet reports.
 func (n *Node) requestSTUNBindingObservations(timeout time.Duration, want int) []string {
-	if n.udpListener == nil || timeout <= 0 || want <= 0 || !n.shouldUseSTUNBootstrap() {
+	// Snapshot the listener once: this runs from probePortMapping, which is
+	// deliberately not wg-tracked, so a restart can swap the listener under
+	// it. Load is the one synchronized point; everything after works on the
+	// snapshot.
+	listener := n.udpListener.Load()
+	if listener == nil || timeout <= 0 || want <= 0 || !n.shouldUseSTUNBootstrap() {
 		return nil
 	}
 	deadline := time.Now().Add(timeout)
@@ -42,7 +47,7 @@ func (n *Node) requestSTUNBindingObservations(timeout time.Duration, want int) [
 			break
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), minDuration(remaining, 1500*time.Millisecond))
-		observed, err := n.udpListener.ObserveSTUNContext(ctx, server)
+		observed, err := listener.ObserveSTUNContext(ctx, server)
 		cancel()
 		if err == nil && observed != "" {
 			observations = append(observations, observed)
@@ -156,7 +161,10 @@ func (n *Node) refreshExternalAddress(deadline time.Time) bool {
 }
 
 func (n *Node) requestSTUNBindingObservation(timeout time.Duration) (string, bool) {
-	if n.udpListener == nil || timeout <= 0 || !n.shouldUseSTUNBootstrap() {
+	// Same snapshot rule as requestSTUNBindingObservations: the untracked
+	// probe may outlive Stop into the next run's Start.
+	listener := n.udpListener.Load()
+	if listener == nil || timeout <= 0 || !n.shouldUseSTUNBootstrap() {
 		return "", false
 	}
 	deadline := time.Now().Add(timeout)
@@ -166,7 +174,7 @@ func (n *Node) requestSTUNBindingObservation(timeout time.Duration) (string, boo
 			break
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), minDuration(remaining, 1500*time.Millisecond))
-		observed, err := n.udpListener.ObserveSTUNContext(ctx, server)
+		observed, err := listener.ObserveSTUNContext(ctx, server)
 		cancel()
 		if err == nil && observed != "" {
 			return observed, true
@@ -289,7 +297,9 @@ func (n *Node) applyObservation(observed string, deadline time.Time, mapping boo
 }
 
 func (n *Node) requestUDPBindingObservation(peerID string, timeout time.Duration) (string, bool) {
-	if n.udpListener == nil || timeout <= 0 {
+	// Snapshot rule again: punch/refresh paths are not wg-tracked either.
+	listener := n.udpListener.Load()
+	if listener == nil || timeout <= 0 {
 		return "", false
 	}
 	n.mu.RLock()
@@ -305,7 +315,7 @@ func (n *Node) requestUDPBindingObservation(peerID string, timeout time.Duration
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	observed, err := n.udpListener.ObserveContext(ctx, addr)
+	observed, err := listener.ObserveContext(ctx, addr)
 	if err != nil || observed == "" {
 		return "", false
 	}

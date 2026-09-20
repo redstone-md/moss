@@ -339,13 +339,16 @@ func (n *Node) cachedRemoteStatic(peerID, addr string) []byte {
 }
 
 func (n *Node) connectPeerUDPWithHint(ctx context.Context, targetPeerID, addr string) error {
-	if n.udpListener == nil || addr == "" {
+	// Snapshot once: dial goroutines are not wg-tracked, and a restart swaps
+	// the listener under them — the same rule as requestSTUNBindingObservation.
+	listener := n.udpListener.Load()
+	if listener == nil || addr == "" {
 		return errors.New("udp transport unavailable")
 	}
 	remoteStatic := n.cachedRemoteStatic(targetPeerID, addr)
-	session, err := n.udpListener.DialPeerContext(ctx, addr, remoteStatic)
+	session, err := listener.DialPeerContext(ctx, addr, remoteStatic)
 	if err != nil && len(remoteStatic) == 32 && ctx.Err() == nil {
-		session, err = n.udpListener.DialContext(ctx, addr)
+		session, err = listener.DialContext(ctx, addr)
 	}
 	if err != nil {
 		return err
@@ -370,7 +373,7 @@ func (n *Node) connectBootstrapPeer(ctx context.Context, addr string) error {
 	if ctx == nil {
 		return errors.New("mesh: bootstrap dial requires a non-nil context")
 	}
-	if n.udpListener == nil {
+	if n.udpListener.Load() == nil {
 		return n.connectPeer(ctx, addr)
 	}
 	attemptCtx, cancel := context.WithCancel(ctx)

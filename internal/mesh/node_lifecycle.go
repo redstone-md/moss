@@ -233,7 +233,7 @@ func (n *Node) Start() int32 {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	n.listener = ln
-	n.udpListener = udpListener
+	n.udpListener.Store(udpListener)
 	n.listenPort = port
 	n.started = true
 	n.startedAt = time.Now()
@@ -362,7 +362,7 @@ func (n *Node) Stop() int32 {
 	n.started = false
 	cancel := n.cancel
 	listener := n.listener
-	udpListener := n.udpListener
+	udpListener := n.udpListener.Load()
 	masqListener := n.masqListener
 	n.masqListener = nil
 	n.masqDialer.Store(nil)

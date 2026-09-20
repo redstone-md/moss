@@ -49,7 +49,15 @@ type Node struct {
 	profiler    *nat.Profiler
 	portMapper  nat.PortMapper
 	listener    *transport.Listener
-	udpListener *transport.UDPListener
+	// udpListener is an atomic pointer for the same reason masqDialer is:
+	// readers are NOT wg-tracked. probePortMapping is deliberately untracked
+	// (bounded by its own STUN/mapping timeouts, not by Stop's wg.Wait), and
+	// a restart's Start assigns a fresh listener while the previous run's
+	// probe is still inside its STUN windows — the census caught that pair
+	// as a data race. Readers Load once and work on the snapshot; a late
+	// probe Load sees either listener and its STUN calls fail cleanly on
+	// the closed one.
+	udpListener atomic.Pointer[transport.UDPListener]
 	// masqListener and masqDialer hold the uTLS masquerade bearer created by
 	// Start when MasqConfig opts the node in (and Veil is not the listener).
 	// Both are built once under n.mu and cleared by Stop. The dialer is an
