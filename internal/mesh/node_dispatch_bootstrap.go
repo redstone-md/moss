@@ -371,7 +371,11 @@ func (n *Node) connectBootstrapSeeds(ctx context.Context) {
 		go func(seed string) {
 			attemptCtx, cancel := context.WithTimeout(ctx, n.config.HandshakeTimeout())
 			defer cancel()
-			_ = n.connectBootstrapSeed(attemptCtx, seed)
+			err := n.connectBootstrapSeed(attemptCtx, seed)
+			// A seed that produced no session either failed its handshake or
+			// was refused outright; both are a failed attempt as far as the
+			// budget is concerned. A session at that addr is the only success.
+			n.noteBootstrapDialOutcome(seed, err == nil && n.hasPeerAddr(seed))
 		}(addr)
 	}
 }
@@ -399,19 +403,31 @@ func (n *Node) bootstrapSeedTargets() []string {
 		if seenAt.Before(cutoff) {
 			delete(n.trackerSeeds, addr)
 			delete(n.bootstrapDials, addr)
+			delete(n.bootstrapDialFailures, addr)
 			continue
 		}
 		if addr == localAddr || hasPeerAddrLocked(n.peers, addr) {
 			continue
 		}
-		lastDial := n.bootstrapDials[addr]
-		if !lastDial.IsZero() && now.Sub(lastDial) < cooldown {
+		// A seed that keeps failing gets an interval that GROWS: the flat
+		// HandshakeTimeout cooldown retried the same dead port every five
+		// seconds for as long as the trackers kept returning it (measured:
+		// thirty attempts against one port in 140 seconds).
+		if n.bootstrapAddrInBackoffLocked(addr, cooldown, now) {
+			continue
+		}
+		// The host budget: one dead machine holding many port records must
+		// not monopolise the seed dial slots either.
+		if n.hostInBackoffLocked(dialHost(addr), cooldown, now) {
 			continue
 		}
 		targets = append(targets, addr)
 	}
 
 	sort.Strings(targets)
+	// One host, one seed per pass: the sorted list keeps the first addr of
+	// each host, so a 41-port litter takes a single slot.
+	targets = firstAddrPerHost(targets)
 	limit := n.config.GossipSub.DOut
 	if limit <= 0 {
 		limit = 2
@@ -422,8 +438,37 @@ func (n *Node) bootstrapSeedTargets() []string {
 	selected := append([]string(nil), targets[:limit]...)
 	for _, addr := range selected {
 		n.bootstrapDials[addr] = now
+		n.hostDials[dialHost(addr)] = now
 	}
 	return selected
+}
+
+// firstAddrPerHost keeps the first address of each host in an ordered list,
+// so one machine takes at most one dial slot per pass however many port
+// records the trackers returned for it.
+func firstAddrPerHost(ordered []string) []string {
+	if len(ordered) <= 1 {
+		return ordered
+	}
+	seen := make(map[string]struct{}, len(ordered))
+	kept := ordered[:0]
+	for _, addr := range ordered {
+		host := dialHost(addr)
+		if _, ok := seen[host]; ok {
+			continue
+		}
+		seen[host] = struct{}{}
+		kept = append(kept, addr)
+	}
+	return kept
+}
+
+// hasPeerAddr reports whether a live session sits at addr — the dial path's
+// own definition of a success.
+func (n *Node) hasPeerAddr(addr string) bool {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return hasPeerAddrLocked(n.peers, addr)
 }
 
 func hasPeerAddrLocked(peers map[string]*peerConn, addr string) bool {

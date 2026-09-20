@@ -151,6 +151,14 @@ type Node struct {
 	directProbes     map[string]time.Time
 	peerDials        map[string]time.Time
 	peerDialFailures map[string]int
+	// hostDials/hostDialFailures carry the dial budget per HOST: one dead
+	// machine with a pile of port records must burn one attempt per backoff
+	// window, not one per record. See node_dial_budget.go.
+	hostDials        map[string]time.Time
+	hostDialFailures map[string]int
+	// bootstrapDialFailures grows the retry interval of a single seed addr
+	// past the flat HandshakeTimeout cooldown. See node_dial_budget.go.
+	bootstrapDialFailures map[string]int
 
 	// announceForwards throttles re-flooding per advertised peer. See
 	// shouldForwardAnnounce.

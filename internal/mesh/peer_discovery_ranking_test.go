@@ -19,11 +19,16 @@ func rankingTestNode(t *testing.T, dOut int) *Node {
 	return node
 }
 
-func addRankingCandidate(node *Node, id string, relayCapable bool) {
+// addRankingCandidate registers a selectable candidate. Each peer gets its
+// own host: the dial pass budgets per HOST (one machine, one slot per pass),
+// so a fixture that seats every fake peer on one address is folded to a
+// single candidate by design. The 203.0.113.0/24 range keeps them routable
+// public unicast, not LAN.
+func addRankingCandidate(node *Node, id string, relayCapable bool, host int) {
 	node.mu.Lock()
 	node.knownPeers[id] = knownPeer{
 		id:              id,
-		addr:            "203.0.113.10:4001",
+		addr:            fmt.Sprintf("203.0.113.%d:4001", host),
 		verified:        true,
 		publicReachable: true,
 		natTrusted:      true,
@@ -34,7 +39,7 @@ func addRankingCandidate(node *Node, id string, relayCapable bool) {
 }
 
 func addConnectedRelayCapable(node *Node, id string) {
-	addRankingCandidate(node, id, true)
+	addRankingCandidate(node, id, true, 10)
 	node.mu.Lock()
 	node.peers[id] = &peerConn{id: id, addr: "203.0.113.9:4001"}
 	node.mu.Unlock()
@@ -60,10 +65,10 @@ func TestDialTargetsSkipRelayCapableWhenQuotaMet(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		id := "cc" + fmt.Sprintf("%062d", i)
 		plain = append(plain, id)
-		addRankingCandidate(node, id, false)
+		addRankingCandidate(node, id, false, 30+i)
 	}
 	for i := 0; i < 3; i++ {
-		addRankingCandidate(node, "bb"+fmt.Sprintf("%062d", i), true)
+		addRankingCandidate(node, "bb"+fmt.Sprintf("%062d", i), true, 20+i)
 	}
 
 	selected := selectedIDs(node)
@@ -86,10 +91,10 @@ func TestDialTargetsSkipRelayCapableWhenQuotaMet(t *testing.T) {
 func TestDialTargetsFillRelayQuotaDeficitOnly(t *testing.T) {
 	node := rankingTestNode(t, 4)
 	for i := 0; i < 3; i++ {
-		addRankingCandidate(node, "bb"+fmt.Sprintf("%062d", i), true)
+		addRankingCandidate(node, "bb"+fmt.Sprintf("%062d", i), true, 20+i)
 	}
 	for i := 0; i < 3; i++ {
-		addRankingCandidate(node, "cc"+fmt.Sprintf("%062d", i), false)
+		addRankingCandidate(node, "cc"+fmt.Sprintf("%062d", i), false, 30+i)
 	}
 
 	selected := selectedIDs(node)
