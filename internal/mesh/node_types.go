@@ -52,11 +52,14 @@ type Node struct {
 	udpListener *transport.UDPListener
 	// masqListener and masqDialer hold the uTLS masquerade bearer created by
 	// Start when MasqConfig opts the node in (and Veil is not the listener).
-	// Both are immutable for the lifetime of a started run — built once
-	// under n.mu, read by the dial path without locking, cleared by Stop —
-	// so a mid-run restart swaps them atomically rather than racing dials.
+	// Both are built once under n.mu and cleared by Stop. The dialer is an
+	// atomic pointer because dial goroutines are NOT wg-tracked: a dial can
+	// still be burning when Stop clears the bearer, and the race detector
+	// (and Go's memory model) require the swap to be atomic — a dial either
+	// sees the whole bearer or nil and falls back to the plain path, never a
+	// half-torn read.
 	masqListener *transport.MasqListener
-	masqDialer   *transport.MasqDialer
+	masqDialer   atomic.Pointer[transport.MasqDialer]
 	// veilListener holds the Veil "Reality" DPI-mask listener when this
 	// node runs the relay role. Typed as a bare Closer so the field
 	// stays free of the uTLS-heavy vtransport import on js/wasm builds,

@@ -365,6 +365,28 @@ func (n *Node) connectKnownPeers() {
 	}
 }
 
+// refreshStaticPeerSeeds keeps configured static peers permanently in the
+// seed pool. Tracker-served seeds expire after ten quiet minutes; a static
+// peer is operator intent and must outlive that cutoff — the maintenance
+// dial phase re-arms it every pass, and the seed budget (escalating interval,
+// per-host dedup, in-flight claim) owns its retries. The bootstrap loop's
+// one-shot dial at Start stays: most statics land there, in milliseconds.
+// The ones that miss once — a fresh process's first dial on a CI runner —
+// get their second chance here instead of staying dead forever.
+func (n *Node) refreshStaticPeerSeeds(now time.Time) {
+	if len(n.config.StaticPeers) == 0 {
+		return
+	}
+	n.mu.Lock()
+	for _, peer := range n.config.StaticPeers {
+		if peer == "" {
+			continue
+		}
+		n.trackerSeeds[peer] = now
+	}
+	n.mu.Unlock()
+}
+
 func (n *Node) connectBootstrapSeeds(ctx context.Context) {
 	addrs := n.bootstrapSeedTargets()
 	for _, addr := range addrs {

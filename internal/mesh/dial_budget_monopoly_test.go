@@ -242,6 +242,40 @@ func TestLoopbackNodesDoNotShareHostBudget(t *testing.T) {
 	}
 }
 
+// A configured static peer must not depend on one lucky shot: the
+// bootstrap loop dials it once at Start, and a transient miss used to leave
+// the pair dead forever — on a CI runner the first dial to a fresh process
+// can fail once (the moss-ffi pair missed its 8s window this way on
+// windows). Statics are permanent seed-pool members: the maintenance dial
+// phase re-arms them, and the seed budget retries them on its own
+// escalating interval.
+func TestStaticPeersAreRetriedThroughTheSeedPool(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.GossipSub.DOut = 2
+	cfg.StaticPeers = []string{"127.0.0.1:41001"}
+	node, err := NewNode("mesh-dial-budget-static-retry", nil, cfg)
+	if err != nil {
+		t.Fatalf("NewNode failed: %v", err)
+	}
+
+	// The one-shot at Start missed: nothing connected, nothing charged. The
+	// seed pool entry has gone stale past the 10-minute cutoff.
+	node.mu.Lock()
+	node.trackerSeeds["127.0.0.1:41001"] = time.Now().Add(-11 * time.Minute)
+	node.mu.Unlock()
+	if targets := node.bootstrapSeedTargets(); len(targets) != 0 {
+		t.Fatalf("stale seed pool must not dial: %v", targets)
+	}
+
+	// The maintenance dial phase re-arms the static peer and the seed pass
+	// picks it up for retry.
+	node.refreshStaticPeerSeeds(time.Now())
+	targets := node.bootstrapSeedTargets()
+	if len(targets) != 1 || targets[0] != "127.0.0.1:41001" {
+		t.Fatalf("a configured static peer must be retried through the seed pool: %v", targets)
+	}
+}
+
 // The kick path must honour a seed address's OWN backoff, not just its
 // host's. A failed port on a live host has a growing personal interval
 // (bootstrapDialFailures); a sibling port's success clears the host-level

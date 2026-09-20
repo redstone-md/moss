@@ -225,11 +225,11 @@ func (n *Node) Start() int32 {
 	}
 	if masqLn != nil {
 		n.masqListener = masqLn
-		n.masqDialer = &transport.MasqDialer{
+		n.masqDialer.Store(&transport.MasqDialer{
 			CoverSNI:    n.config.MasqConfig.CoverSNI,
 			BindIfIndex: n.bindIfIndex,
 			Timeout:     n.config.HandshakeTimeout(),
-		}
+		})
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	n.listener = ln
@@ -365,7 +365,7 @@ func (n *Node) Stop() int32 {
 	udpListener := n.udpListener
 	masqListener := n.masqListener
 	n.masqListener = nil
-	n.masqDialer = nil
+	n.masqDialer.Store(nil)
 	veilListener := n.veilListener
 	n.veilListener = nil
 	portMapper := n.portMapper

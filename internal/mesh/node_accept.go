@@ -496,11 +496,12 @@ func (n *Node) connectPeerOnce(ctx context.Context, addr string, remoteStatic []
 	// handshake below runs inside the TLS stream. Veil dialers keep the plain
 	// path: their masked legs go through veilDial (node_veil.go), and a
 	// second masquerade here would desynchronise the bootstrap's fingerprint
-	// story. The dialer is Start-created and immutable; reading it without
-	// the lock matches how Stop guarantees quiescence (cancel first, then
-	// nil, then wg.Wait), so no dial can observe a half-torn bearer.
+	// story. The dialer is swapped via atomic.Pointer because dial
+	// goroutines are not wg-tracked: a dial can still be burning when Stop
+	// clears the bearer, and it then falls through to the plain path instead
+	// of racing the swap.
 	started := time.Now()
-	if d := n.masqDialer; d != nil && !n.config.Veil.IsDialer() {
+	if d := n.masqDialer.Load(); d != nil && !n.config.Veil.IsDialer() {
 		conn, err := d.Dial(ctx, addr)
 		if err != nil {
 			n.emitDial(addr, "", "dial", err, time.Since(started))
