@@ -363,17 +363,25 @@ func (n *Node) overlayLookup(ctx context.Context, key overlay.NodeID, wantValue 
 			resp gossip.Envelope
 			err  error
 		}
-		results := make([]overlayQueryResult, len(batch))
+		// Results arrive through a buffered channel, not a shared slice. The
+		// outer select below can give up before every query returns (ctx.Done
+		// or the 12s batch bound), and a slice read at that point races the
+		// stragglers still parked inside overlayQuery: the fleet's race census
+		// caught the batch goroutine writing results[i] as the abandon path
+		// ranged over the same slots. The channel decouples sender from reader
+		// — a straggler's send lands in the buffer and is simply never read
+		// late, which the slice could not guarantee.
+		results := make(chan overlayQueryResult, len(batch))
 		var wg sync.WaitGroup
 		// Each query gets its own deadline so one slow peer cannot
 		// hold the whole round hostage: the fleet saw 150-minute
 		// wg.Wait stalls when a single overlayQuery never returned
 		// on node.ctx (which only cancels on Stop). 4s matches the
 		// overlayQuery dial+RPC budget.
-		for i, c := range batch {
+		for _, c := range batch {
 			queried[c.ID.String()] = true
 			wg.Add(1)
-			go func(i int, c overlay.Contact) {
+			go func(c overlay.Contact) {
 				defer wg.Done()
 				qctx, cancel := context.WithTimeout(ctx, 4*time.Second)
 				defer cancel()
@@ -381,19 +389,36 @@ func (n *Node) overlayLookup(ctx context.Context, key overlay.NodeID, wantValue 
 					Type:       queryType,
 					OverlayKey: append([]byte(nil), key[:]...),
 				})
-				results[i] = overlayQueryResult{resp: resp, err: err}
-			}(i, c)
+				results <- overlayQueryResult{resp: resp, err: err}
+			}(c)
 		}
 		// Bound the whole batch (alpha=3): even with per-query
 		// timeouts, do not wait forever on a wedged goroutine.
 		done := make(chan struct{})
 		go func() { wg.Wait(); close(done) }()
+		batchTimer := time.NewTimer(12 * time.Second)
 		select {
 		case <-done:
 		case <-ctx.Done():
-		case <-time.After(12 * time.Second):
+		case <-batchTimer.C:
 		}
-		for _, result := range results {
+		batchTimer.Stop()
+		// Take ONLY what has arrived. On the done path that is every result
+		// (wg.Wait returned, so every send completed and the buffer holds the
+		// whole batch); on an abandon the buffer holds exactly the queries
+		// that finished — no slot a straggler still owns is ever read, and
+		// the straggler's late send lands in the buffer harmlessly.
+		arrived := make([]overlayQueryResult, 0, len(batch))
+	drain:
+		for {
+			select {
+			case result := <-results:
+				arrived = append(arrived, result)
+			default:
+				break drain
+			}
+		}
+		for _, result := range arrived {
 			resp, err := result.resp, result.err
 			if err != nil {
 				// Do NOT drop the contact. One timeout is not death: a query can
