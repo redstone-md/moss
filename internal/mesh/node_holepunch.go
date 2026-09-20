@@ -107,7 +107,7 @@ func (n *Node) attemptHolePunchPolicy(targetPeerID string, timeout time.Duration
 		n.mu.Unlock()
 	}()
 	n.countInbound("__punch_attempt__")
-	n.sendEnvelope(viaPeer, gossip.Envelope{
+	n.sendEnvelope(viaPeer, n.signedHolePunchCoordEnvelope(gossip.Envelope{
 		Type:           gossip.TypeHolePunchCoord,
 		RequestID:      requestID,
 		CoordStage:     "offer",
@@ -115,15 +115,15 @@ func (n *Node) attemptHolePunchPolicy(targetPeerID string, timeout time.Duration
 		RelaySource:    n.localPeerID(),
 		RelayTarget:    targetPeerID,
 		AdvertisedAddr: sourceAddr,
-	})
-	n.emitPunchAttempt(targetPeerID, targetInfo.natType, viaPeerID)
+	}))
+	n.emitPunchAttempt(targetPeerID, n.knownPeerNATType(targetPeerID), viaPeerID)
 	punchStarted := time.Now()
 
 	triedAddr := targetInfo.addr
 	for time.Now().Before(deadline) {
 		if n.directPeerConnected(targetPeerID) {
 			n.countInbound("__punch_success__")
-			n.emitPunchResult(targetPeerID, targetInfo.natType, true, time.Since(punchStarted))
+			n.emitPunchResult(targetPeerID, n.knownPeerNATType(targetPeerID), true, time.Since(punchStarted))
 			return true
 		}
 		if coordRetries < holePunchCoordRetryLimit && time.Now().After(coordAt.Add(holePunchCoordGrace)) {
@@ -143,7 +143,7 @@ func (n *Node) attemptHolePunchPolicy(targetPeerID string, timeout time.Duration
 				coordAt = time.Now().Add(holePunchCoordGrace)
 				coordRetries++
 				n.countInbound("__punch_coord_retry__")
-				n.sendEnvelope(viaNow, gossip.Envelope{
+				n.sendEnvelope(viaNow, n.signedHolePunchCoordEnvelope(gossip.Envelope{
 					Type:           gossip.TypeHolePunchCoord,
 					RequestID:      requestID,
 					CoordStage:     "offer",
@@ -151,7 +151,7 @@ func (n *Node) attemptHolePunchPolicy(targetPeerID string, timeout time.Duration
 					RelaySource:    n.localPeerID(),
 					RelayTarget:    targetPeerID,
 					AdvertisedAddr: sourceAddr,
-				})
+				}))
 			}
 		}
 		n.mu.RLock()
@@ -172,8 +172,26 @@ func (n *Node) attemptHolePunchPolicy(targetPeerID string, timeout time.Duration
 	} else {
 		n.countInbound("__punch_timeout__")
 	}
-	n.emitPunchResult(targetPeerID, targetInfo.natType, ok, time.Since(punchStarted))
+	n.emitPunchResult(targetPeerID, n.knownPeerNATType(targetPeerID), ok, time.Since(punchStarted))
 	return ok
+}
+
+// signedHolePunchCoordEnvelope stamps a coordination envelope with this
+// node's self profile so the far side learns its NAT type at punch time.
+// The claims are the same facts a signed supernode-status announce carries.
+// A node with no NAT classification yet sends an unsigned envelope, which a
+// receiver treats exactly as a legacy one — an "unknown" profile would only
+// overwrite what the directory already knows.
+func (n *Node) signedHolePunchCoordEnvelope(env gossip.Envelope) gossip.Envelope {
+	info := n.localKnownPeer()
+	if info.natType == "" || info.natType == nat.TypeUnknown {
+		return env
+	}
+	env.AdvertisedPeerID = info.id
+	env.AdvertisedNATType = string(info.natType)
+	env.AdvertisedReachable = info.publicReachable
+	env.AdvertisedRelayCapable = info.relayCapable
+	return n.signHolePunchCoordEnvelope(env)
 }
 
 func (n *Node) tryHolePunchDial(targetPeerID, addr string) {
