@@ -49,7 +49,15 @@ type Node struct {
 	profiler    *nat.Profiler
 	portMapper  nat.PortMapper
 	listener    *transport.Listener
-	udpListener *transport.UDPListener
+	// udpListener is an atomic pointer for the same reason masqDialer is:
+	// readers are NOT wg-tracked. probePortMapping is deliberately untracked
+	// (bounded by its own STUN/mapping timeouts, not by Stop's wg.Wait), and
+	// a restart's Start assigns a fresh listener while the previous run's
+	// probe is still inside its STUN windows — the census caught that pair
+	// as a data race. Readers Load once and work on the snapshot; a late
+	// probe Load sees either listener and its STUN calls fail cleanly on
+	// the closed one.
+	udpListener atomic.Pointer[transport.UDPListener]
 	// masqListener and masqDialer hold the uTLS masquerade bearer created by
 	// Start when MasqConfig opts the node in (and Veil is not the listener).
 	// Both are built once under n.mu and cleared by Stop. The dialer is an
@@ -524,6 +532,16 @@ const (
 	// per typical timeout, keeping NAT'd sessions stable.
 	peerProbeIntervalFloor = 15 * time.Second
 )
+
+// peerInstantRefusalWindow bounds the instant-refusal charge in removePeer:
+// a direct session that dies inside this window without a single packet
+// having arrived was closed by the far end right after the dial's success —
+// a full peer, or its own duplicate choice. Wider than a handshake plus a
+// first round trip, narrower than the first ping cadence, so an ordinary
+// fast disconnect still reads as churn-free. The bootstrap outcome check
+// waits out the same window before charging a dial as a success, so the two
+// can never race each other's verdicts. A var so tests can compress it.
+var peerInstantRefusalWindow = 3 * time.Second
 
 // meshGraftRetryInterval bounds how often the maintenance path re-sends a
 // GRAFT to the same peer on the same channel. The mesh loop runs at the

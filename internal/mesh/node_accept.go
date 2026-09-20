@@ -49,6 +49,13 @@ func (n *Node) acceptLoop(ctx context.Context) {
 
 func (n *Node) acceptUDPLoop(ctx context.Context) {
 	defer n.wg.Done()
+	// Snapshot once: this loop belongs to one run, and the field is swapped
+	// by the next run's Start while the previous loop is still draining —
+	// reading it per iteration is a data race the restart census caught.
+	listener := n.udpListener.Load()
+	if listener == nil {
+		return
+	}
 	// A transient Accept error must not end the loop: a closed accept channel
 	// or a hiccup in the listener used to return for good, and every UDP peer
 	// this node would have accepted afterwards silently never happened. The
@@ -56,7 +63,7 @@ func (n *Node) acceptUDPLoop(ctx context.Context) {
 	// bounded backoff and a retry, so only shutdown stops this loop.
 	backoff := time.Millisecond
 	for {
-		session, err := n.udpListener.Accept()
+		session, err := listener.Accept()
 		if err != nil {
 			if ctx.Err() != nil || errors.Is(err, io.EOF) {
 				return
@@ -72,7 +79,12 @@ func (n *Node) acceptUDPLoop(ctx context.Context) {
 			continue
 		}
 		backoff = time.Millisecond
-		n.registerPeerFrom(session, false, originInboundUDP)
+		// The confirm phase runs off the loop, one bounded goroutine per
+		// session: registration used to happen inline here, so a candidate
+		// waiting out its confirm window — or a refusal taking the node lock —
+		// would stall every later accepted handshake behind it.
+		n.wg.Add(1)
+		go n.confirmAcceptedUDPSession(ctx, session)
 	}
 }
 
@@ -210,8 +222,47 @@ func (n *Node) announceRoundWait(consecutiveEmpty int) time.Duration {
 
 func (n *Node) connectStaticPeers(ctx context.Context) {
 	for _, peer := range n.config.StaticPeers {
-		n.connectPeer(ctx, peer)
+		// One bounded dial per static peer, in parallel: the initial dial
+		// used to run on the root context — an unbounded handshake budget —
+		// so a static peer that was down at Start held the transport's
+		// client slot for its address forever, every later retry to that
+		// address got "udp handshake is already in progress" without
+		// sending a packet, and a temporarily dead static peer could never
+		// recover.
+		go func(addr string) {
+			attemptCtx, cancel := context.WithTimeout(ctx, n.config.HandshakeTimeout())
+			defer cancel()
+			_ = n.connectStaticPeer(attemptCtx, addr)
+		}(peer)
 	}
+}
+
+// connectStaticPeer dials one operator-configured peer. A static peer is
+// intent, not discovery, so it keeps a UDP fallback below the public rank —
+// the rank gate used to send anything loopback or private to a TCP-only
+// dial, and a peer whose TCP was refused but whose UDP ear was alive never
+// formed (bug №6: 60s repro, zero peers against a live UDP endpoint). The
+// fallback is sequential, not a race: a parallel UDP leg on a LAN peer
+// churned the peer slot against a one-slot MaxPeers budget (two transports
+// registering where the topology expected one session), so TCP goes first
+// and UDP fires only when TCP produced nothing. Public static peers keep
+// the parallel dual dial the bootstrap path already used for them.
+func (n *Node) connectStaticPeer(ctx context.Context, addr string) error {
+	if knownPeerAddrRank(addr) >= 3 {
+		return n.connectBootstrapPeer(ctx, addr)
+	}
+	err := n.connectPeer(ctx, addr)
+	if n.hasPeerAddr(addr) {
+		// Connected — either this leg or a racing sibling. No fallback needed.
+		return nil
+	}
+	// connectPeer's nil is NOT "connected": clientHandshakeAndRegister
+	// ignores registerPeerFrom's verdict, so a session the node refused
+	// (capacity, allowlist) still comes back nil (Api mismatch the review
+	// flagged). A refused TCP registration is exactly the static peer the
+	// UDP ear must still get a chance to reach.
+	_ = err
+	return n.connectPeerUDPWithHint(ctx, "", addr)
 }
 
 // announceAndConnect runs one tracker announce round and dials the peers it
@@ -357,9 +408,51 @@ func (n *Node) kickBootstrapPeers(ctx context.Context, peers []string) {
 			defer cancel()
 			n.noteHostDialStart(addr)
 			err := n.connectBootstrapSeed(attemptCtx, addr)
-			n.noteBootstrapDialOutcome(addr, err == nil && n.hasPeerAddr(addr))
+			alive, refused := n.bootstrapDialVerdict(addr, err)
+			n.noteBootstrapDialOutcomeCharge(addr, alive, !refused)
 		}(addr)
 	}
+}
+
+// bootstrapDialSucceeded reports the outcome the dial budget should record
+// for a finished kick or seed dial. A completed handshake is not yet a
+// success: a full peer closes the session microseconds after registering
+// it, and the instant success reset would wipe the refusal charge that
+// death writes — the kick then re-dialled the same live host every announce
+// round for a whole census run. Charging only after the session outlived
+// the refusal window keeps the two verdicts from racing: whatever the far
+// side is going to do, it has already done it by the time the answer is
+// read.
+// bootstrapDialVerdict reports how a finished kick/seed dial ended after the
+// refusal window. Charging only after the session outlived the window keeps
+// the two verdicts from racing: whatever the far side is going to do, it
+// has already done it by the time the answer is read. The refused flag is
+// the register-then-die-in-window shape: the far side closed the session
+// microseconds after the handshake, and removePeer's instant-refusal path
+// has ALREADY charged that host — the outcome note must not charge it a
+// second time for one event (the review's double-charge finding).
+func (n *Node) bootstrapDialVerdict(addr string, err error) (alive, refused bool) {
+	if err != nil {
+		return false, false
+	}
+	if !n.hasPeerAddr(addr) {
+		// Never registered (self-dial, allowlist refusal at the door): no
+		// session ever closed through maintenance, so the outcome note is
+		// the only charger.
+		return false, false
+	}
+	// Wait out the refusal window on the window's own timer, NOT on the
+	// dial's context: a dial whose budget expired before the window closed
+	// used to return success right there — with the peer still alive and
+	// about to be refused — resetting the host's backoff seconds before
+	// the refusal charged it again. The window is short (3s default,
+	// 250ms in tests) and this goroutine is untracked by design, so it is
+	// never worth a verdict shortcut.
+	<-time.After(peerInstantRefusalWindow)
+	if n.hasPeerAddr(addr) {
+		return true, false
+	}
+	return false, true
 }
 
 // kickTargets picks the raw announce response's addresses worth an immediate
@@ -386,11 +479,20 @@ func (n *Node) kickTargets(peers []string) []string {
 	}
 	kicked := make([]string, 0, min(len(peers), limit))
 	seenHosts := make(map[string]struct{}, limit)
+	liveHosts := liveSessionHostsLocked(n.peers)
 	for _, addr := range peers {
 		if addr == "" {
 			continue
 		}
 		if hasPeerAddrLocked(n.peers, addr) {
+			continue
+		}
+		// Host-level skip, same reasoning as the seed pass: a masq host
+		// terminates every port at one listener, so dialling a connected
+		// host's other records is a full handshake into an instant
+		// "duplicate connection" yield — the census saw the kick repeat that
+		// on the same live hosts every announce round.
+		if _, live := liveHosts[dialHost(addr)]; live {
 			continue
 		}
 		// The kick honours a seed's OWN interval too, not just its host's: a
@@ -563,7 +665,13 @@ const (
 	originWebRTC       = "webrtc"
 )
 
-func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origin string) {
+// registerPeerFrom is the funnel every direct session goes through. It
+// reports whether the session became a peer: every refusal path (stopped
+// node, self-dial, allowlist, duplicate yield, capacity) closes the session
+// and returns false, which is what lets the UDP confirm phase tell a live
+// peer from a candidate whose far side silently refused — a datagram carrier
+// never signals the refusal to the dialer across the wire.
+func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origin string) bool {
 	remoteID := session.RemoteID()
 	peerID := hex.EncodeToString(remoteID[:])
 	addr := session.RemoteAddr().String()
@@ -575,13 +683,13 @@ func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origi
 	if !n.started {
 		n.mu.Unlock()
 		_ = session.Close()
-		return
+		return false
 	}
 	if peerID == n.localPeerID() {
 		delete(n.trackerSeeds, addr)
 		n.mu.Unlock()
 		_ = session.Close()
-		return
+		return false
 	}
 	// Allowlist gate: an EMPTY-but-created map is strict (reject-all) while
 	// nil keeps the default open substrate. Checked after the self-loop guard
@@ -594,7 +702,7 @@ func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origi
 			n.countInbound("__allowlist_rejected__")
 			n.mu.Unlock()
 			_ = session.Close()
-			return
+			return false
 		}
 	}
 	if existing, exists := n.peers[peerID]; exists {
@@ -615,13 +723,13 @@ func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origi
 				if !keepNew {
 					n.mu.Unlock()
 					_ = session.Close()
-					return
+					return false
 				}
 				replacedPeer = existing
 			} else if !yieldsToNewConnection(n.localPeerID(), existing, outbound) {
 				n.mu.Unlock()
 				_ = session.Close()
-				return
+				return false
 			} else {
 				replacedPeer = existing
 			}
@@ -658,13 +766,13 @@ func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origi
 		if !n.started || n.peers[peerID] != replacedPeer {
 			n.mu.Unlock()
 			_ = session.Close()
-			return
+			return false
 		}
 		if n.directPeerCountLocked() >= n.config.MaxPeers {
 			if victim == nil || n.peers[victim.id] != victim {
 				n.mu.Unlock()
 				_ = session.Close()
-				return
+				return false
 			}
 			overflowPeer = victim
 			n.evictPeerLocked(victim)
@@ -769,6 +877,7 @@ func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origi
 	if replacedPeer == nil {
 		n.enqueueEvent(EventPeerJoined, map[string]string{"peer": peerID, "addr": addr})
 	}
+	return true
 }
 
 // pruneCandidate is one peer's snapshot for overflow eviction ranking: the

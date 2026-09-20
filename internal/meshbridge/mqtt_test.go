@@ -347,6 +347,16 @@ func TestMqttLinkPingKeepalive(t *testing.T) {
 	for range 2 {
 		mqttRecv(t, b.pings, "PINGREQ at broker")
 	}
+	// The broker sees a ping the moment the write hands the packet off;
+	// the pinger counts it only AFTER the write returns, so on a loaded
+	// runner this assertion can read the counter before the increment
+	// lands — CI saw PingsSent: 1 with two broker-side PINGREQs already
+	// delivered. Wait for the counter to catch up, bounded like every
+	// other wait in this file.
+	deadline := time.Now().Add(3 * time.Second)
+	for link.PingsSent() < 2 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
 	if p := link.PingsSent(); p < 2 {
 		t.Fatalf("PingsSent: %d, want >= 2", p)
 	}

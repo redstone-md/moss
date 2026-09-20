@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/redstone-md/moss/internal/gossip"
+	"github.com/redstone-md/moss/internal/nat"
 )
 
 func (n *Node) handleBindingRequest(peer *peerConn, env gossip.Envelope) {
@@ -89,6 +90,43 @@ func normalizeHolePunchCoordAt(coordAtMillis int64, now time.Time) time.Time {
 	return coordAt
 }
 
+// applyHolePunchCoordProfile records the NAT profile a coordination envelope
+// carries, when it is a valid self-signed claim from the peer it names. A
+// punch target is one of the few peers a fresh node knows by address long
+// before an announce flood reaches it, and the first punches are the ones
+// that decide how fast it spins up — without this, the punch layer spends its
+// first round NAT-blind (target_nat:"" for every early punch in the census)
+// and the relay preference cannot classify a symmetric pair. Unsigned
+// envelopes — legacy senders — are left alone, so a relay peer cannot forge
+// a profile on anyone's behalf.
+func (n *Node) applyHolePunchCoordProfile(env gossip.Envelope) {
+	if env.AdvertisedNATType == "" || env.AdvertisedPeerID == "" || env.AdvertisedPeerID != env.RelaySource {
+		return
+	}
+	if !verifyHolePunchCoordEnvelope(env) {
+		return
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	info, ok := n.knownPeers[env.RelaySource]
+	if !ok {
+		return
+	}
+	info.natType = nat.Type(env.AdvertisedNATType)
+	info.natTrusted = true
+	info.publicReachable = env.AdvertisedReachable
+	info.relayCapable = env.AdvertisedRelayCapable
+	n.knownPeers[env.RelaySource] = info
+}
+
+// knownPeerNATType reads the directory's current view of a peer's NAT type,
+// including profiles just learned from a coordination reply.
+func (n *Node) knownPeerNATType(peerID string) nat.Type {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.knownPeers[peerID].natType
+}
+
 func (n *Node) handleHolePunchCoord(peer *peerConn, env gossip.Envelope) {
 	if peer == nil || env.RelaySource == "" || env.RelayTarget == "" || env.AdvertisedAddr == "" {
 		return
@@ -108,6 +146,7 @@ func (n *Node) handleHolePunchCoord(peer *peerConn, env gossip.Envelope) {
 			}
 		}
 		n.updateKnownPeer(env.RelaySource, env.AdvertisedAddr, false)
+		n.applyHolePunchCoordProfile(env)
 		if env.CoordStage == "offer" {
 			replyAddr := n.freshObservedUDPAddr(peer.id, minDuration(750*time.Millisecond, n.config.HandshakeTimeout()/2))
 			go n.tryHolePunchDialAt(env.RelaySource, env.AdvertisedAddr, coordAt, coordAt.Add(n.config.HandshakeTimeout()))
@@ -116,7 +155,7 @@ func (n *Node) handleHolePunchCoord(peer *peerConn, env gossip.Envelope) {
 				AdvertisedPeerID: n.localPeerID(),
 				AdvertisedAddr:   replyAddr,
 			})
-			n.sendEnvelope(peer, gossip.Envelope{
+			n.sendEnvelope(peer, n.signedHolePunchCoordEnvelope(gossip.Envelope{
 				Type:           gossip.TypeHolePunchCoord,
 				RequestID:      env.RequestID,
 				CoordStage:     "reply",
@@ -124,7 +163,7 @@ func (n *Node) handleHolePunchCoord(peer *peerConn, env gossip.Envelope) {
 				RelaySource:    n.localPeerID(),
 				RelayTarget:    env.RelaySource,
 				AdvertisedAddr: replyAddr,
-			})
+			}))
 		}
 		return
 	}

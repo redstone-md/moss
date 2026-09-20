@@ -156,6 +156,15 @@ type Presence struct {
 	// the table lock.
 	onPeer func(peerID string, ip net.IP)
 
+	// onReroute, when set, is called for every accepted remote heartbeat
+	// with the sender's peer ID, nick and claimed IP. LanNode wires it to
+	// the self-address collision handler: the deterministic address of
+	// every peer is hash-of-identity into the pool, and two identities can
+	// land on the same address (1-in-pool per pair — NOT the astronomical
+	// odds the original design assumed; CI hit it in a /24). It runs
+	// outside the table lock, after onPeer.
+	onReroute func(peerID, nick string, ip net.IP)
+
 	// startOnce / stopOnce make Start and Stop idempotent.
 	startOnce sync.Once
 	stopOnce  sync.Once
@@ -242,10 +251,14 @@ func (p *Presence) Stop() {
 // next tick retries. Publishing needs no lock: publish must be safe to
 // call from any goroutine (mesh.Publish is).
 func (p *Presence) beatOnce() {
+	p.mu.Lock()
+	nick, peerID := p.nick, p.peerID
+	selfIP := append(net.IP(nil), p.selfIP...)
+	p.mu.Unlock()
 	env := presenceEnvelope{
-		Nick:      p.nick,
-		PeerID:    p.peerID,
-		VirtualIP: p.selfIP.String(),
+		Nick:      nick,
+		PeerID:    peerID,
+		VirtualIP: selfIP.String(),
 		TS:        p.now().Unix(),
 	}
 	data, err := json.Marshal(env)
@@ -332,12 +345,21 @@ func (p *Presence) Observe(data []byte) {
 		LastSeen: now,
 	}
 	hook := p.onPeer
+	reroute := p.onReroute
+	// A tie: a different peer claiming OUR self address. Detected under
+	// the lock so RetargetSelfIP and this read cannot interleave.
+	tie := ip.Equal(p.selfIP)
 	p.mu.Unlock()
 	p.counts.heartbeatsSeen.Add(1)
 	// Hand the discovered address to the wiring callback outside the lock:
 	// LanNode uses it to register the peer in the routing table.
 	if hook != nil {
 		hook(env.PeerID, ip)
+	}
+	// The loser of a self-address tie re-homes itself here and announces
+	// the new address on its next beat.
+	if tie && reroute != nil {
+		reroute(env.PeerID, env.Nick, ip)
 	}
 }
 
@@ -349,6 +371,30 @@ func (p *Presence) OnPeer(fn func(peerID string, ip net.IP)) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.onPeer = fn
+}
+
+// OnReroute installs a callback fired for every accepted remote heartbeat
+// after onPeer, with the sender's peer ID, nick and claimed IP. LanNode
+// uses it to detect a remote claiming THIS participant's own address and
+// to re-home. Set it before Start; nil clears it. Stored under the table
+// lock and invoked outside it, so the callback must not re-enter Presence.
+func (p *Presence) OnReroute(fn func(peerID, nick string, ip net.IP)) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.onReroute = fn
+}
+
+// RetargetSelfIP switches the announced virtual address. It is the
+// relocation half of the collision fix: a participant that lost its self
+// address keeps heartbeating from the new one without a restart.
+func (p *Presence) RetargetSelfIP(ip net.IP) error {
+	if ip == nil || ip.To4() == nil {
+		return fmt.Errorf("virtual IP %v is not IPv4", ip)
+	}
+	p.mu.Lock()
+	p.selfIP = append(net.IP(nil), ip.To4()...)
+	p.mu.Unlock()
+	return nil
 }
 
 // ResolveNick returns the virtual intranet IP of a remote participant by

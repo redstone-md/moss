@@ -28,7 +28,12 @@ import (
 // targets it could never reach — ~10s burnt per attempt, and the bulk of the
 // failures the fleet reports.
 func (n *Node) requestSTUNBindingObservations(timeout time.Duration, want int) []string {
-	if n.udpListener == nil || timeout <= 0 || want <= 0 || !n.shouldUseSTUNBootstrap() {
+	// Snapshot the listener once: this runs from probePortMapping, which is
+	// deliberately not wg-tracked, so a restart can swap the listener under
+	// it. Load is the one synchronized point; everything after works on the
+	// snapshot.
+	listener := n.udpListener.Load()
+	if listener == nil || timeout <= 0 || want <= 0 || !n.shouldUseSTUNBootstrap() {
 		return nil
 	}
 	deadline := time.Now().Add(timeout)
@@ -42,7 +47,7 @@ func (n *Node) requestSTUNBindingObservations(timeout time.Duration, want int) [
 			break
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), minDuration(remaining, 1500*time.Millisecond))
-		observed, err := n.udpListener.ObserveSTUNContext(ctx, server)
+		observed, err := listener.ObserveSTUNContext(ctx, server)
 		cancel()
 		if err == nil && observed != "" {
 			observations = append(observations, observed)
@@ -156,7 +161,10 @@ func (n *Node) refreshExternalAddress(deadline time.Time) bool {
 }
 
 func (n *Node) requestSTUNBindingObservation(timeout time.Duration) (string, bool) {
-	if n.udpListener == nil || timeout <= 0 || !n.shouldUseSTUNBootstrap() {
+	// Same snapshot rule as requestSTUNBindingObservations: the untracked
+	// probe may outlive Stop into the next run's Start.
+	listener := n.udpListener.Load()
+	if listener == nil || timeout <= 0 || !n.shouldUseSTUNBootstrap() {
 		return "", false
 	}
 	deadline := time.Now().Add(timeout)
@@ -166,7 +174,7 @@ func (n *Node) requestSTUNBindingObservation(timeout time.Duration) (string, boo
 			break
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), minDuration(remaining, 1500*time.Millisecond))
-		observed, err := n.udpListener.ObserveSTUNContext(ctx, server)
+		observed, err := listener.ObserveSTUNContext(ctx, server)
 		cancel()
 		if err == nil && observed != "" {
 			return observed, true
@@ -240,10 +248,21 @@ func (n *Node) applyObservation(observed string, deadline time.Time, mapping boo
 	profile := n.profiler.WithExternalAddress(previous, observed)
 
 	if mapping {
-		n.mu.Lock()
-		n.bindingHistory = appendBindingSample(n.bindingHistory, observed)
-		n.mu.Unlock()
-		profile = n.profiler.WithBindingObservations(profile, n.recentBindingWindow())
+		// The binding classifier exists to compare mappings; our own egress
+		// endpoint is not one. A vantage point handing back the exact
+		// address:port the socket sits on means nothing translated anything,
+		// and the cone fold it would mint is precisely what pinned both
+		// directly public stand hosts at port_restricted_cone forever (the
+		// public label only ever promotes from Unknown). The observation is
+		// still the right external address to advertise — it just says
+		// nothing about NAT. A box behind NAT reports the router's address
+		// instead, and classifies normally.
+		if !n.observedOwnEgressAddr(observed) {
+			n.mu.Lock()
+			n.bindingHistory = appendBindingSample(n.bindingHistory, observed)
+			n.mu.Unlock()
+			profile = n.profiler.WithBindingObservations(profile, n.recentBindingWindow())
+		}
 	}
 	if requiresReachabilityConfirmation(observed) {
 		if shouldRecheckPublicReachability(previous, profile) {
@@ -278,7 +297,9 @@ func (n *Node) applyObservation(observed string, deadline time.Time, mapping boo
 }
 
 func (n *Node) requestUDPBindingObservation(peerID string, timeout time.Duration) (string, bool) {
-	if n.udpListener == nil || timeout <= 0 {
+	// Snapshot rule again: punch/refresh paths are not wg-tracked either.
+	listener := n.udpListener.Load()
+	if listener == nil || timeout <= 0 {
 		return "", false
 	}
 	n.mu.RLock()
@@ -294,7 +315,7 @@ func (n *Node) requestUDPBindingObservation(peerID string, timeout time.Duration
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	observed, err := n.udpListener.ObserveContext(ctx, addr)
+	observed, err := listener.ObserveContext(ctx, addr)
 	if err != nil || observed == "" {
 		return "", false
 	}

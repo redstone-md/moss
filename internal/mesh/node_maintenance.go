@@ -56,16 +56,38 @@ func (n *Node) removePeer(peerID string, session *transport.Session) {
 	// forever, with no backoff ever engaging. That loop is what players feel as
 	// entering a lobby on the fourth or fifth try.
 	//
-	// A peer drowning in its own flood cannot be fixed from here, and there is no
-	// need to keep proving it every 37s: charge it as a failure so the interval
-	// grows, and let a peer that works be preferred instead. Any healthy session
-	// clears it again.
+	// A peer drowning in its own flood cannot be fixed from here, and there
+	// is no need to keep proving it every 37s: the ping-death charge below is
+	// that space-out, and any healthy session clears it again.
+	//
+	// An instant, silent death is a refusal at the far door, not churn: the
+	// dial reported success the moment registration completed, the far side
+	// closed the session before a single packet crossed — a full peer, or the
+	// far end's own duplicate choice. That success reset the cooldown, and
+	// the census watched the same live hosts get a fresh handshake every
+	// ~3 seconds for a whole 150s run (~150 "duplicate connection" closes
+	// against a handful of masq hosts). Charge it exactly like the
+	// ping-death path so every dialler — discovered targets, kick, seeds —
+	// spaces out, and the host charge keeps the kick and seed passes off
+	// that machine too. A session that survives clears it on its next
+	// success. The signature is safe to charge: a replacement closes the
+	// OLD session after the directory already points at the new one, so this
+	// guard never runs for it, and a confirmed datagram session always has
+	// inbound packets.
+	instantRefusal := !endedRelayed && endedInbound == 0 && time.Since(endedAt) < peerInstantRefusalWindow
 	if endedMisses >= peerDisconnectMissLimit {
+		n.peerDialFailures[peerID]++
+		n.peerDials[peerID] = time.Now()
+	} else if instantRefusal {
 		n.peerDialFailures[peerID]++
 		n.peerDials[peerID] = time.Now()
 	} else {
 		delete(n.peerDials, peerID)
 		delete(n.peerDialFailures, peerID)
+	}
+	refusalAddr := ""
+	if instantRefusal {
+		refusalAddr = peer.addr
 	}
 	removedRelayed := make([]string, 0)
 	for sessionID, relaySession := range n.relayLocals {
@@ -90,6 +112,12 @@ func (n *Node) removePeer(peerID string, session *transport.Session) {
 		n.knownPeers[peerID] = info
 	}
 	n.mu.Unlock()
+	// The refusal's host charge: under NO n.mu (noteHostDialOutcome takes the
+	// node lock itself). The kick and seed passes skip a host in backoff, so
+	// a machine that keeps slamming the door stops costing them slots.
+	if refusalAddr != "" {
+		n.noteHostDialOutcome(refusalAddr, false)
+	}
 	// The peer is gone: its outbound queue (~110KB at depth) must go with
 	// it, or every peer this node EVER connected leaks until Stop. Under
 	// NO n.mu here: the single lock order is n.mu → outboundMu

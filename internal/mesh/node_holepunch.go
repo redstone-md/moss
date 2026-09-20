@@ -107,7 +107,7 @@ func (n *Node) attemptHolePunchPolicy(targetPeerID string, timeout time.Duration
 		n.mu.Unlock()
 	}()
 	n.countInbound("__punch_attempt__")
-	n.sendEnvelope(viaPeer, gossip.Envelope{
+	n.sendEnvelope(viaPeer, n.signedHolePunchCoordEnvelope(gossip.Envelope{
 		Type:           gossip.TypeHolePunchCoord,
 		RequestID:      requestID,
 		CoordStage:     "offer",
@@ -115,15 +115,15 @@ func (n *Node) attemptHolePunchPolicy(targetPeerID string, timeout time.Duration
 		RelaySource:    n.localPeerID(),
 		RelayTarget:    targetPeerID,
 		AdvertisedAddr: sourceAddr,
-	})
-	n.emitPunchAttempt(targetPeerID, targetInfo.natType, viaPeerID)
+	}))
+	n.emitPunchAttempt(targetPeerID, n.knownPeerNATType(targetPeerID), viaPeerID)
 	punchStarted := time.Now()
 
 	triedAddr := targetInfo.addr
 	for time.Now().Before(deadline) {
 		if n.directPeerConnected(targetPeerID) {
 			n.countInbound("__punch_success__")
-			n.emitPunchResult(targetPeerID, targetInfo.natType, true, time.Since(punchStarted))
+			n.emitPunchResult(targetPeerID, n.knownPeerNATType(targetPeerID), true, time.Since(punchStarted))
 			return true
 		}
 		if coordRetries < holePunchCoordRetryLimit && time.Now().After(coordAt.Add(holePunchCoordGrace)) {
@@ -143,7 +143,7 @@ func (n *Node) attemptHolePunchPolicy(targetPeerID string, timeout time.Duration
 				coordAt = time.Now().Add(holePunchCoordGrace)
 				coordRetries++
 				n.countInbound("__punch_coord_retry__")
-				n.sendEnvelope(viaNow, gossip.Envelope{
+				n.sendEnvelope(viaNow, n.signedHolePunchCoordEnvelope(gossip.Envelope{
 					Type:           gossip.TypeHolePunchCoord,
 					RequestID:      requestID,
 					CoordStage:     "offer",
@@ -151,7 +151,7 @@ func (n *Node) attemptHolePunchPolicy(targetPeerID string, timeout time.Duration
 					RelaySource:    n.localPeerID(),
 					RelayTarget:    targetPeerID,
 					AdvertisedAddr: sourceAddr,
-				})
+				}))
 			}
 		}
 		n.mu.RLock()
@@ -172,8 +172,26 @@ func (n *Node) attemptHolePunchPolicy(targetPeerID string, timeout time.Duration
 	} else {
 		n.countInbound("__punch_timeout__")
 	}
-	n.emitPunchResult(targetPeerID, targetInfo.natType, ok, time.Since(punchStarted))
+	n.emitPunchResult(targetPeerID, n.knownPeerNATType(targetPeerID), ok, time.Since(punchStarted))
 	return ok
+}
+
+// signedHolePunchCoordEnvelope stamps a coordination envelope with this
+// node's self profile so the far side learns its NAT type at punch time.
+// The claims are the same facts a signed supernode-status announce carries.
+// A node with no NAT classification yet sends an unsigned envelope, which a
+// receiver treats exactly as a legacy one — an "unknown" profile would only
+// overwrite what the directory already knows.
+func (n *Node) signedHolePunchCoordEnvelope(env gossip.Envelope) gossip.Envelope {
+	info := n.localKnownPeer()
+	if info.natType == "" || info.natType == nat.TypeUnknown {
+		return env
+	}
+	env.AdvertisedPeerID = info.id
+	env.AdvertisedNATType = string(info.natType)
+	env.AdvertisedReachable = info.publicReachable
+	env.AdvertisedRelayCapable = info.relayCapable
+	return n.signHolePunchCoordEnvelope(env)
 }
 
 func (n *Node) tryHolePunchDial(targetPeerID, addr string) {
@@ -237,10 +255,16 @@ func (n *Node) freshObservedUDPAddr(peerID string, timeout time.Duration) string
 		if observed, ok := n.requestUDPBindingObservation(peerID, timeout); ok && observed != "" {
 			previous := n.natProfile.Load().(nat.Profile)
 			profile := n.profiler.WithExternalAddress(previous, observed)
-			n.mu.Lock()
-			n.bindingHistory = appendBindingSample(n.bindingHistory, observed)
-			n.mu.Unlock()
-			profile = n.profiler.WithBindingObservations(profile, n.recentBindingWindow())
+			// Same gate as applyObservation: a peer handing back our own
+			// egress endpoint is no NAT evidence, and the cone fold would
+			// pin a directly public node at port_restricted_cone (the
+			// public label only ever promotes from Unknown).
+			if !n.observedOwnEgressAddr(observed) {
+				n.mu.Lock()
+				n.bindingHistory = appendBindingSample(n.bindingHistory, observed)
+				n.mu.Unlock()
+				profile = n.profiler.WithBindingObservations(profile, n.recentBindingWindow())
+			}
 			n.natProfile.Store(profile)
 			return observed
 		}
@@ -315,19 +339,26 @@ func (n *Node) cachedRemoteStatic(peerID, addr string) []byte {
 }
 
 func (n *Node) connectPeerUDPWithHint(ctx context.Context, targetPeerID, addr string) error {
-	if n.udpListener == nil || addr == "" {
+	// Snapshot once: dial goroutines are not wg-tracked, and a restart swaps
+	// the listener under them — the same rule as requestSTUNBindingObservation.
+	listener := n.udpListener.Load()
+	if listener == nil || addr == "" {
 		return errors.New("udp transport unavailable")
 	}
 	remoteStatic := n.cachedRemoteStatic(targetPeerID, addr)
-	session, err := n.udpListener.DialPeerContext(ctx, addr, remoteStatic)
+	session, err := listener.DialPeerContext(ctx, addr, remoteStatic)
 	if err != nil && len(remoteStatic) == 32 && ctx.Err() == nil {
-		session, err = n.udpListener.DialContext(ctx, addr)
+		session, err = listener.DialContext(ctx, addr)
 	}
 	if err != nil {
 		return err
 	}
-	n.registerPeerFrom(session, true, originHolePunchUDP)
-	return nil
+	// The handshake only proves the path at handshake time. The confirm phase
+	// demands a mesh-level reply through this same candidate before the
+	// session becomes a peer — a candidate that stays silent is returned as a
+	// dial failure, so the punch plan keeps hunting and the dial budget
+	// charges it instead of squatting a peer slot for six missed pings.
+	return n.confirmAndRegisterUDPPeer(ctx, session, true, originHolePunchUDP)
 }
 
 func (n *Node) connectBootstrapPeer(ctx context.Context, addr string) error {
@@ -342,7 +373,7 @@ func (n *Node) connectBootstrapPeer(ctx context.Context, addr string) error {
 	if ctx == nil {
 		return errors.New("mesh: bootstrap dial requires a non-nil context")
 	}
-	if n.udpListener == nil {
+	if n.udpListener.Load() == nil {
 		return n.connectPeer(ctx, addr)
 	}
 	attemptCtx, cancel := context.WithCancel(ctx)
@@ -385,8 +416,29 @@ func (n *Node) connectBootstrapPeer(ctx context.Context, addr string) error {
 }
 
 func (n *Node) connectBootstrapSeed(ctx context.Context, addr string) error {
+	// Static peers keep the UDP fallback even below the public rank: the
+	// seed retries are the path that keeps a static pair alive, and the
+	// rank gate is what starved loopback/private static peers of it.
+	if knownPeerAddrRank(addr) < 3 && n.isStaticPeerAddr(addr) {
+		return n.connectStaticPeer(ctx, addr)
+	}
 	if knownPeerAddrRank(addr) < 3 {
 		return n.connectPeer(ctx, addr)
 	}
 	return n.connectBootstrapPeer(ctx, addr)
+}
+
+// isStaticPeerAddr reports whether an address is one of the configured
+// static peers — the operator's explicit intent, which the address-rank
+// transport gate must not strip of its UDP fallback.
+func (n *Node) isStaticPeerAddr(addr string) bool {
+	if addr == "" {
+		return false
+	}
+	for _, peer := range n.config.StaticPeers {
+		if peer == addr {
+			return true
+		}
+	}
+	return false
 }

@@ -30,6 +30,18 @@ func supernodeSignaturePayload(env gossip.Envelope) []byte {
 	return advertisedSignaturePayload("moss-supernode-status", env)
 }
 
+// holePunchCoordSignaturePayload binds the punch choreography's own claims
+// (sender, address, NAT profile, reachability) under a punch-specific domain.
+// The coordination offer and reply carry the same facts a signed
+// supernode-status announce does, but arrive at punch time — seconds before
+// the announce flood would deliver them — so a fresh node can classify its
+// very first punches instead of punching NAT-blind until the next announce
+// round. The domain keeps these signatures distinct from supernode status:
+// a payload built from one envelope type never verifies as another.
+func holePunchCoordSignaturePayload(env gossip.Envelope) []byte {
+	return advertisedSignaturePayload("moss-punch-coord", env)
+}
+
 func peerAnnouncementSignaturePayload(env gossip.Envelope) []byte {
 	payload := peerAnnouncementSignaturePayloadV1(env)
 	if len(env.AdvertisedNoiseStatic) == 32 {
@@ -93,4 +105,24 @@ func verifySupernodeStatusEnvelope(env gossip.Envelope) bool {
 		return false
 	}
 	return verifySupernodeEnvelope(env)
+}
+
+// signHolePunchCoordEnvelope signs a coordination offer or reply so the far
+// side can trust the NAT profile it carries. Unsigned coord envelopes keep
+// working exactly as before — a legacy receiver ignores the extra fields,
+// and a legacy sender's envelopes simply do not verify as NAT claims.
+func (n *Node) signHolePunchCoordEnvelope(env gossip.Envelope) gossip.Envelope {
+	env.AdvertisedSignature = n.identity.Sign(holePunchCoordSignaturePayload(env))
+	return env
+}
+
+// verifyHolePunchCoordEnvelope reports whether a coordination envelope's
+// advertised profile is a valid self-signed claim. The signature covers the
+// envelope type, sender, address, NAT type and reachability, so a relay peer
+// cannot forge the profile of the peer it is coordinating for.
+func verifyHolePunchCoordEnvelope(env gossip.Envelope) bool {
+	if env.Type != gossip.TypeHolePunchCoord {
+		return false
+	}
+	return verifyAdvertisedPeerEnvelope(env, holePunchCoordSignaturePayload)
 }

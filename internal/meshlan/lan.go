@@ -33,9 +33,15 @@ type LanNode struct {
 	// MVP CLI, a kernel TUN device in a fuller product).
 	iface tun.PacketIface
 
-	// selfIP is our own virtual intranet address, assigned at Start via
-	// mesh.PeerAddr on our own peer ID.
+	// selfIP is our own virtual intranet address, derived at Start from
+	// our peer ID; it may be re-derived mid-flight when another
+	// participant claims it (see rerouteSelfCollision).
 	selfIP net.IP
+
+	// selfSalt counts how many times this node has re-derived its self
+	// address away from a collision; 0 means the plain hash of the peer
+	// ID. Guarded by mu.
+	selfSalt int
 
 	presence *Presence
 
@@ -158,11 +164,14 @@ func (l *LanNode) Start() error {
 	// Register each discovered peer's self-reported virtual IP in the routing
 	// table so packets destined for that peer resolve without a separate
 	// lookup. The address is the sender's deterministic self-IP; two nodes
-	// that hash to the same address (astronomically unlikely with real
-	// Ed25519 keys in a /24) are last-writer-wins, same as the nick table.
+	// that hash to the same address (a 1-in-pool chance per pair — the
+	// original design called it astronomically unlikely, and CI proved
+	// otherwise in a /24) are untangled by rerouteSelfCollision: exactly
+	// one side moves, deterministically, with no negotiation.
 	presence.OnPeer(func(peerID string, ip net.IP) {
 		_ = mesh.RegisterPeerAddr(l.node, peerID, ip)
 	})
+	presence.OnReroute(l.rerouteSelfCollision)
 
 	// Take over the message callback for the lifetime of the LanNode: the
 	// node exposes a single callback slot and no getter to chain by hand,
@@ -227,6 +236,65 @@ func (l *LanNode) Stop() {
 func (l *LanNode) peerID() string {
 	pub := l.node.PublicKey()
 	return hex.EncodeToString(pub[:])
+}
+
+// rerouteSelfCollision untangles a deterministic self-address collision.
+// Every participant derives its virtual IP as hash-of-identity into the
+// pool, so two identities can land on the same address — a 1-in-pool
+// chance per pair that a /24 makes very real (CI caught two nodes both
+// claiming 10.66.0.92). Both sides observe the tie through presence
+// heartbeats and apply the same deterministic rule: the GREATER peer ID
+// keeps the address, the lesser one re-derives itself under a salt and
+// announces the new address on its next beat. Exactly one side moves, no
+// negotiation, and the relocation chain terminates because each retry
+// hashes a different input.
+func (l *LanNode) rerouteSelfCollision(otherPeerID, otherNick string, claimedIP net.IP) {
+	l.mu.Lock()
+	selfIP := append(net.IP(nil), l.selfIP...)
+	if claimedIP == nil || !claimedIP.Equal(selfIP) {
+		// The remote claims a different address: no tie to break.
+		l.mu.Unlock()
+		return
+	}
+	myID := l.peerID()
+	if myID > otherPeerID {
+		// We outrank the claimant: they relocate, we keep the address.
+		// Their next beat announces their salted address and this side's
+		// routing updates through the regular OnPeer registration.
+		l.mu.Unlock()
+		return
+	}
+	salt := l.selfSalt + 1
+	l.selfSalt = salt
+	l.mu.Unlock()
+
+	prefix, err := netip.ParsePrefix(l.cidr)
+	if err != nil {
+		return
+	}
+	candidate, err := tun.DeterministicAddr(prefix.Masked(), fmt.Sprintf("%s#%d", myID, salt))
+	if err != nil {
+		return
+	}
+	newIP := net.IP(candidate.AsSlice())
+	if err := mesh.RegisterPeerAddr(l.node, myID, newIP); err != nil {
+		return
+	}
+	if err := l.presence.RetargetSelfIP(newIP); err != nil {
+		return
+	}
+	l.mu.Lock()
+	l.selfIP = newIP
+	l.mu.Unlock()
+}
+
+// SelfSalt reports how many times this node has re-derived its self
+// address away from a collision (0 = the plain identity hash). It is a
+// diagnostics/testing accessor.
+func (l *LanNode) SelfSalt() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.selfSalt
 }
 
 // SelfIP returns this node's own virtual intranet address (assigned at
