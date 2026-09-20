@@ -6,8 +6,10 @@ import (
 	"net/netip"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/redstone-md/moss/internal/nat"
+	"github.com/redstone-md/moss/internal/transport"
 )
 
 func (n *Node) localPeerID() string {
@@ -25,6 +27,17 @@ func (n *Node) advertisedListenAddr() string {
 	}
 	if n.shouldAdvertiseLoopback() {
 		return net.JoinHostPort("127.0.0.1", strconv.Itoa(n.listenPort))
+	}
+	// The default route's source address leads the local chain. Interface
+	// preference is private-before-global (selectAdvertiseHost — deliberate,
+	// LAN pairs), so on a public box with any bridge or tunnel up, the bridge
+	// wins the advertise: a public stand box told the whole fleet it lived on
+	// 172.26.0.1:43155, an address only its own containers could route to.
+	// The egress probe names the interface the default route actually leaves
+	// through, which is exactly the address a stranger must dial. A non-global
+	// source (LAN egress, CGNAT) falls back to the chain below unchanged.
+	if host, ok := n.defaultRouteAdvertiseHost(); ok {
+		return net.JoinHostPort(host, strconv.Itoa(n.listenPort))
 	}
 	if host, ok := n.peerSubnetAdvertiseHost(); ok {
 		return net.JoinHostPort(host, strconv.Itoa(n.listenPort))
@@ -250,9 +263,130 @@ func isVirtualOverlayInterfaceName(name string) bool {
 		return true
 	case strings.HasPrefix(normalized, "zt"):
 		return true
+	case strings.HasPrefix(normalized, "br-"):
+		// Docker user-defined networks: the default bridge is docker0 (caught
+		// by the "docker" substring above), but a compose or custom network
+		// creates br-<network id>. On the stand that bridge's 172.26.0.1 was
+		// exactly what a public box advertised as its own address.
+		return true
+	case strings.HasPrefix(normalized, "veth"):
+		// Container veth ends and Calico's cali* veths: host-side pair ends
+		// of container links.
+		return true
+	case strings.HasPrefix(normalized, "cali"):
+		return true
+	case strings.HasPrefix(normalized, "virbr"):
+		// libvirt's default NAT bridge — 192.168.122.1 on every KVM host.
+		return true
+	case strings.Contains(normalized, "podman"):
+		return true
+	case strings.Contains(normalized, "netavark"):
+		return true
+	case strings.Contains(normalized, "weave"):
+		return true
+	case strings.Contains(normalized, "flannel"):
+		return true
+	case strings.Contains(normalized, "cilium"):
+		return true
+	case strings.Contains(normalized, "cni"):
+		// flannel's cni0 bridge and podman's cni-podman0.
+		return true
+	case strings.Contains(normalized, "ztnet"):
+		return true
 	default:
 		return false
 	}
+}
+
+// defaultRouteProbeEndpoint is the vantage point the egress probe connects
+// to. A connected UDP socket sends no packet: the kernel resolves the route
+// and LocalAddr reports the source it picked, so the probe is a local
+// syscall pair, never a network round trip — and never evidence anyone was
+// contacted.
+const defaultRouteProbeEndpoint = "8.8.8.8:80"
+
+// defaultRouteAdvertiseHostFn is the seam behind the advertise chain and the
+// NAT gate. Production consults the OS default route via a bound UDP dial;
+// tests substitute it to fabricate routing tables (the units stay hermetic).
+var defaultRouteAdvertiseHostFn = func(bindIfIndex int) (string, bool) {
+	// Pin the probe to the mesh's NIC when one is configured: the egress
+	// must be the interface mesh traffic actually leaves through (the same
+	// rule probeTCPAddress applies to reachability dials).
+	conn, err := transport.DialerWithBind(net.Dialer{Timeout: 2 * time.Second}, bindIfIndex).Dial("udp", defaultRouteProbeEndpoint)
+	if err != nil {
+		return "", false
+	}
+	defer conn.Close()
+	host, _, err := net.SplitHostPort(conn.LocalAddr().String())
+	if err != nil || host == "" {
+		return "", false
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return "", false
+	}
+	return addr.Unmap().String(), true
+}
+
+// defaultRouteAdvertiseHost returns the address a stranger's reply would
+// come back through: the source the default route picks. Only a public
+// source may lead the chain — a private one is a LAN egress that must keep
+// the local chain in charge, and CGNAT/loopback are not dialable by anyone.
+func (n *Node) defaultRouteAdvertiseHost() (string, bool) {
+	host, ok := defaultRouteAdvertiseHostFn(n.bindIfIndex)
+	if !ok || host == "" {
+		return "", false
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil || !eligibleDefaultRouteAdvertiseHost(addr) {
+		return "", false
+	}
+	return addr.String(), true
+}
+
+// eligibleDefaultRouteAdvertiseHost reports whether a default-route source
+// address may lead the advertise chain.
+func eligibleDefaultRouteAdvertiseHost(addr netip.Addr) bool {
+	addr = addr.Unmap()
+	return addr.IsValid() &&
+		addr.IsGlobalUnicast() &&
+		!addr.IsPrivate() &&
+		!isCarrierGradeAddr(addr) &&
+		!addr.IsLoopback() &&
+		!addr.IsLinkLocalUnicast()
+}
+
+// observedOwnEgressAddr reports whether an observed binding address is this
+// node's own egress endpoint: the host its default route leaves from, at the
+// port its own listener sits on. A third party reporting back that exact
+// endpoint is not evidence of a NAT mapping — nothing translated anything —
+// and folding it into the binding classifier upgraded directly public hosts
+// to port_restricted_cone forever: the public label only ever promotes from
+// Unknown, so one cone downgrade locked it out. The host matching with a
+// DIFFERENT port is a real mapping (a middlebox rewrote something) and is
+// deliberately not covered by this gate.
+func (n *Node) observedOwnEgressAddr(observed string) bool {
+	host, port, err := net.SplitHostPort(observed)
+	if err != nil || host == "" {
+		return false
+	}
+	observedAddr, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	observedPort, err := strconv.Atoi(port)
+	if err != nil || observedPort != n.listenPort {
+		return false
+	}
+	egress, ok := n.defaultRouteAdvertiseHost()
+	if !ok {
+		return false
+	}
+	egressAddr, err := netip.ParseAddr(egress)
+	if err != nil {
+		return false
+	}
+	return observedAddr.Unmap() == egressAddr
 }
 
 func isLoopbackHost(host string) bool {

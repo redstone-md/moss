@@ -255,10 +255,16 @@ func (n *Node) freshObservedUDPAddr(peerID string, timeout time.Duration) string
 		if observed, ok := n.requestUDPBindingObservation(peerID, timeout); ok && observed != "" {
 			previous := n.natProfile.Load().(nat.Profile)
 			profile := n.profiler.WithExternalAddress(previous, observed)
-			n.mu.Lock()
-			n.bindingHistory = appendBindingSample(n.bindingHistory, observed)
-			n.mu.Unlock()
-			profile = n.profiler.WithBindingObservations(profile, n.recentBindingWindow())
+			// Same gate as applyObservation: a peer handing back our own
+			// egress endpoint is no NAT evidence, and the cone fold would
+			// pin a directly public node at port_restricted_cone (the
+			// public label only ever promotes from Unknown).
+			if !n.observedOwnEgressAddr(observed) {
+				n.mu.Lock()
+				n.bindingHistory = appendBindingSample(n.bindingHistory, observed)
+				n.mu.Unlock()
+				profile = n.profiler.WithBindingObservations(profile, n.recentBindingWindow())
+			}
 			n.natProfile.Store(profile)
 			return observed
 		}

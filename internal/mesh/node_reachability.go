@@ -240,10 +240,21 @@ func (n *Node) applyObservation(observed string, deadline time.Time, mapping boo
 	profile := n.profiler.WithExternalAddress(previous, observed)
 
 	if mapping {
-		n.mu.Lock()
-		n.bindingHistory = appendBindingSample(n.bindingHistory, observed)
-		n.mu.Unlock()
-		profile = n.profiler.WithBindingObservations(profile, n.recentBindingWindow())
+		// The binding classifier exists to compare mappings; our own egress
+		// endpoint is not one. A vantage point handing back the exact
+		// address:port the socket sits on means nothing translated anything,
+		// and the cone fold it would mint is precisely what pinned both
+		// directly public stand hosts at port_restricted_cone forever (the
+		// public label only ever promotes from Unknown). The observation is
+		// still the right external address to advertise — it just says
+		// nothing about NAT. A box behind NAT reports the router's address
+		// instead, and classifies normally.
+		if !n.observedOwnEgressAddr(observed) {
+			n.mu.Lock()
+			n.bindingHistory = appendBindingSample(n.bindingHistory, observed)
+			n.mu.Unlock()
+			profile = n.profiler.WithBindingObservations(profile, n.recentBindingWindow())
+		}
 	}
 	if requiresReachabilityConfirmation(observed) {
 		if shouldRecheckPublicReachability(previous, profile) {

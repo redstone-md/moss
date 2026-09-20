@@ -79,12 +79,28 @@ func TestVirtualOverlayInterfaceNames(t *testing.T) {
 		"wg0",
 		"tun0",
 		"tap1",
+		// Docker user-defined bridges: br-<network id>. The default docker0
+		// is caught by the "docker" substring, but a compose network creates
+		// br-1a2b3c... — the exact shape a public box advertised to the
+		// fleet as its address (172.26.0.1, unroutable for everyone).
+		"br-1a2b3c4d5e6f7a8b9c0d1e2",
+		"docker0",
+		// Container/VM veth ends and podman/libvirt bridges.
+		"veth3f9a2c1b",
+		"virbr0",
+		"podman0",
+		// Kubernetes/CNI data planes.
+		"weave",
+		"flannel.1",
+		"cilium_host",
+		"cali5d3e2f1a0b9c8d7e",
+		"cni0",
 	} {
 		if !isVirtualOverlayInterfaceName(name) {
 			t.Fatalf("expected %q to be treated as virtual overlay interface", name)
 		}
 	}
-	for _, name := range []string{"Wi-Fi", "Ethernet", "en0", "wlan0"} {
+	for _, name := range []string{"Wi-Fi", "Ethernet", "en0", "wlan0", "eth0", "enp0s3", "br0"} {
 		if isVirtualOverlayInterfaceName(name) {
 			t.Fatalf("expected %q to remain eligible as a normal interface", name)
 		}
@@ -99,5 +115,35 @@ func TestIsLoopbackHost(t *testing.T) {
 	}
 	if isLoopbackHost("192.168.1.10") {
 		t.Fatal("expected private LAN address not to be recognized as loopback")
+	}
+}
+
+// The stand shape: a public box with eth0 holding its real address and a
+// docker user-defined network bridge (br-<hash>, 172.26.0.1) sitting next to
+// it. The bridge is private IPv4, the private-before-global preference used
+// to hand the bridge to every peer — an address nobody off-box can route to.
+// The bridge must be ineligible so the public interface wins.
+func TestAdvertiseSelectionSkipsDockerBridges(t *testing.T) {
+	ifaces := []net.Interface{
+		{Name: "br-1a2b3c4d5e6f", Flags: net.FlagUp},
+		{Name: "eth0", Flags: net.FlagUp},
+	}
+	addrsByName := map[string][]net.Addr{
+		"br-1a2b3c4d5e6f": {
+			&net.IPNet{IP: net.ParseIP("172.26.0.1"), Mask: net.CIDRMask(16, 32)},
+		},
+		"eth0": {
+			&net.IPNet{IP: net.ParseIP("192.0.2.20"), Mask: net.CIDRMask(32, 32)},
+		},
+	}
+
+	host, ok := selectAdvertiseHostForInterfacesFunc(ifaces, func(iface net.Interface) ([]net.Addr, error) {
+		return addrsByName[iface.Name], nil
+	})
+	if !ok {
+		t.Fatal("expected advertise host to be selected")
+	}
+	if got := host.String(); got != "192.0.2.20" {
+		t.Fatalf("expected the public eth0 host, got %s: a private docker bridge must never win the advertise", got)
 	}
 }
