@@ -155,6 +155,11 @@ type udpCarrier struct {
 	once     sync.Once
 }
 
+// udpSendBufferBytes is the SO_SNDBUF asked for on the listener socket. It
+// must exceed the largest datagram moss sends (Security.MaxMessageSizeBytes
+// plus framing); 1 MiB leaves room and stays under every OS maximum.
+const udpSendBufferBytes = 1 << 20
+
 func ListenUDP(port int, cfg HandshakeConfig) (*UDPListener, int, error) {
 	addr, err := listenUDPAddr(port)
 	if err != nil {
@@ -178,6 +183,11 @@ func ListenUDP(port int, cfg HandshakeConfig) (*UDPListener, int, error) {
 				_ = udpConn.Close()
 				return nil, 0, bindErr
 			}
+			// macOS caps an outgoing UDP datagram at the socket's send
+			// buffer, 9216 bytes by default (net.inet.udp.maxdgram), so
+			// every larger frame failed with EMSGSIZE. Best effort: a host
+			// that refuses the size keeps its default.
+			_ = udpConn.SetWriteBuffer(udpSendBufferBytes)
 			conn = udpConn
 		} else {
 			// Go's netpoller could not bind the socket. This is the signature
