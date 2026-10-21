@@ -1,6 +1,9 @@
 package gossip
 
-import "sync"
+import (
+	"sync"
+	"time"
+)
 
 type Manager struct {
 	mu                 sync.RWMutex
@@ -13,6 +16,8 @@ type Manager struct {
 	// peer's subscription map: O(subscribers of the channel), not
 	// O(peers × their subscriptions).
 	channelSubs map[string]map[string]struct{}
+	// Refusals belong to a topic, not the peer's other subscriptions.
+	pruneBackoff map[string]map[string]time.Time
 }
 
 func NewManager() *Manager {
@@ -35,6 +40,7 @@ func (m *Manager) Unsubscribe(channel string) {
 	defer m.mu.Unlock()
 	delete(m.localSubscriptions, channel)
 	delete(m.meshPeers, channel)
+	delete(m.pruneBackoff, channel)
 }
 
 func (m *Manager) IsLocalSubscriber(channel string) bool {
@@ -63,6 +69,9 @@ func (m *Manager) SetPeerSubscription(peerID, channel string, subscribed bool) {
 		m.peerSubscriptions[peerID] = subscriptions
 	}
 	if subscribed {
+		if _, claimed := subscriptions[channel]; !claimed {
+			m.clearPruneBackoffLocked(channel, peerID)
+		}
 		subscriptions[channel] = struct{}{}
 		subs, ok := m.channelSubs[channel]
 		if !ok {
@@ -99,6 +108,9 @@ func (m *Manager) RemovePeer(peerID string) {
 		}
 	}
 	delete(m.peerSubscriptions, peerID)
+	for channel := range m.pruneBackoff {
+		m.clearPruneBackoffLocked(channel, peerID)
+	}
 	for channel, peers := range m.meshPeers {
 		delete(peers, peerID)
 		if len(peers) == 0 {
@@ -127,10 +139,8 @@ func (m *Manager) Subscribers(channel string) []string {
 
 // HasPeerSubscription reports whether peerID has itself claimed the channel
 // (via its GRAFT/announce reaching us), as opposed to merely being grafted by
-// us on spec. The mesh maintenance path uses it as the positive signal that
-// makes a peer graft-eligible regardless of the graft retry throttle: a PRUNE
-// answering our premature graft must not block a peer that has already said
-// it is on the channel.
+// us on spec. A claim bypasses speculative-send throttling, while an explicit
+// newer PRUNE still takes precedence through the separate topic backoff.
 func (m *Manager) HasPeerSubscription(peerID, channel string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -141,6 +151,13 @@ func (m *Manager) HasPeerSubscription(peerID, channel string) bool {
 func (m *Manager) SetMeshPeer(channel, peerID string, inMesh bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.setMeshPeerLocked(channel, peerID, inMesh)
+}
+
+func (m *Manager) setMeshPeerLocked(channel, peerID string, inMesh bool) {
+	if inMesh && time.Now().Before(m.pruneBackoff[channel][peerID]) {
+		return
+	}
 	peers, ok := m.meshPeers[channel]
 	if !ok {
 		if !inMesh {
@@ -156,6 +173,39 @@ func (m *Manager) SetMeshPeer(channel, peerID string, inMesh bool) {
 		if len(peers) == 0 {
 			delete(m.meshPeers, channel)
 		}
+	}
+}
+
+// Prune removes mesh membership and retains the refusal only for a local topic.
+// A first positive subscription claim clears it; repeated claims do not.
+func (m *Manager) Prune(channel, peerID string, until time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, local := m.localSubscriptions[channel]; !local {
+		return
+	}
+	m.setMeshPeerLocked(channel, peerID, false)
+	if m.pruneBackoff == nil {
+		m.pruneBackoff = make(map[string]map[string]time.Time)
+	}
+	if m.pruneBackoff[channel] == nil {
+		m.pruneBackoff[channel] = make(map[string]time.Time)
+	}
+	if until.After(m.pruneBackoff[channel][peerID]) {
+		m.pruneBackoff[channel][peerID] = until
+	}
+}
+
+func (m *Manager) InBackoff(channel, peerID string, now time.Time) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return now.Before(m.pruneBackoff[channel][peerID])
+}
+
+func (m *Manager) clearPruneBackoffLocked(channel, peerID string) {
+	delete(m.pruneBackoff[channel], peerID)
+	if len(m.pruneBackoff[channel]) == 0 {
+		delete(m.pruneBackoff, channel)
 	}
 }
 

@@ -111,21 +111,13 @@ func (n *Node) announceLocalSubscription(channel string) {
 		if !n.canGossipWithPeer(peer.id) || !n.eligibleForMeshCandidate(peer.id) {
 			continue
 		}
-		// An announce-graft is a REAL graft, not a speculative one, but it
-		// still costs a packet and a PRUNE from a peer that is not on the
-		// channel. Record it in graftedAt exactly like the maintenance path
-		// does: without the marker, a PRUNE answering this GRAFT was never
-		// recognized as join choreography (meshGraftedWithin only consults
-		// graftedAt and the peer's own claim), the short 2s block never
-		// applied, and two strangers locked each other out for the full 30s
-		// backoff — and since every connected node re-announces to every
-		// peer on each refresh pass, the mesh runs a standing GRAFT/PRUNE
-		// cycle with strangers instead of ever forming.
+		// Record announcements as sends too, so speculative retries obey the
+		// same bound. Refusals and fresh subscription claims are topic-scoped.
 		if !n.meshGraftEligible(peer.id, channel, now) {
 			continue
 		}
 		n.sendOrEnqueue(peer, gossip.Envelope{Type: gossip.TypeGraft, Channel: channel})
-		n.markMeshGrafted(peer.id, channel, now)
+		n.markMeshGrafted(peer, channel, now)
 	}
 }
 
@@ -169,23 +161,20 @@ func (n *Node) announceLocalSubscriptionsToPeer(peer *peerConn) {
 		if !validChannel(channel) {
 			continue
 		}
-		// Same contract as announceLocalSubscription: a joiner gets one
-		// GRAFT per channel per retry window, never a burst it will answer
-		// with PRUNEs, and the markers recorded here are what let the
-		// two-tier PRUNE logic recognize its own choreography. The meshBlocked
-		// gate (eligibleForMeshCandidate) keeps a refusing peer quiet.
+		// A joiner gets one speculative GRAFT per channel per retry window.
+		// Both topic refusal and peer-wide health exclusion remain in force.
 		if !n.eligibleForMeshCandidate(peer.id) || !n.meshGraftEligible(peer.id, channel, now) {
 			continue
 		}
 		n.sendOrEnqueue(peer, gossip.Envelope{Type: gossip.TypeGraft, Channel: channel})
-		n.markMeshGrafted(peer.id, channel, now)
+		n.markMeshGrafted(peer, channel, now)
 	}
 }
 
 func (n *Node) refreshLocalSubscriptions() {
 	// The safety net re-announces to every peer on the same cadence.
-	// announceLocalSubscriptionsToPeer applies the graft retry throttle and
-	// the meshBlocked gate, so this pass converges to one GRAFT per channel
+	// announceLocalSubscriptionsToPeer applies retry, topic refusal and health
+	// gates, so this pass converges to one GRAFT per channel
 	// per peer per window instead of re-flooding all channels to all peers.
 	n.mu.RLock()
 	peers := make([]*peerConn, 0, len(n.peers))

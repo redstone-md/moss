@@ -237,26 +237,12 @@ func (n *Node) isPeerBelowBaseline(peerID string) bool {
 }
 
 func (n *Node) eligibleForMeshCandidate(peerID string) bool {
-	if n.isPeerBelowBaseline(peerID) {
-		return false
-	}
-	now := time.Now()
+	score := n.peerScore(peerID)
 	n.mu.RLock()
-	defer n.mu.RUnlock()
-	peer := n.peers[peerID]
-	if peer == nil {
-		return false
-	}
-	if now.Before(peer.meshBlocked) {
-		return false
-	}
-	if peer.relayed {
-		return true
-	}
-	if peer.lastRTT > peerLatencyPruneThreshold {
-		return false
-	}
-	return peer.pingMisses == 0
+	current := snapshotMeshCandidate(n.peers[peerID], time.Now())
+	n.mu.RUnlock()
+	current.score = score
+	return current.eligible()
 }
 
 func (n *Node) canGossipWithPeer(peerID string) bool {

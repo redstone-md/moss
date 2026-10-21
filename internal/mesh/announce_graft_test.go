@@ -88,6 +88,7 @@ func TestAnnounceLocalSubscriptionMarksGraftAndThrottles(t *testing.T) {
 	node.mu.Lock()
 	node.peers["peer-a"] = peer
 	node.mu.Unlock()
+	node.pubsub.Subscribe("alpha")
 
 	node.announceLocalSubscription("alpha")
 	if got := announced.writeCount(); got != 1 {
@@ -139,44 +140,18 @@ func TestAnnounceGraftRespectsMeshBlocked(t *testing.T) {
 	}
 }
 
-// A PRUNE answering an announce-graft is join choreography, not war: because
-// the announce path now records graftedAt, meshGraftedWithin sees it and the
-// receiver gets the SHORT block, so the peer's own GRAFT microseconds later
-// is not refused for the full 30s backoff.
-func TestPruneAnsweringAnnounceGraftGetsShortBlock(t *testing.T) {
-	node, err := NewNode("mesh-announce-graft-prune", nil, DefaultConfig())
-	if err != nil {
-		t.Fatalf("NewNode: %v", err)
-	}
-
-	peer := &peerConn{id: "peer-joining", session: newRecordedSession(t).session}
-	node.mu.Lock()
-	node.peers["peer-joining"] = peer
-	node.mu.Unlock()
-
-	// The announce path records the marker...
+// Refusing an announce preserves the retry marker. A first positive claim,
+// rather than another speculative retry, admits a newly subscribed peer.
+func TestPruneAnsweringAnnounceWaitsForPositiveClaim(t *testing.T) {
+	node, peer, _ := topicPrunePeer(t, "alpha")
 	node.announceLocalSubscription("alpha")
-	node.mu.RLock()
-	_, grafted := peer.graftedAt["alpha"]
-	node.mu.RUnlock()
-	if !grafted {
-		t.Fatal("announce-graft marker missing; cannot test the short-block path")
+	node.handleEnvelope(peer, gossip.Envelope{Type: gossip.TypePrune, Channel: "alpha"})
+	if node.meshGraftEligible(peer.id, "alpha", time.Now().Add(3*time.Second)) {
+		t.Fatal("an announce refusal must retain the normal retry window")
 	}
-
-	// ...so the PRUNE answering it is recognized within the retry window.
-	if !node.meshGraftedWithin("peer-joining", "alpha", meshGraftRetryInterval, time.Now()) {
-		t.Fatal("a PRUNE answering an announce-graft was not recognized as join choreography")
-	}
-
-	// And the matching sender-side retry is backdated, not parked.
-	node.markMeshGraftRefused("peer-joining", "alpha", pruneAnswerShortTTL, time.Now())
-	node.mu.RLock()
-	retryAt := peer.graftedAt["alpha"]
-	node.mu.RUnlock()
-	if !time.Now().Add(meshGraftRetryInterval - pruneAnswerShortTTL).After(retryAt.Add(-time.Second)) {
-		// The backdated marker must fall one retry window minus the short TTL
-		// in the past, i.e. well before "now": backdated = now + short - long.
-		t.Fatalf("expected the graft marker backdated by the PRUNE, got %v", retryAt)
+	node.handleEnvelope(peer, gossip.Envelope{Type: gossip.TypeGraft, Channel: "alpha"})
+	if !node.pubsub.InMesh("alpha", peer.id) {
+		t.Fatal("a new subscription claim must be admitted without waiting for retry")
 	}
 }
 
