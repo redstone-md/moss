@@ -614,6 +614,7 @@ func (n *Node) registerRelayedPeerLocked(session relayLocalSession) (*peerConn, 
 	info.direct = false
 	info.lastSeen = time.Now()
 	n.knownPeers[session.remotePeerID] = info
+	n.resetExplicitTargetLocked(session.remotePeerID)
 	n.scoring.Ensure(session.remotePeerID)
 	return peer, false
 }

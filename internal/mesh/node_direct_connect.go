@@ -79,8 +79,8 @@ func (n *Node) tryDirectContext(ctx context.Context, targetPeerID string, timeou
 	if ok && targetInfo.addr != "" {
 		dialBudget := initialDirectDialBudget(targetInfo, time.Until(deadline))
 		if dialBudget > 0 {
-			ctx, cancel := context.WithTimeout(ctx, dialBudget)
-			n.connectPeerWithHint(ctx, targetInfo.addr, targetPeerID)
+			dialCtx, cancel := context.WithTimeout(ctx, dialBudget)
+			n.connectPeerWithHint(dialCtx, targetInfo.addr, targetPeerID)
 			cancel()
 			if n.waitForDirectPeerContext(ctx, targetPeerID, minDuration(250*time.Millisecond, time.Until(deadline))) {
 				return true
@@ -112,8 +112,8 @@ func (n *Node) tryDirectContext(ctx context.Context, targetPeerID string, timeou
 	}
 	finalBudget := finalDirectDialBudget(targetInfo, time.Until(deadline))
 	if finalBudget > 0 {
-		ctx, cancel := context.WithTimeout(ctx, finalBudget)
-		n.connectPeerWithHint(ctx, targetInfo.addr, targetPeerID)
+		dialCtx, cancel := context.WithTimeout(ctx, finalBudget)
+		n.connectPeerWithHint(dialCtx, targetInfo.addr, targetPeerID)
 		cancel()
 		if n.waitForDirectPeerContext(ctx, targetPeerID, minDuration(250*time.Millisecond, time.Until(deadline))) {
 			return true

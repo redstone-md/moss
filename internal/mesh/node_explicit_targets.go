@@ -178,3 +178,16 @@ func (n *Node) wakeExplicitTargetLocked(peerID string) {
 	entry.failures = 0
 	n.requestExplicitTargetLocked(peerID, entry)
 }
+
+// Reset at authenticated admission, including sessions shorter than a tick.
+// Callers hold n.mu. Cancel the old attempt so it cannot charge a stale failure.
+func (n *Node) resetExplicitTargetLocked(peerID string) {
+	if entry := n.explicitTargets[peerID]; entry != nil {
+		entry.failures = 0
+		entry.lastAttempt = time.Time{}
+		entry.pending = false
+		if entry.running {
+			entry.cancel()
+		}
+	}
+}

@@ -821,6 +821,7 @@ func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origi
 		predictionObservations: appendObservation(current.predictionObservations, knownAddr),
 		noiseStatic:            append([]byte(nil), remoteStatic[:]...),
 	}
+	n.resetExplicitTargetLocked(peerID)
 	n.scoring.Ensure(peerID)
 	n.mu.Unlock()
 	// Teardown of the replaced/pruned sessions happens outside the node lock.

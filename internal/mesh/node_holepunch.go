@@ -247,8 +247,8 @@ func (n *Node) tryHolePunchDialAtContext(ctx context.Context, targetPeerID, addr
 			}
 			budget = minDuration(budget, remaining)
 		}
-		ctx, cancel := context.WithTimeout(ctx, budget)
-		n.connectPeerUDP(ctx, targetPeerID, pair.Remote)
+		dialCtx, cancel := context.WithTimeout(ctx, budget)
+		n.connectPeerUDP(dialCtx, targetPeerID, pair.Remote)
 		cancel()
 		if ctx.Err() != nil || n.directPeerConnected(targetPeerID) {
 			return
