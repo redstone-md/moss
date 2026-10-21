@@ -19,6 +19,12 @@ Queued control messages and delayed send bookkeeping check the connection's
 identity, synchronized with peer removal, before mutating state. A retired
 connection cannot recreate state or throttle its replacement.
 
+Maintenance sends only after mesh admission succeeds, rechecking the live peer,
+local topic and health before admission. A concurrent refusal can reject that
+admission without emitting another GRAFT. Announcement retry markers are kept
+only when the existing send/queue operation accepts the envelope; a full queue
+does not defer the next attempt for an envelope it dropped.
+
 Checks cover refusal spacing, independent topics, first/repeated claims,
 candidate selection, health exclusion, expiry, unsubscribe/resubscribe and
 retired/replaced connections. Existing real-network tests cover late peers,

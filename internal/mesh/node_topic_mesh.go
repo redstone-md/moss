@@ -6,6 +6,21 @@ import (
 	"github.com/redstone-md/moss/internal/gossip"
 )
 
+func (n *Node) graftTopicPeer(peer *peerConn, channel string, now time.Time) {
+	// Selection can race refusal, unsubscribe or connection teardown.
+	n.mu.RLock()
+	current := n.topicPeerLocked(peer)
+	admitted := current != nil && !time.Now().Before(current.meshBlocked) &&
+		n.pubsub.IsLocalSubscriber(channel) && n.pubsub.SetMeshPeer(channel, peer.id, true)
+	n.mu.RUnlock()
+	if !admitted {
+		return
+	}
+	n.sendEnvelope(peer, gossip.Envelope{Type: gossip.TypeGraft, Channel: channel})
+	n.sendRecentIHave(peer, channel)
+	n.markMeshGrafted(peer, channel, now)
+}
+
 func (n *Node) handleTopicGraft(peer *peerConn, channel string) {
 	// Scoring may call host code, so evaluate it outside the node lock.
 	score := n.peerScore(peer.id)
@@ -21,7 +36,7 @@ func (n *Node) handleTopicGraft(peer *peerConn, channel string) {
 	joined := current.eligible() && n.pubsub.IsLocalSubscriber(channel) &&
 		!n.pubsub.InBackoff(channel, peer.id, time.Now())
 	if joined {
-		n.pubsub.SetMeshPeer(channel, peer.id, true)
+		joined = n.pubsub.SetMeshPeer(channel, peer.id, true)
 	}
 	n.mu.RUnlock()
 	if joined {

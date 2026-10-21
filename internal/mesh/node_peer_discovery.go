@@ -549,10 +549,7 @@ func (n *Node) ensureTopicMeshMinimum(channel string) {
 		if peer == nil {
 			continue
 		}
-		n.pubsub.SetMeshPeer(channel, peerID, true)
-		n.sendEnvelope(peer, gossip.Envelope{Type: gossip.TypeGraft, Channel: channel})
-		n.sendRecentIHave(peer, channel)
-		n.markMeshGrafted(peer, channel, now)
+		n.graftTopicPeer(peer, channel, now)
 	}
 }
 
@@ -763,10 +760,7 @@ func (n *Node) opportunisticGraft(channel string) {
 		if peer == nil {
 			continue
 		}
-		n.pubsub.SetMeshPeer(channel, peerID, true)
-		n.sendEnvelope(peer, gossip.Envelope{Type: gossip.TypeGraft, Channel: channel})
-		n.sendRecentIHave(peer, channel)
-		n.markMeshGrafted(peer, channel, now)
+		n.graftTopicPeer(peer, channel, now)
 	}
 }
 

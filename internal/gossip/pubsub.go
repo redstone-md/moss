@@ -148,20 +148,21 @@ func (m *Manager) HasPeerSubscription(peerID, channel string) bool {
 	return ok
 }
 
-func (m *Manager) SetMeshPeer(channel, peerID string, inMesh bool) {
+// SetMeshPeer reports whether admission succeeded; removal is always accepted.
+func (m *Manager) SetMeshPeer(channel, peerID string, inMesh bool) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.setMeshPeerLocked(channel, peerID, inMesh)
+	return m.setMeshPeerLocked(channel, peerID, inMesh)
 }
 
-func (m *Manager) setMeshPeerLocked(channel, peerID string, inMesh bool) {
+func (m *Manager) setMeshPeerLocked(channel, peerID string, inMesh bool) bool {
 	if inMesh && time.Now().Before(m.pruneBackoff[channel][peerID]) {
-		return
+		return false
 	}
 	peers, ok := m.meshPeers[channel]
 	if !ok {
 		if !inMesh {
-			return
+			return true
 		}
 		peers = make(map[string]struct{})
 		m.meshPeers[channel] = peers
@@ -174,6 +175,7 @@ func (m *Manager) setMeshPeerLocked(channel, peerID string, inMesh bool) {
 			delete(m.meshPeers, channel)
 		}
 	}
+	return true
 }
 
 // Prune removes mesh membership and retains the refusal only for a local topic.

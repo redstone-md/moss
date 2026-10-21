@@ -116,8 +116,9 @@ func (n *Node) announceLocalSubscription(channel string) {
 		if !n.meshGraftEligible(peer.id, channel, now) {
 			continue
 		}
-		n.sendOrEnqueue(peer, gossip.Envelope{Type: gossip.TypeGraft, Channel: channel})
-		n.markMeshGrafted(peer, channel, now)
+		if n.sendOrEnqueue(peer, gossip.Envelope{Type: gossip.TypeGraft, Channel: channel}) {
+			n.markMeshGrafted(peer, channel, now)
+		}
 	}
 }
 
@@ -166,8 +167,9 @@ func (n *Node) announceLocalSubscriptionsToPeer(peer *peerConn) {
 		if !n.eligibleForMeshCandidate(peer.id) || !n.meshGraftEligible(peer.id, channel, now) {
 			continue
 		}
-		n.sendOrEnqueue(peer, gossip.Envelope{Type: gossip.TypeGraft, Channel: channel})
-		n.markMeshGrafted(peer, channel, now)
+		if n.sendOrEnqueue(peer, gossip.Envelope{Type: gossip.TypeGraft, Channel: channel}) {
+			n.markMeshGrafted(peer, channel, now)
+		}
 	}
 }
 

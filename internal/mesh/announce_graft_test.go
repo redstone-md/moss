@@ -9,14 +9,8 @@ import (
 
 // The subscription-announce path must obey the same graft contract as the
 // mesh-maintenance path: a GRAFT per peer per channel per retry window, the
-// marker recorded so a PRUNE answering it is recognized as join choreography,
-// and no GRAFT to a peer that just told us it wants out.
-//
-// Before this, announce-path GRAFTs recorded no graftedAt: meshGraftedWithin
-// could not see them, so a PRUNE answering an announce took the LONG 30s
-// block instead of the 2s one, and every node re-announcing to every peer on
-// each refresh pass re-sent the same GRAFTs forever — a standing GRAFT/PRUNE
-// cycle with strangers instead of a mesh.
+// marker recorded only for an accepted send, and no GRAFT to a peer that
+// just refused this topic. A first positive claim can admit a late subscriber.
 
 // A peer is announced a channel once per retry window, not once per refresh
 // pass: the second announce inside meshGraftRetryInterval is suppressed by

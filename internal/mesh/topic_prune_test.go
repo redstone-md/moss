@@ -50,6 +50,34 @@ func TestPruneRetainsConfiguredRetryWindow(t *testing.T) {
 	}
 }
 
+func TestSelectedPeerRefusalPreventsGraft(t *testing.T) {
+	node, peer, sent := topicPrunePeer(t, "alpha")
+	// The candidate was already selected when its refusal arrived.
+	node.handleEnvelope(peer, gossip.Envelope{Type: gossip.TypePrune, Channel: "alpha"})
+	node.graftTopicPeer(peer, "alpha", time.Now())
+	if sent.writeCount() != 0 || len(peer.graftedAt) != 0 {
+		t.Fatal("a rejected mesh admission still sent or recorded a GRAFT")
+	}
+}
+
+func TestSelectedPeerCannotOutliveTopicOrConnection(t *testing.T) {
+	for _, ended := range []string{"topic", "connection", "health"} {
+		node, peer, sent := topicPrunePeer(t, "alpha")
+		switch ended {
+		case "topic":
+			node.unsubscribeTopic("alpha")
+		case "connection":
+			delete(node.peers, peer.id)
+		case "health":
+			peer.meshBlocked = time.Now().Add(time.Minute)
+		}
+		node.graftTopicPeer(peer, "alpha", time.Now())
+		if node.pubsub.InMesh("alpha", peer.id) || sent.writeCount() != 0 {
+			t.Fatalf("selected candidate was admitted after %s ended", ended)
+		}
+	}
+}
+
 func TestPruneDoesNotBlockAnotherTopic(t *testing.T) {
 	node, peer, sent := topicPrunePeer(t, "alpha", "beta")
 	node.announceLocalSubscription("alpha")
