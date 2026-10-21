@@ -632,6 +632,9 @@ func (n *Node) clientHandshakeAndRegister(ctx context.Context, conn net.Conn, ad
 	}()
 	hsCtx, cancel := withTimeout(ctx, n.config.HandshakeTimeout())
 	defer cancel()
+	// A superseded explicit target must release a blocked handshake immediately.
+	finished := make(chan struct{})
+	stopClosing := context.AfterFunc(hsCtx, func() { conn.Close(); close(finished) })
 	session, err := transport.ClientHandshake(hsCtx, conn, transport.HandshakeConfig{
 		MeshID:       n.networkID,
 		PSK:          n.transportHandshakePSK(),
@@ -639,6 +642,13 @@ func (n *Node) clientHandshakeAndRegister(ctx context.Context, conn net.Conn, ad
 		RemoteStatic: remoteStatic,
 		Buffers:      transportBufferConfig(n.config.Transport),
 	})
+	if !stopClosing() {
+		<-finished
+	}
+	if err == nil && hsCtx.Err() != nil {
+		session.Close()
+		err = hsCtx.Err()
+	}
 	if err != nil {
 		n.emitDial(addr, "", "handshake", err, time.Since(started))
 		_ = conn.Close()

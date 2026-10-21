@@ -122,6 +122,12 @@ Do not do heavy blocking work directly inside callbacks.
 - render only the Moss-relevant subset to JSON
 - pass that JSON into `Moss_Init`
 
+Hosts maintaining many offline `Moss_ConnectToPeer` targets may set
+`"explicit_retry_max_sec": 30` to reduce background direct/relay work. Omit it
+to retain fixed retry gaps. Both policies coalesce overlapping registrations;
+new requests wake quiet targets and admitted address/key changes supersede
+obsolete attempts. See `API.md` for timing and shutdown semantics.
+
 Example:
 
 ```json

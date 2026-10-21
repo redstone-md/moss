@@ -185,7 +185,7 @@ type Node struct {
 	// what. Naming the type is the difference between fixing the flood and
 	// widening the buffer in front of it.
 	inboundByType    sync.Map
-	explicitTargets  map[string]time.Time
+	explicitTargets  map[string]*explicitTarget
 	bootstrapDials   map[string]time.Time
 	lanBeaconBuckets map[string]*lanBeaconRateBucket
 	lanBeaconGlobal  *nat.TokenBucket

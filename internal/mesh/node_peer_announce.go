@@ -498,6 +498,7 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 			thirdPartyDialable:     thirdPartyDialable,
 		}
 		n.knownPeers[env.AdvertisedPeerID] = learned
+		n.wakeExplicitTargetLocked(env.AdvertisedPeerID)
 		changed = true
 	}
 	n.mu.Unlock()

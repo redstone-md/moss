@@ -65,7 +65,11 @@ func (n *Node) attemptHolePunch(targetPeerID string, timeout time.Duration) bool
 }
 
 func (n *Node) attemptHolePunchPolicy(targetPeerID string, timeout time.Duration, force bool) bool {
-	if timeout <= 0 {
+	return n.attemptHolePunchContext(context.Background(), targetPeerID, timeout, force)
+}
+
+func (n *Node) attemptHolePunchContext(ctx context.Context, targetPeerID string, timeout time.Duration, force bool) bool {
+	if ctx.Err() != nil || timeout <= 0 {
 		return false
 	}
 	if !force && n.shouldPreferRelayForTarget(targetPeerID) {
@@ -97,7 +101,7 @@ func (n *Node) attemptHolePunchPolicy(targetPeerID string, timeout time.Duration
 	deadline := time.Now().Add(timeout)
 	// The dial goroutines inherit the attempt's deadline so they cannot
 	// outlive it by a fresh handshake budget.
-	go n.tryHolePunchDialAt(targetPeerID, targetInfo.addr, coordAt, deadline)
+	go n.tryHolePunchDialAtContext(ctx, targetPeerID, targetInfo.addr, coordAt, deadline)
 	n.mu.Lock()
 	n.holePunchWait[requestID] = holePunchRequest{targetPeerID: targetPeerID, relayPeerID: viaPeerID}
 	n.mu.Unlock()
@@ -120,7 +124,7 @@ func (n *Node) attemptHolePunchPolicy(targetPeerID string, timeout time.Duration
 	punchStarted := time.Now()
 
 	triedAddr := targetInfo.addr
-	for time.Now().Before(deadline) {
+	for ctx.Err() == nil && time.Now().Before(deadline) {
 		if n.directPeerConnected(targetPeerID) {
 			n.countInbound("__punch_success__")
 			n.emitPunchResult(targetPeerID, n.knownPeerNATType(targetPeerID), true, time.Since(punchStarted))
@@ -159,7 +163,7 @@ func (n *Node) attemptHolePunchPolicy(targetPeerID string, timeout time.Duration
 		n.mu.RUnlock()
 		if updated != "" && updated != triedAddr {
 			triedAddr = updated
-			go n.tryHolePunchDialAt(targetPeerID, updated, time.Time{}, deadline)
+			go n.tryHolePunchDialAtContext(ctx, targetPeerID, updated, time.Time{}, deadline)
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
@@ -202,13 +206,21 @@ func (n *Node) tryHolePunchDial(targetPeerID, addr string) {
 }
 
 func (n *Node) tryHolePunchDialAt(targetPeerID, addr string, at time.Time, deadline time.Time) {
-	if addr == "" || n.directPeerConnected(targetPeerID) {
+	n.tryHolePunchDialAtContext(context.Background(), targetPeerID, addr, at, deadline)
+}
+
+func (n *Node) tryHolePunchDialAtContext(ctx context.Context, targetPeerID, addr string, at time.Time, deadline time.Time) {
+	if ctx.Err() != nil || addr == "" || n.directPeerConnected(targetPeerID) {
 		return
 	}
 	if !at.IsZero() {
 		delay := time.Until(at)
 		if delay > 0 {
-			time.Sleep(delay)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(delay):
+			}
 		}
 	}
 	n.mu.RLock()
@@ -224,7 +236,7 @@ func (n *Node) tryHolePunchDialAt(targetPeerID, addr string, at time.Time, deadl
 		RemoteObservations: remoteHistory,
 	}.Plan(n.advertisedListenAddr(), addr)
 	for _, pair := range plan {
-		if n.directPeerConnected(targetPeerID) {
+		if ctx.Err() != nil || n.directPeerConnected(targetPeerID) {
 			return
 		}
 		budget := n.config.HandshakeTimeout()
@@ -235,10 +247,10 @@ func (n *Node) tryHolePunchDialAt(targetPeerID, addr string, at time.Time, deadl
 			}
 			budget = minDuration(budget, remaining)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), budget)
+		ctx, cancel := context.WithTimeout(ctx, budget)
 		n.connectPeerUDP(ctx, targetPeerID, pair.Remote)
 		cancel()
-		if n.directPeerConnected(targetPeerID) {
+		if ctx.Err() != nil || n.directPeerConnected(targetPeerID) {
 			return
 		}
 		if !deadline.IsZero() && !time.Now().Add(75*time.Millisecond).Before(deadline) {
@@ -277,15 +289,23 @@ func (n *Node) connectPeerUDP(ctx context.Context, targetPeerID, addr string) {
 }
 
 func (n *Node) waitForDirectPeer(targetPeerID string, timeout time.Duration) bool {
+	return n.waitForDirectPeerContext(context.Background(), targetPeerID, timeout)
+}
+
+func (n *Node) waitForDirectPeerContext(ctx context.Context, targetPeerID string, timeout time.Duration) bool {
 	if timeout <= 0 {
 		return n.directPeerConnected(targetPeerID)
 	}
 	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
+	for ctx.Err() == nil && time.Now().Before(deadline) {
 		if n.directPeerConnected(targetPeerID) {
 			return true
 		}
-		time.Sleep(25 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return n.directPeerConnected(targetPeerID)
+		case <-time.After(25 * time.Millisecond):
+		}
 	}
 	return n.directPeerConnected(targetPeerID)
 }
@@ -317,6 +337,7 @@ func (n *Node) updateKnownPeer(peerID, addr string, direct bool) {
 		predictionObservations: append([]string(nil), current.predictionObservations...),
 		noiseStatic:            append([]byte(nil), current.noiseStatic...),
 	}
+	n.wakeExplicitTargetLocked(peerID)
 }
 
 func (n *Node) cachedRemoteStatic(peerID, addr string) []byte {

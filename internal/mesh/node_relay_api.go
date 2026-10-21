@@ -1,6 +1,7 @@
 package mesh
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -9,6 +10,13 @@ import (
 )
 
 func (n *Node) OpenRelaySession(viaPeerID, targetPeerID string, timeout time.Duration) (string, error) {
+	return n.openRelaySession(context.Background(), viaPeerID, targetPeerID, timeout)
+}
+
+func (n *Node) openRelaySession(ctx context.Context, viaPeerID, targetPeerID string, timeout time.Duration) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if viaPeerID == "" || targetPeerID == "" {
 		return "", errors.New("via and target peer IDs are required")
 	}
@@ -47,6 +55,11 @@ func (n *Node) OpenRelaySession(viaPeerID, targetPeerID string, timeout time.Dur
 	select {
 	case <-wait:
 		return sessionID, nil
+	case <-ctx.Done():
+		n.mu.Lock()
+		delete(n.relayLocals, sessionID)
+		n.mu.Unlock()
+		return "", ctx.Err()
 	case <-timer.C:
 		n.mu.Lock()
 		delete(n.relayLocals, sessionID)
@@ -103,6 +116,10 @@ func (n *Node) RelaySendTo(targetPeerID string, data []byte, timeout time.Durati
 }
 
 func (n *Node) OpenRelaySessionAny(targetPeerID string, timeout time.Duration) (string, error) {
+	return n.openRelaySessionAny(context.Background(), targetPeerID, timeout)
+}
+
+func (n *Node) openRelaySessionAny(ctx context.Context, targetPeerID string, timeout time.Duration) (string, error) {
 	candidates, err := n.selectRelayPeers(targetPeerID)
 	if err != nil {
 		return "", err
@@ -118,14 +135,14 @@ func (n *Node) OpenRelaySessionAny(targetPeerID string, timeout time.Duration) (
 	deadline := time.Now().Add(timeout)
 	for _, viaPeerID := range candidates {
 		remaining := time.Until(deadline)
-		if remaining <= 0 {
+		if remaining <= 0 || ctx.Err() != nil {
 			break
 		}
 		attemptTimeout := perCandidate
 		if remaining < attemptTimeout {
 			attemptTimeout = remaining
 		}
-		sessionID, err := n.OpenRelaySession(viaPeerID, targetPeerID, attemptTimeout)
+		sessionID, err := n.openRelaySession(ctx, viaPeerID, targetPeerID, attemptTimeout)
 		if err == nil {
 			return sessionID, nil
 		}

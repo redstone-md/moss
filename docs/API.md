@@ -182,6 +182,19 @@ one specific peer matters (e.g. a DM counterpart on the room-blind
 substrate, which organic discovery would only ever reach by chance). The
 registration survives disconnects and is dropped on `Moss_Stop`.
 
+Repeated registrations share one in-flight direct-then-relay attempt. A caller
+can wake an idle target immediately; a newly admitted address or Noise key
+supersedes an obsolete attempt. Stop cancels and joins explicit workers.
+
+The JSON/Go setting `explicit_retry_max_sec` / `ExplicitRetryMaxSec` optionally
+enables exponential gaps after complete failures. Omitted or nonpositive keeps
+the fixed gap `max(handshake timeout, heartbeat, 1s)`. Positive values cap the
+growing gap, measured from completion, at the requested seconds (at most five
+minutes and never below that base). Success clears failure history. Coalescing
+applies to both policies: default retry intervals are preserved, while the old
+overlapping start schedule is deliberately removed. This setting affects only
+registered explicit targets, not address-based Connect or established streams.
+
 ### `Moss_SendToPeer`
 
 ```c
