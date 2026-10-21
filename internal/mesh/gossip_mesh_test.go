@@ -140,6 +140,7 @@ func TestOpportunisticGraftUsesEvenMedianToRepairDegradedMesh(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewNode failed: %v", err)
 	}
+	node.pubsub.Subscribe("alpha")
 	meshPeers := []string{"peer-a", "peer-b", "peer-c", "peer-d", "peer-e", "peer-f"}
 	for i, peerID := range meshPeers {
 		node.pubsub.SetMeshPeer("alpha", peerID, true)
