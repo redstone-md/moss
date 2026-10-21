@@ -1,7 +1,8 @@
 # Topic refusal and retry ownership
 
 The pub/sub manager owns PRUNE backoff per peer and topic. Both received
-refusals and local excess-mesh pruning retain the existing 30-second bound.
+refusals and local excess-mesh pruning use the existing backoff: 30 seconds,
+or a longer configured heartbeat.
 A recent speculative GRAFT does not shorten it. A refusal on one topic does
 not exclude the peer from other topics, or clear their refusals.
 

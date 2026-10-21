@@ -37,6 +37,19 @@ func TestPruneRetainsStrangerRetryWindow(t *testing.T) {
 	}
 }
 
+func TestPruneRetainsConfiguredRetryWindow(t *testing.T) {
+	node, peer, _ := topicPrunePeer(t, "alpha")
+	node.config.GossipSub.HeartbeatMS = 90000
+	node.announceLocalSubscription("alpha")
+	node.handleEnvelope(peer, gossip.Envelope{Type: gossip.TypePrune, Channel: "alpha"})
+	if node.meshGraftEligible(peer.id, "alpha", time.Now().Add(45*time.Second)) {
+		t.Fatal("PRUNE shortened the configured 90-second retry window")
+	}
+	if !node.meshGraftEligible(peer.id, "alpha", time.Now().Add(91*time.Second)) {
+		t.Fatal("PRUNE must release the peer after the configured retry window")
+	}
+}
+
 func TestPruneDoesNotBlockAnotherTopic(t *testing.T) {
 	node, peer, sent := topicPrunePeer(t, "alpha", "beta")
 	node.announceLocalSubscription("alpha")

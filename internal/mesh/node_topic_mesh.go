@@ -35,7 +35,7 @@ func (n *Node) handleTopicPrune(peer *peerConn, channel string) {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 	if n.topicPeerLocked(peer) != nil {
-		n.pubsub.Prune(channel, peer.id, time.Now().Add(meshGraftRetryInterval))
+		n.pubsub.Prune(channel, peer.id, time.Now().Add(n.peerPruneBackoff()))
 	}
 }
 
