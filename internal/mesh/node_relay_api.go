@@ -31,12 +31,17 @@ func (n *Node) OpenRelaySession(viaPeerID, targetPeerID string, timeout time.Dur
 		wait:         wait,
 	}
 	n.mu.Unlock()
-	n.sendEnvelope(peer, n.signRelayRequestEnvelope(gossip.Envelope{
+	if !n.sendRelayControlWithIdentity(peer, n.signRelayRequestEnvelope(gossip.Envelope{
 		Type:         gossip.TypeRelayRequest,
 		RelaySession: sessionID,
 		RelaySource:  n.localPeerID(),
 		RelayTarget:  targetPeerID,
-	}))
+	})) {
+		n.mu.Lock()
+		delete(n.relayLocals, sessionID)
+		n.mu.Unlock()
+		return "", errors.New("relay request send failed")
+	}
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {

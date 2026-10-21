@@ -300,6 +300,10 @@ type recordedSession struct {
 }
 
 func newRecordedSession(t *testing.T) *recordedSession {
+	return newRecordedSessionForPeer(t, [32]byte{}, [32]byte{})
+}
+
+func newRecordedSessionForPeer(t *testing.T, remoteID, remoteKey [32]byte) *recordedSession {
 	t.Helper()
 	suite := noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashBLAKE2s)
 	var key [32]byte
@@ -312,8 +316,8 @@ func newRecordedSession(t *testing.T) *recordedSession {
 		carrier,
 		noise.UnsafeNewCipherState(suite, key, 0),
 		noise.UnsafeNewCipherState(suite, key, 0),
-		[32]byte{},
-		[32]byte{},
+		remoteID,
+		remoteKey,
 		transport.HandshakeModeXX,
 	)
 	if err != nil {

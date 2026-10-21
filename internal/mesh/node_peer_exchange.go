@@ -11,7 +11,7 @@ import (
 // A full broadcast amplified a catalog burst by every connected peer, even
 // when no application messages or transit relay routes were active.
 func (n *Node) forwardPeerAnnouncement(env gossip.Envelope, excludePeerID string) {
-	key := peerAnnouncementKey(env)
+	key := n.localPeerID() + "|" + peerAnnouncementKey(env)
 	targets := n.gossipTargets(key, excludePeerID, n.config.GossipSub.D)
 	n.sendToPeers(targets, env)
 }

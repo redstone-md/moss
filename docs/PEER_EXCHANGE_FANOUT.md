@@ -10,14 +10,33 @@ These measurements are not complete OS wire-byte accounting.
 
 Forwarded peer/supernode claims now use the existing bounded control-gossip
 selection. The configured `GossipSub.D` bounds recipients, eligible peers are
-filtered before selection, and hashing the claim rotates neighbors when the
-claim changes. Verification, the meaningful-change gate and the per-identity
+filtered before selection, and hashing the claim with the forwarding node's
+identity avoids sending every hop into the same global subset. Verification,
+the meaningful-change gate and the per-identity
 forwarding cooldown remain in place. Immediate join snapshots, introduction
 to a new connection and this node's own announcements retain their behavior.
 
 The target-selection implementation is shared with telemetry gossip. Its
 hash inputs, sorting, tie-break and fanout are unchanged for telemetry.
 No wire fields, FFI symbols, dependencies or configured timers change.
+
+## Relay identity does not depend on global gossip
+
+Bounded discovery is insufficient if relay endpoints depend on receiving every
+other peer's key through catalog gossip. A high-degree star exposed that hidden
+dependency: setup reported success without creating an authenticated relay peer.
+
+Relay request/accept now each send the endpoint's existing self-signed v2 peer
+announcement first. The intermediary forwards that exact claim before control,
+using a connection-scoped immutable copy whose signature and Noise key match
+the live authenticated endpoint. It never reconstructs a claim from a directory
+entry, signs on an endpoint's behalf or introduces an unsigned key.
+
+Synchronous writes preserve local control ordering. UDP may still lose/reorder
+packets; a missing key refuses setup rather than reporting readiness, and a late
+authenticated claim permits retry. A failed control write releases its session
+or route. Close removes the matching relayed peer, preserving a replacement or
+upgraded direct session. Legacy paths with already-known keys keep working.
 
 ## Controlled receive regression
 
@@ -35,7 +54,15 @@ This is a 97% reduction for one forwarded claim at 200 peers, not a forecast
 of whole-application traffic. The regression failed on the old receive path
 and passed on the corrected path, including 20 repeated runs. Separate checks
 cover signed supernode promotion/revocation, source exclusion, filtering before
-the cap and stable/rotating target selection.
+the cap and independent forwarders' target selection.
+
+A real TCP star with more than `D` existing one-direct-slot leaves adds a late
+leaf and selects an earlier leaf excluded from its announcement recipients.
+The original bounded-only patch reported success without a relay peer; the
+corrected setup delivers encrypted private-room publications and directed
+payloads in both directions. No catalog/key is injected to make it pass.
+Other regressions cover signed claim ownership, status-signature separation,
+retired connections, mismatched keys, reordered acceptance and failed writes.
 
 ## Acceptance and limits
 

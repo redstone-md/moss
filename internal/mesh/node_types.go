@@ -343,12 +343,15 @@ type peerConn struct {
 	// Per peerConn, so charging it needs no shared lock — the whole point is to
 	// be cheaper than what it protects.
 	announceBudget *nat.TokenBucket
-	outbound       bool
-	bootstrap      bool
-	connectedAt    time.Time
-	lastRTT        time.Duration
-	relayed        bool
-	meshBlocked    time.Time // peer-wide health exclusion; topic PRUNEs live in pubsub
+	// Exact self-signed key claim for relay setup, guarded by n.mu. The
+	// directory's signature may instead belong to a supernode status.
+	selfAnnouncement *gossip.Envelope
+	outbound         bool
+	bootstrap        bool
+	connectedAt      time.Time
+	lastRTT          time.Duration
+	relayed          bool
+	meshBlocked      time.Time // peer-wide health exclusion; topic PRUNEs live in pubsub
 	// graftedAt records when we last sent this peer a GRAFT, per channel, so
 	// the maintenance path does not re-graft on every heartbeat tick. See
 	// markMeshGrafted / meshGraftEligible in node_peer_discovery.go.

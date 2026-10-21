@@ -94,6 +94,31 @@ func TestGossipTargetsAreStableAndRotateWithClaim(t *testing.T) {
 	}
 }
 
+func TestPeerExchangeForwardersChooseDifferentNeighbors(t *testing.T) {
+	var first []bool
+	different := false
+	var claim gossip.Envelope
+	for attempt := range 3 {
+		node, origin, receivers := peerExchangeFixture(t, 64)
+		if attempt == 0 {
+			claim = origin.peerAnnouncementEnvelope(knownPeer{id: origin.localPeerID(), addr: "203.0.113.10:45000"})
+		}
+		node.handleEnvelope(&peerConn{id: claim.AdvertisedPeerID}, claim)
+		selected := make([]bool, len(receivers))
+		for i, receiver := range receivers {
+			selected[i] = receiver.writeCount() != 0
+		}
+		if attempt == 0 {
+			first = selected
+		} else if !reflect.DeepEqual(first, selected) {
+			different = true
+		}
+	}
+	if !different {
+		t.Fatal("independent forwarders funnel the claim into the same neighbors")
+	}
+}
+
 func peerExchangeFixture(t *testing.T, peers int) (*Node, *Node, []*recordedSession) {
 	t.Helper()
 	cfg := DefaultConfig()

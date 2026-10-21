@@ -235,7 +235,11 @@ func (n *Node) localKnownPeer() knownPeer {
 }
 
 func (n *Node) handlePeerAnnounce(peer *peerConn, env gossip.Envelope) {
-	verified := directSenderMatches(peer, env) && verifyPeerAnnouncementEnvelope(env)
+	signed := verifyPeerAnnouncementEnvelope(env)
+	if signed {
+		n.rememberPeerSelfAnnouncement(peer, env)
+	}
+	verified := directSenderMatches(peer, env) && signed
 	n.handleKnownPeerEnvelope(peer, env, gossip.TypePeerAnnounce, verified)
 }
 
