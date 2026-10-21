@@ -30,7 +30,9 @@ func (n *Node) discoveredPeerTargets() []discoveredPeerTarget {
 	// callback per comparison, on every maintenance pass — which blocked
 	// envelope handling for the entire node.
 	n.mu.RLock()
-	full := n.directPeerCountLocked() >= n.config.MaxPeers
+	ordinaryBudget := n.discoveryDialBudgetLocked()
+	relayBudget := n.discoveryRelayBudgetLocked()
+	full := ordinaryBudget == 0 && relayBudget == 0
 	localID := n.localPeerID()
 	localPublic := n.natProfile.Load().(nat.Profile).PublicReachable
 	candidates := make([]discoveredPeerTarget, 0, min(len(n.knownPeers), n.config.MaxPeers))
@@ -40,6 +42,9 @@ func (n *Node) discoveredPeerTargets() []discoveredPeerTarget {
 				continue
 			}
 			if !info.verified && !info.thirdPartyDialable {
+				continue
+			}
+			if ordinaryBudget == 0 && !info.relayCapable {
 				continue
 			}
 			if _, connected := n.peers[peerID]; connected {
@@ -61,7 +66,11 @@ func (n *Node) discoveredPeerTargets() []discoveredPeerTarget {
 			// The higher-id node relies on the lower-id node's inbound dial instead.
 			// If either end is not publicly reachable the inbound dial may not land,
 			// so we keep dialing regardless to preserve connectivity.
-			if localPublic && info.publicReachable && localID > peerID {
+			// A capable relay may already have met its own discovery goal and
+			// never initiate. Repair our bounded relay deficit without waiting
+			// for that peer to grow; ordinary peers still follow the glare rule.
+			repairRelay := relayBudget > 0 && info.relayCapable
+			if localPublic && info.publicReachable && localID > peerID && !repairRelay {
 				continue
 			}
 			lastDial := n.peerDials[peerID]
@@ -102,10 +111,6 @@ func (n *Node) discoveredPeerTargets() []discoveredPeerTarget {
 	// litter — stop competing with different hosts for the pass's slots.
 	candidates = dedupeDiscoveredTargetsPerHost(candidates)
 
-	limit := n.config.GossipSub.DOut
-	if limit <= 0 {
-		limit = 2
-	}
 	n.mu.Lock()
 	// Selection under the write lock: the relay deficit and free slot count
 	// are read against the same snapshot the in-flight markers are written
@@ -113,15 +118,7 @@ func (n *Node) discoveredPeerTargets() []discoveredPeerTarget {
 	// for, and the relay reservation is computed from the relay-capable
 	// connections that exist right now (peers may have connected while we
 	// were sorting).
-	available := n.config.MaxPeers - n.directPeerCountLocked()
-	if available < limit {
-		limit = available
-	}
-	if limit <= 0 {
-		n.mu.Unlock()
-		return nil
-	}
-	selected := selectDialTargets(candidates, limit, relayDialQuota-n.relayCapableConnectedLocked())
+	selected := n.selectDiscoveryTargetsLocked(candidates)
 	// A peer may have connected while we were sorting (an inbound dial lands
 	// whenever it wants). The single-lock version of this pass could never
 	// select a connected peer; keep that invariant here by re-checking under

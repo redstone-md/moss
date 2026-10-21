@@ -468,14 +468,10 @@ func (n *Node) kickTargets(peers []string) []string {
 	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	if n.directPeerCountLocked() >= n.config.MaxPeers {
-		// Full before any attempt: nothing to dial and nothing to charge —
-		// a capacity refusal is not a host failure.
-		return nil
-	}
-	limit := n.config.GossipSub.DOut
+	limit := n.discoveryDialBudgetLocked()
 	if limit <= 0 {
-		limit = 2
+		// No discovery demand or capacity: do not charge a host failure.
+		return nil
 	}
 	kicked := make([]string, 0, min(len(peers), limit))
 	seenHosts := make(map[string]struct{}, limit)
