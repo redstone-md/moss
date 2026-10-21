@@ -3,7 +3,6 @@ package mesh
 import (
 	"context"
 	"encoding/hex"
-	"sort"
 	"time"
 
 	"github.com/redstone-md/moss/internal/gossip"
@@ -110,53 +109,8 @@ const statDeltaHops = 3
 // became ~100 sends, and each forwarder repeated that — O(N²) envelope traffic
 // from telemetry alone. Bounded fan-out turns that into O(N·F·hops).
 func (n *Node) fanoutStatDelta(env gossip.Envelope, excludePeerID string) {
-	fanout := n.config.GossipSub.D
-	if fanout <= 0 {
-		fanout = 1
-	}
-	n.mu.RLock()
-	peerIDs := make([]string, 0, len(n.peers))
-	for peerID, peer := range n.peers {
-		if peer == nil || peerID == excludePeerID {
-			continue
-		}
-		peerIDs = append(peerIDs, peerID)
-	}
-	n.mu.RUnlock()
-	// Same trust policy the flood used, applied before selection so an
-	// untrusted peer never spends one of the fan-out slots.
-	peerIDs = filterPeerIDs(peerIDs, n.canSharePeerExchangeWithPeer)
-	if len(peerIDs) <= fanout {
-		// The whole eligible mesh fits inside the budget.
-		n.sendToPeers(peerIDs, env)
-		return
-	}
-	// Hash-once: the comparator used to re-derive the blake2s key on every
-	// comparison — O(P log P) hashes per fan-out on the maintenance path.
-	keys := make(map[string]string, len(peerIDs))
-	for _, peerID := range peerIDs {
-		keys[peerID] = statDeltaPeerKey(env.MessageID, peerID)
-	}
-	sort.Slice(peerIDs, func(i, j int) bool {
-		ki := keys[peerIDs[i]]
-		kj := keys[peerIDs[j]]
-		if ki == kj {
-			return peerIDs[i] < peerIDs[j]
-		}
-		return ki < kj
-	})
-	n.sendToPeers(peerIDs[:fanout], env)
-}
-
-// statDeltaPeerKey ranks a forwarding target for one specific delta, so every
-// delta picks its own pseudo-random subset instead of always the same slice of
-// the mesh.
-func statDeltaPeerKey(messageID, peerID string) string {
-	h, _ := blake2s.New256(nil)
-	_, _ = h.Write([]byte(messageID))
-	_, _ = h.Write([]byte("|"))
-	_, _ = h.Write([]byte(peerID))
-	return hex.EncodeToString(h.Sum(nil))
+	targets := n.gossipTargets(env.MessageID, excludePeerID, n.config.GossipSub.D)
+	n.sendToPeers(targets, env)
 }
 
 func (n *Node) broadcastStatDelta(d stat.Delta) {

@@ -540,7 +540,7 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 		if peer != nil {
 			excludePeerID = peer.id
 		}
-		n.broadcastToAll(gossip.Envelope{
+		n.forwardPeerAnnouncement(gossip.Envelope{
 			Type:                   forwardType,
 			AdvertisedPeerID:       env.AdvertisedPeerID,
 			AdvertisedAddr:         env.AdvertisedAddr,
