@@ -235,23 +235,12 @@ func (n *Node) localKnownPeer() knownPeer {
 }
 
 func (n *Node) handlePeerAnnounce(peer *peerConn, env gossip.Envelope) {
-	signed := verifyPeerAnnouncementEnvelope(env)
-	if signed {
-		n.rememberPeerSelfAnnouncement(peer, env)
-	}
-	verified := directSenderMatches(peer, env) && signed
-	n.handleKnownPeerEnvelope(peer, env, gossip.TypePeerAnnounce, verified)
+	n.handleKnownPeerEnvelope(peer, env, gossip.TypePeerAnnounce)
 }
 
 func (n *Node) handleSupernodeStatus(peer *peerConn, env gossip.Envelope, relayCapable bool) {
 	env.AdvertisedRelayCapable = relayCapable
-	if !verifySupernodeStatusEnvelope(env) {
-		if peer != nil {
-			n.scoring.PenalizeInvalid(peer.id)
-		}
-		return
-	}
-	n.handleKnownPeerEnvelope(peer, env, env.Type, directSenderMatches(peer, env))
+	n.handleKnownPeerEnvelope(peer, env, env.Type)
 }
 
 func directSenderMatches(peer *peerConn, env gossip.Envelope) bool {
@@ -409,7 +398,26 @@ func (n *Node) sweepStalePeerStateLocked(now time.Time) {
 	}
 }
 
-func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forwardType gossip.EnvelopeType, verifiedEnvelope bool) {
+func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forwardType gossip.EnvelopeType) {
+	// Validate once here: key admission, directory updates and forwarding must
+	// consume the same result. Peer signatures do not authenticate NAT claims.
+	validSignedAnnouncement := false
+	trustCapabilities := false
+	if forwardType == gossip.TypePeerAnnounce {
+		validSignedAnnouncement = verifyPeerAnnouncementEnvelope(env)
+		if validSignedAnnouncement {
+			n.rememberPeerSelfAnnouncement(peer, env)
+		}
+	} else {
+		trustCapabilities = verifySupernodeStatusEnvelope(env)
+		if !trustCapabilities {
+			if peer != nil {
+				n.scoring.PenalizeInvalid(peer.id)
+			}
+			return
+		}
+	}
+	verifiedEnvelope := directSenderMatches(peer, env) && (validSignedAnnouncement || trustCapabilities)
 	if env.AdvertisedPeerID == "" || env.AdvertisedAddr == "" || env.AdvertisedPeerID == n.localPeerID() {
 		return
 	}
@@ -421,14 +429,11 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 		return
 	}
 	trustedSelfAnnouncement := peer != nil && env.AdvertisedPeerID == peer.id
-	validSignedAnnouncement := false
 	if forwardType == gossip.TypePeerAnnounce {
-		validSignedAnnouncement = verifyPeerAnnouncementEnvelope(env)
 		if !trustedSelfAnnouncement && !verifiedEnvelope && !validSignedAnnouncement {
 			return
 		}
 	}
-	trustCapabilities := verifySupernodeStatusEnvelope(env)
 	changed := false
 	var learned knownPeer
 	n.mu.Lock()
