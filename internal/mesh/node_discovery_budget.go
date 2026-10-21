@@ -5,7 +5,7 @@ package mesh
 // retain the hard MaxPeers capacity; existing connections are never trimmed.
 // Callers hold n.mu while reading the connection snapshot and reserving dials.
 func (n *Node) discoveryDialBudgetLocked() int {
-	goal := max(max(n.config.GossipSub.DHigh, n.config.GossipSub.D), max(n.config.GossipSub.DOut, 1))
+	goal := n.discoveryNeighborGoal()
 	neighbors, outbound := 0, 0
 	for _, peer := range n.peers {
 		if peer != nil {
@@ -18,6 +18,24 @@ func (n *Node) discoveryDialBudgetLocked() int {
 	// Inbound peers must not occupy every dial we choose ourselves.
 	needed := max(max(goal-neighbors, n.config.GossipSub.DOut-outbound), 0)
 	return min(needed, n.discoveryBatchLimitLocked())
+}
+
+func (n *Node) discoveryNeighborGoal() int {
+	return max(max(n.config.GossipSub.DHigh, n.config.GossipSub.D), max(n.config.GossipSub.DOut, 1))
+}
+
+// Direct-outbound repair must not keep adding relayed neighbors: those fill
+// neither the outbound floor nor the relay-capable quota. Recheck after the
+// direct attempt, since other dials can fill the goal while it is in flight.
+func (n *Node) tryDiscoveredRelay(peerID string) bool {
+	n.mu.RLock()
+	grow := len(n.peers) < n.discoveryNeighborGoal()
+	n.mu.RUnlock()
+	if !grow {
+		return false
+	}
+	_, err := n.OpenRelaySessionAny(peerID, n.config.HandshakeTimeout())
+	return err == nil
 }
 
 func (n *Node) discoveryBatchLimitLocked() int {

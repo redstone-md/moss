@@ -414,7 +414,7 @@ func (n *Node) dialKnownPeer(peerID, addr string) {
 		if n.establishedRelaySession(peerID) != "" {
 			n.reportConnectAttempt(outcomeRelayed, reasonNone, started, false)
 			n.noteDialOutcome(peerID, true)
-		} else if _, err := n.OpenRelaySessionAny(peerID, n.config.HandshakeTimeout()); err == nil {
+		} else if n.tryDiscoveredRelay(peerID) {
 			n.reportConnectAttempt(outcomeRelayed, reasonPunchTimeout, started, false)
 			n.noteDialOutcome(peerID, true)
 		} else {

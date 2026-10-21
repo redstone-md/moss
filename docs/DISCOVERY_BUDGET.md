@@ -35,3 +35,12 @@ and hard safety limits described by [libp2p](https://github.com/libp2p/go-libp2p
 without adding libp2p or a new public configuration field. Reusing Moss's degree
 settings for the working goal is internal policy; GossipSub defines those
 settings for per-topic meshes, not a global transport cap.
+
+
+Automatic relay fallback also checks the current total neighbor count after the
+initial direct attempt. Outbound/relay repair demand must not fund more logical
+relayed neighbors: those satisfy neither direct quota. At the working goal,
+new automatic relay fallback stops; existing sessions and explicit/provider
+relay requests retain their paths. Below the goal, automatic fallback remains
+available. A real TCP regression reproduces extra growth before this gate and
+verifies both allowed fallback and explicit encrypted delivery afterward.
