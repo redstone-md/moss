@@ -1,12 +1,42 @@
 package mesh
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/redstone-md/moss/internal/gossip"
 	"github.com/redstone-md/moss/internal/nat"
 )
+
+func TestRelayIdentityHonorsPeerExchangePolicy(t *testing.T) {
+	node, _, peer, claim := relayIdentityFixture(t)
+	node.handlePeerAnnounce(peer, claim)
+	recorded := newRecordedSession(t)
+	recipient := &peerConn{id: "below-baseline", session: recorded.session}
+	node.scoring.SetApplicationScore(recipient.id, -100)
+	if node.introduceRelayEndpoint(recipient, peer.id) || recorded.writeCount() != 0 {
+		t.Fatal("relay introduction bypassed the peer-exchange score policy")
+	}
+}
+
+func TestFullRelayDoesNotIntroduceRejectedSession(t *testing.T) {
+	node, remote, peer, claim := relayIdentityFixture(t)
+	node.handlePeerAnnounce(peer, claim)
+	for i := range node.config.NAT.RelayMaxSessions {
+		if !node.relaySessions.Acquire(fmt.Sprint(i)) {
+			t.Fatal("capacity setup failed")
+		}
+	}
+	recorded := newRecordedSession(t)
+	node.peers["target"] = &peerConn{id: "target", session: recorded.session}
+	node.handleRelayRequest(peer, remote.signRelayRequestEnvelope(gossip.Envelope{
+		Type: gossip.TypeRelayRequest, RelaySession: "refused", RelaySource: peer.id, RelayTarget: "target",
+	}))
+	if recorded.writeCount() != 0 {
+		t.Fatal("a capacity-refused relay request still introduced its source to the target")
+	}
+}
 
 func relayIdentityFixture(t *testing.T) (*Node, *Node, *peerConn, gossip.Envelope) {
 	t.Helper()
@@ -85,6 +115,9 @@ func TestRelayIdentityRejectsUnboundClaims(t *testing.T) {
 
 func TestRelayAcceptBeforeIdentityCannotReportReady(t *testing.T) {
 	node, remote, peer, claim := relayIdentityFixture(t)
+	delete(node.peers, peer.id)
+	peer = &peerConn{id: "relay", session: newRecordedSession(t).session}
+	node.peers[peer.id] = peer
 	accept := remote.signRelayAcceptEnvelope(gossip.Envelope{
 		Type: gossip.TypeRelayAccept, RelaySession: "reordered", RelaySource: remote.localPeerID(), RelayTarget: node.localPeerID(),
 	})
@@ -102,20 +135,17 @@ func TestRelayAcceptBeforeIdentityCannotReportReady(t *testing.T) {
 		t.Fatal("missing identity left a half-open relay session")
 	}
 	// An authenticated late claim enables a normal retry, never plaintext.
-	forwarder := &peerConn{id: "relay"}
-	node.handlePeerAnnounce(forwarder, claim)
-	node.peers[forwarder.id] = forwarder
+	node.handlePeerAnnounce(peer, claim)
 	node.relayLocals[accept.RelaySession] = relayLocalSession{
-		sessionID: accept.RelaySession, viaPeerID: forwarder.id, remotePeerID: remote.localPeerID(), wait: wait,
+		sessionID: accept.RelaySession, viaPeerID: peer.id, remotePeerID: remote.localPeerID(), wait: wait,
 	}
-	delete(node.peers, remote.localPeerID())
-	node.handleRelayAccept(forwarder, accept)
+	node.handleRelayAccept(peer, accept)
 	select {
 	case <-wait:
 	default:
 		t.Fatal("authenticated identity did not enable retry")
 	}
-	node.handleRelayClose(forwarder, gossip.Envelope{
+	node.handleRelayClose(peer, gossip.Envelope{
 		Type: gossip.TypeRelayClose, RelaySession: accept.RelaySession, RelayTarget: node.localPeerID(),
 	})
 	if node.peerByID(remote.localPeerID()) != nil {

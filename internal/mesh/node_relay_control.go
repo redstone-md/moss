@@ -76,9 +76,6 @@ func (n *Node) handleRelayRequest(peer *peerConn, env gossip.Envelope) {
 	if targetPeer == nil {
 		return
 	}
-	if !n.introduceRelayEndpoint(targetPeer, env.RelaySource) {
-		return
-	}
 	if !n.relaySessions.Acquire(env.RelaySession) {
 		return
 	}
@@ -86,7 +83,7 @@ func (n *Node) handleRelayRequest(peer *peerConn, env gossip.Envelope) {
 	n.relayRoutes[env.RelaySession] = relayRoute{initiator: env.RelaySource, target: env.RelayTarget}
 	n.mu.Unlock()
 	n.refreshSupernodeStatus()
-	if !n.sendEnvelope(targetPeer, env) {
+	if !n.introduceRelayEndpoint(targetPeer, env.RelaySource) || !n.sendEnvelope(targetPeer, env) {
 		n.closeRelayRouteWithClose(env.RelaySession, env.RelaySource, env.RelayTarget)
 	}
 }
@@ -576,12 +573,12 @@ func (n *Node) registerRelayedPeerLocked(session relayLocalSession) (*peerConn, 
 	if session.remotePeerID == "" || session.viaPeerID == "" || session.sessionID == "" {
 		return nil, false
 	}
-	if len(n.knownPeers[session.remotePeerID].noiseStatic) != 32 {
-		return nil, true
-	}
 	existing := n.peers[session.remotePeerID]
 	if existing != nil && !existing.relayed {
 		return nil, false
+	}
+	if len(n.knownPeers[session.remotePeerID].noiseStatic) != 32 {
+		return nil, true
 	}
 	// Allowlist gate — the same admission policy as the direct path
 	// (registerPeerFrom), so a strict node refuses an unlisted remote over

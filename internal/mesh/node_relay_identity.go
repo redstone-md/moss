@@ -47,5 +47,8 @@ func (n *Node) introduceRelayEndpoint(recipient *peerConn, endpointID string) bo
 		// Legacy/forwarded sessions may already know each other's keys.
 		return true
 	}
+	if recipient == nil || !n.canSharePeerExchangeWithPeer(recipient.id) {
+		return false
+	}
 	return n.sendEnvelope(recipient, *claim)
 }

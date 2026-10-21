@@ -63,6 +63,10 @@ corrected setup delivers encrypted private-room publications and directed
 payloads in both directions. No catalog/key is injected to make it pass.
 Other regressions cover signed claim ownership, status-signature separation,
 retired connections, mismatched keys, reordered acceptance and failed writes.
+Backfill honors the existing peer-exchange score policy, and a full relay
+refuses a new session before sending endpoint introductions. Existing direct
+connections retain their admission precedence. Signature-verification tests
+use authenticated key claims and working encrypted relay transports.
 
 ## Acceptance and limits
 
