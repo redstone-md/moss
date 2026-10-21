@@ -591,7 +591,7 @@ func (n *Node) UnsubscribeRoom(meshID, channel string) int32 {
 		}
 		n.pubsub.SetMeshPeer(topic, peerID, false)
 	}
-	n.pubsub.Unsubscribe(topic)
+	n.unsubscribeTopic(topic)
 	n.forgetSubscription(topic)
 	// The channel's delivery queue (~295KB at depth) goes with the last
 	// subscription that names the channel — unless another room still

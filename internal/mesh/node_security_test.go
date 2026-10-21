@@ -37,19 +37,11 @@ func TestHandleRelayRequestRejectsSpoofedLocalRelaySource(t *testing.T) {
 }
 
 func TestVerifyRelayRequestAllowsForwardedSender(t *testing.T) {
-	sourceIdentity, err := mcrypto.NewIdentity()
-	if err != nil {
-		t.Fatalf("new source identity: %v", err)
-	}
-	targetIdentity, err := mcrypto.NewIdentity()
-	if err != nil {
-		t.Fatalf("new target identity: %v", err)
-	}
-	source := &Node{identity: sourceIdentity}
-	target := &Node{
-		identity:    targetIdentity,
-		relayLocals: map[string]relayLocalSession{},
-	}
+	target, source, peer, claim := relayIdentityFixture(t)
+	target.handlePeerAnnounce(peer, claim)
+	delete(target.peers, source.localPeerID())
+	relay := &peerConn{id: "relay-peer-id", session: newRecordedSession(t).session}
+	target.peers[relay.id] = relay
 	env := source.signRelayRequestEnvelope(gossip.Envelope{
 		Type:         gossip.TypeRelayRequest,
 		RelaySession: "session-1",
@@ -60,7 +52,7 @@ func TestVerifyRelayRequestAllowsForwardedSender(t *testing.T) {
 	if !verifyRelayRequestEnvelope(env) {
 		t.Fatalf("expected signed forwarded relay request to verify")
 	}
-	target.handleRelayRequest(&peerConn{id: "relay-peer-id"}, env)
+	target.handleRelayRequest(relay, env)
 	target.mu.RLock()
 	session, ok := target.relayLocals[env.RelaySession]
 	target.mu.RUnlock()
@@ -113,26 +105,14 @@ func TestHandleRelayAcceptRejectsUnsignedForgedTargetAccept(t *testing.T) {
 }
 
 func TestVerifyRelayAcceptAllowsForwardedTargetAccept(t *testing.T) {
-	sourceIdentity, err := mcrypto.NewIdentity()
-	if err != nil {
-		t.Fatalf("new source identity: %v", err)
+	source, target, peer, claim := relayIdentityFixture(t)
+	source.handlePeerAnnounce(peer, claim)
+	delete(source.peers, target.localPeerID())
+	relay := &peerConn{id: "relay-peer-id", session: newRecordedSession(t).session}
+	source.peers[relay.id] = relay
+	source.relayLocals["session-1"] = relayLocalSession{
+		sessionID: "session-1", viaPeerID: relay.id, remotePeerID: target.localPeerID(), wait: make(chan struct{}),
 	}
-	targetIdentity, err := mcrypto.NewIdentity()
-	if err != nil {
-		t.Fatalf("new target identity: %v", err)
-	}
-	source := &Node{
-		identity: sourceIdentity,
-		relayLocals: map[string]relayLocalSession{
-			"session-1": {
-				sessionID:    "session-1",
-				viaPeerID:    "relay-peer-id",
-				remotePeerID: hexPublicKey(targetIdentity),
-				wait:         make(chan struct{}),
-			},
-		},
-	}
-	target := &Node{identity: targetIdentity}
 	env := target.signRelayAcceptEnvelope(gossip.Envelope{
 		Type:         gossip.TypeRelayAccept,
 		RelaySession: "session-1",
@@ -143,7 +123,7 @@ func TestVerifyRelayAcceptAllowsForwardedTargetAccept(t *testing.T) {
 	if !verifyRelayAcceptEnvelope(env) {
 		t.Fatal("expected signed relay_accept to verify")
 	}
-	source.handleRelayAccept(&peerConn{id: "relay-peer-id"}, env)
+	source.handleRelayAccept(relay, env)
 	source.mu.RLock()
 	session := source.relayLocals["session-1"]
 	source.mu.RUnlock()

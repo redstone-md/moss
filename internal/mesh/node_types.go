@@ -343,12 +343,15 @@ type peerConn struct {
 	// Per peerConn, so charging it needs no shared lock — the whole point is to
 	// be cheaper than what it protects.
 	announceBudget *nat.TokenBucket
-	outbound       bool
-	bootstrap      bool
-	connectedAt    time.Time
-	lastRTT        time.Duration
-	relayed        bool
-	meshBlocked    time.Time
+	// Exact self-signed key claim for relay setup, guarded by n.mu. The
+	// directory's signature may instead belong to a supernode status.
+	selfAnnouncement *gossip.Envelope
+	outbound         bool
+	bootstrap        bool
+	connectedAt      time.Time
+	lastRTT          time.Duration
+	relayed          bool
+	meshBlocked      time.Time // peer-wide health exclusion; topic PRUNEs live in pubsub
 	// graftedAt records when we last sent this peer a GRAFT, per channel, so
 	// the maintenance path does not re-graft on every heartbeat tick. See
 	// markMeshGrafted / meshGraftEligible in node_peer_discovery.go.
@@ -548,8 +551,8 @@ var peerInstantRefusalWindow = 3 * time.Second
 // gossip heartbeat (as low as 250ms in chat clients), so without this bound
 // a peer that ignores or rejects GRAFTs is re-poked every tick — the
 // graft→prune→graft churn both sides pay for. A PRUNE from the far end still
-// takes effect immediately through peer.meshBlocked (set by node_envelope.go);
-// this only spaces our own retries between those signals.
+// takes effect immediately through the pubsub manager's topic backoff; this
+// marker also spaces speculative sends to peers that never answer.
 const meshGraftRetryInterval = 30 * time.Second
 
 // StreamHandler receives one payload delivered on a non-default stream from

@@ -482,11 +482,11 @@ func (n *Node) maintainTopicMesh(channel string) {
 // peer that ignores the envelope was re-grafted 4x a second, forever — the
 // graft→prune→graft churn NetScout measured. It lives on the peerConn, so it
 // dies with the connection and needs no separate reaping.
-func (n *Node) markMeshGrafted(peerID, channel string, now time.Time) {
+func (n *Node) markMeshGrafted(peer *peerConn, channel string, now time.Time) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	peer := n.peers[peerID]
-	if peer == nil {
+	peer = n.topicPeerLocked(peer)
+	if peer == nil || !n.pubsub.IsLocalSubscriber(channel) {
 		return
 	}
 	// Lazy-init: peerConns are built in several places (including tests) and
@@ -501,11 +501,8 @@ func (n *Node) markMeshGrafted(peerID, channel string, now time.Time) {
 
 // meshGraftEligible reports whether peerID may be (re)grafted on channel: no
 // GRAFT sent to it within meshGraftRetryInterval. A peer that has itself
-// claimed the channel (its GRAFT/announce reached us) is always eligible: the
-// retry throttle exists to stop poking peers that ignore or refuse GRAFTs, and
-// a claimed subscription is the opposite signal — a PRUNE answering our
-// premature graft used to block the mesh from forming for the whole window
-// while the peer was in fact already on the channel.
+// claimed the channel bypasses speculative-send throttling. A newer explicit
+// refusal still takes precedence until its topic-specific backoff expires.
 func (n *Node) meshGraftEligible(peerID, channel string, now time.Time) bool {
 	n.mu.RLock()
 	peer := n.peers[peerID]
@@ -515,64 +512,13 @@ func (n *Node) meshGraftEligible(peerID, channel string, now time.Time) bool {
 	}
 	last := peer.graftedAt[channel]
 	n.mu.RUnlock()
+	if n.pubsub.InBackoff(channel, peerID, now) {
+		return false
+	}
 	if n.pubsub.HasPeerSubscription(peerID, channel) {
 		return true
 	}
 	return now.Sub(last) >= meshGraftRetryInterval
-}
-
-// meshGraftedWithin reports whether an inbound PRUNE from this peer should get
-// the SHORT meshBlocked TTL (join choreography) rather than the long one
-// (genuine refusal, graft-war spacing). Two signals qualify:
-//
-//   - WE sent the peer a GRAFT on this channel within the window — our
-//     maintenance shot first and its PRUNE is the answer.
-//   - The peer has itself claimed the channel (its GRAFT/announce reached us).
-//     A claimed subscriber that PRUNEs is not refusing the channel, it is
-//     declining one premature mesh slot, and blocking it for the full backoff
-//     would refuse its own GRAFT seconds later — the mesh then cannot form at
-//     all (measured: one peer of three hit this and the mesh stalled at 1).
-//     Subscribe-path GRAFTs (announceLocalSubscription) record graftedAt
-//     like every other GRAFT we send, so the "recent GRAFT of ours" check
-//     sees them too.
-//
-// The long TTL still applies to a peer that never claimed the channel and is
-// just answering our maintenance grafts with PRUNEs — that is the loop the
-// two-tier block exists to break.
-func (n *Node) meshGraftedWithin(peerID, channel string, within time.Duration, now time.Time) bool {
-	if n.pubsub.HasPeerSubscription(peerID, channel) {
-		return true
-	}
-	n.mu.RLock()
-	defer n.mu.RUnlock()
-	peer := n.peers[peerID]
-	if peer == nil {
-		return false
-	}
-	last := peer.graftedAt[channel]
-	return !last.IsZero() && now.Sub(last) < within
-}
-
-// markMeshGraftRefused backdates our graft marker when the far end answers a
-// recent GRAFT of ours with a PRUNE — join choreography, not a refusal to
-// ever mesh. Without this the sender side of the two-tier PRUNE handling
-// (node_envelope.go) would sit out the full meshGraftRetryInterval after one
-// premature GRAFT, and a room whose members subscribe a few seconds apart
-// could not form its mesh for 30s: each side waiting out its own cooldown
-// while the other side's short meshBlocked has long expired. Backdating
-// makes the next retry fall one retryIn after the PRUNE, matching the short
-// TTL the receiver recorded.
-func (n *Node) markMeshGraftRefused(peerID, channel string, retryIn time.Duration, now time.Time) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	peer := n.peers[peerID]
-	if peer == nil || peer.graftedAt == nil {
-		return
-	}
-	backdated := now.Add(retryIn - meshGraftRetryInterval)
-	if backdated.Before(peer.graftedAt[channel]) {
-		peer.graftedAt[channel] = backdated
-	}
 }
 
 func (n *Node) ensureTopicMeshMinimum(channel string) {
@@ -603,10 +549,7 @@ func (n *Node) ensureTopicMeshMinimum(channel string) {
 		if peer == nil {
 			continue
 		}
-		n.pubsub.SetMeshPeer(channel, peerID, true)
-		n.sendEnvelope(peer, gossip.Envelope{Type: gossip.TypeGraft, Channel: channel})
-		n.sendRecentIHave(peer, channel)
-		n.markMeshGrafted(peerID, channel, now)
+		n.graftTopicPeer(peer, channel, now)
 	}
 }
 
@@ -651,7 +594,7 @@ func (n *Node) pruneTopicMeshExcess(channel string) {
 		if peer.outbound && outboundLeft <= n.config.GossipSub.DOut {
 			continue
 		}
-		n.pubsub.SetMeshPeer(channel, peerID, false)
+		n.handleTopicPrune(peer, channel)
 		n.sendEnvelope(peer, gossip.Envelope{Type: gossip.TypePrune, Channel: channel})
 		if peer.outbound {
 			outboundLeft--
@@ -675,6 +618,19 @@ type meshCandidateSnapshot struct {
 	relayed     bool
 	highLatency bool
 	pingMiss    bool
+}
+
+// The caller holds n.mu while capturing connection health; scoring runs outside it.
+func snapshotMeshCandidate(peer *peerConn, now time.Time) meshCandidateSnapshot {
+	if peer == nil {
+		return meshCandidateSnapshot{}
+	}
+	return meshCandidateSnapshot{
+		id: peer.id, alive: true, outbound: peer.outbound,
+		blocked: now.Before(peer.meshBlocked), relayed: peer.relayed,
+		highLatency: peer.lastRTT > peerLatencyPruneThreshold,
+		pingMiss:    peer.pingMisses != 0,
+	}
 }
 
 func (c meshCandidateSnapshot) eligible() bool {
@@ -737,20 +693,12 @@ func (n *Node) meshCandidateRanking(channel string) []meshCandidateSnapshot {
 	snap := make([]meshCandidateSnapshot, len(ids))
 	n.mu.RLock()
 	for i, peerID := range ids {
+		snap[i] = snapshotMeshCandidate(n.peers[peerID], now)
 		snap[i].id = peerID
-		peer := n.peers[peerID]
-		if peer == nil {
-			continue
-		}
-		snap[i].alive = true
-		snap[i].outbound = peer.outbound
-		snap[i].blocked = now.Before(peer.meshBlocked)
-		snap[i].relayed = peer.relayed
-		snap[i].highLatency = peer.lastRTT > peerLatencyPruneThreshold
-		snap[i].pingMiss = peer.pingMisses != 0
 	}
 	n.mu.RUnlock()
 	for i := range snap {
+		snap[i].blocked = snap[i].blocked || n.pubsub.InBackoff(channel, snap[i].id, now)
 		if snap[i].alive {
 			snap[i].score = n.peerScore(snap[i].id)
 		}
@@ -812,10 +760,7 @@ func (n *Node) opportunisticGraft(channel string) {
 		if peer == nil {
 			continue
 		}
-		n.pubsub.SetMeshPeer(channel, peerID, true)
-		n.sendEnvelope(peer, gossip.Envelope{Type: gossip.TypeGraft, Channel: channel})
-		n.sendRecentIHave(peer, channel)
-		n.markMeshGrafted(peerID, channel, now)
+		n.graftTopicPeer(peer, channel, now)
 	}
 }
 

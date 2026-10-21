@@ -159,7 +159,9 @@ func TestOpportunisticGraftingPrefersHighScoringNonMeshPeer(t *testing.T) {
 	cfgA.GossipSub.HeartbeatMS = 50
 	cfgA.GossipSub.D = 2
 	cfgA.GossipSub.DLo = 2
-	cfgA.GossipSub.DHigh = 2
+	// Keep initial join admission below the prune threshold; this test selects
+	// a non-mesh candidate, not a peer currently serving a PRUNE backoff.
+	cfgA.GossipSub.DHigh = 4
 	cfgA.GossipSub.DLazy = 1
 	nodeA, err := NewNode("mesh-graft", nil, cfgA)
 	if err != nil {
@@ -203,7 +205,7 @@ func TestOpportunisticGraftingPrefersHighScoringNonMeshPeer(t *testing.T) {
 			t.Fatalf("peer.Subscribe failed: %d", code)
 		}
 	}
-	waitForMeshCountAtLeast(t, nodeA, "alpha", 2)
+	waitForMeshCountAtLeast(t, nodeA, "alpha", 3)
 
 	// Internal pub/sub state is keyed by the room-namespaced topic, not the bare
 	// channel the public Subscribe API takes.

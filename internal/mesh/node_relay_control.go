@@ -58,12 +58,15 @@ func (n *Node) handleRelayRequest(peer *peerConn, env gossip.Envelope) {
 			})
 			return
 		}
-		n.sendEnvelope(peer, n.signRelayAcceptEnvelope(gossip.Envelope{
+		if !n.sendRelayControlWithIdentity(peer, n.signRelayAcceptEnvelope(gossip.Envelope{
 			Type:         gossip.TypeRelayAccept,
 			RelaySession: env.RelaySession,
 			RelaySource:  env.RelayTarget,
 			RelayTarget:  env.RelaySource,
-		}))
+		})) {
+			n.closeRelaySession(session)
+			return
+		}
 		n.activateRelayedPeer(relayPeer)
 		return
 	}
@@ -80,7 +83,9 @@ func (n *Node) handleRelayRequest(peer *peerConn, env gossip.Envelope) {
 	n.relayRoutes[env.RelaySession] = relayRoute{initiator: env.RelaySource, target: env.RelayTarget}
 	n.mu.Unlock()
 	n.refreshSupernodeStatus()
-	n.sendEnvelope(targetPeer, env)
+	if !n.introduceRelayEndpoint(targetPeer, env.RelaySource) || !n.sendEnvelope(targetPeer, env) {
+		n.closeRelayRouteWithClose(env.RelaySession, env.RelaySource, env.RelayTarget)
+	}
 }
 
 func (n *Node) handleRelayAccept(peer *peerConn, env gossip.Envelope) {
@@ -128,7 +133,13 @@ func (n *Node) handleRelayAccept(peer *peerConn, env gossip.Envelope) {
 	targetPeer := n.peers[env.RelayTarget]
 	n.mu.RUnlock()
 	if targetPeer != nil {
-		n.sendEnvelope(targetPeer, env)
+		if !n.introduceRelayEndpoint(targetPeer, env.RelaySource) {
+			n.closeRelayRouteWithClose(env.RelaySession, env.RelaySource, env.RelayTarget)
+			return
+		}
+		if !n.sendEnvelope(targetPeer, env) {
+			n.closeRelayRouteWithClose(env.RelaySession, env.RelaySource, env.RelayTarget)
+		}
 	}
 }
 
@@ -375,6 +386,11 @@ func (n *Node) handleRelayClose(peer *peerConn, env gossip.Envelope) {
 		return
 	}
 	n.mu.Lock()
+	if session, ok := n.relayLocals[env.RelaySession]; ok && peer != nil && session.viaPeerID == peer.id {
+		if n.removeRelayedPeerLocked(session) {
+			n.pubsub.RemovePeer(session.remotePeerID)
+		}
+	}
 	delete(n.relayLocals, env.RelaySession)
 	delete(n.relayRoutes, env.RelaySession)
 	// The session was torn down explicitly — no expiry reply is owed.
@@ -550,19 +566,19 @@ func (n *Node) relayedPeerCountLocked() int {
 
 // registerRelayedPeerLocked adds a relayed peer to n.peers. The bool return
 // reports a refusal the caller must act on rather than treat the nil peer as
-// a silent no-op — CAPACITY (relayed fan-out at cap) or POLICY (allowlist):
+// a silent no-op — missing authenticated key, CAPACITY or POLICY (allowlist):
 // either way the relay session must be torn down, or a refused node would
 // half-ack the opener and leave it holding a session nobody answers.
 func (n *Node) registerRelayedPeerLocked(session relayLocalSession) (*peerConn, bool) {
 	if session.remotePeerID == "" || session.viaPeerID == "" || session.sessionID == "" {
 		return nil, false
 	}
-	if len(n.knownPeers[session.remotePeerID].noiseStatic) != 32 {
-		return nil, false
-	}
 	existing := n.peers[session.remotePeerID]
 	if existing != nil && !existing.relayed {
 		return nil, false
+	}
+	if len(n.knownPeers[session.remotePeerID].noiseStatic) != 32 {
+		return nil, true
 	}
 	// Allowlist gate — the same admission policy as the direct path
 	// (registerPeerFrom), so a strict node refuses an unlisted remote over
