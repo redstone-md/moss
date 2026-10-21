@@ -50,22 +50,35 @@ func (n *Node) openRelaySession(ctx context.Context, viaPeerID, targetPeerID str
 		n.mu.Unlock()
 		return "", errors.New("relay request send failed")
 	}
+	return n.waitRelaySession(ctx, sessionID, wait, timeout)
+}
+
+// A successful admission owns the session even if cancellation wakes its waiter.
+func (n *Node) waitRelaySession(ctx context.Context, sessionID string, wait <-chan struct{}, timeout time.Duration) (string, error) {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
+	var waitErr error
 	select {
 	case <-wait:
-		return sessionID, nil
 	case <-ctx.Done():
-		n.mu.Lock()
-		delete(n.relayLocals, sessionID)
-		n.mu.Unlock()
-		return "", ctx.Err()
+		waitErr = ctx.Err()
 	case <-timer.C:
-		n.mu.Lock()
-		delete(n.relayLocals, sessionID)
-		n.mu.Unlock()
-		return "", errors.New("relay session open timed out")
+		waitErr = errors.New("relay session open timed out")
 	}
+	n.mu.Lock()
+	// Admission can win the race with cancellation or a timeout. Its session
+	// is already carrying data; a late waiter must not delete that success.
+	session, exists := n.relayLocals[sessionID]
+	if exists && session.established {
+		n.mu.Unlock()
+		return sessionID, nil
+	}
+	delete(n.relayLocals, sessionID)
+	n.mu.Unlock()
+	if waitErr == nil {
+		waitErr = errors.New("relay session closed before establishment")
+	}
+	return "", waitErr
 }
 
 func (n *Node) RelaySend(sessionID string, data []byte) error {
