@@ -404,12 +404,12 @@ func (n *Node) handleKnownPeerEnvelope(peer *peerConn, env gossip.Envelope, forw
 	validSignedAnnouncement := false
 	trustCapabilities := false
 	if forwardType == gossip.TypePeerAnnounce {
-		validSignedAnnouncement = verifyPeerAnnouncementEnvelope(env)
+		validSignedAnnouncement = verifyPeerAnnouncementSignature(env, n.verifyAnnouncementSignature)
 		if validSignedAnnouncement {
 			n.rememberPeerSelfAnnouncement(peer, env)
 		}
 	} else {
-		trustCapabilities = verifySupernodeStatusEnvelope(env)
+		trustCapabilities = verifySupernodeStatusEnvelope(env, n.verifyAnnouncementSignature)
 		if !trustCapabilities {
 			if peer != nil {
 				n.scoring.PenalizeInvalid(peer.id)

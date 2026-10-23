@@ -45,10 +45,12 @@ type Node struct {
 	tracker     *bootstrap.Manager
 	pubsub      *gossip.Manager
 	cache       *gossip.Cache
-	scoring     *gossip.Engine
-	profiler    *nat.Profiler
-	portMapper  nat.PortMapper
-	listener    *transport.Listener
+	// Successful announcement signatures do not cache peer trust or policy.
+	announcementChecks announcementVerifier
+	scoring            *gossip.Engine
+	profiler           *nat.Profiler
+	portMapper         nat.PortMapper
+	listener           *transport.Listener
 	// udpListener is an atomic pointer for the same reason masqDialer is:
 	// readers are NOT wg-tracked. probePortMapping is deliberately untracked
 	// (bounded by its own STUN/mapping timeouts, not by Stop's wg.Wait), and
