@@ -163,12 +163,6 @@ func selectAdvertiseHost(addrs []net.Addr) (netip.Addr, bool) {
 	}
 }
 
-func selectAdvertiseHostForInterfaces(ifaces []net.Interface) (netip.Addr, bool) {
-	return selectAdvertiseHostForInterfacesFunc(ifaces, func(iface net.Interface) ([]net.Addr, error) {
-		return iface.Addrs()
-	})
-}
-
 func selectAdvertiseHostForInterfacesFunc(ifaces []net.Interface, addrFn func(net.Interface) ([]net.Addr, error)) (netip.Addr, bool) {
 	addrs := make([]net.Addr, 0, len(ifaces)*2)
 	for _, iface := range ifaces {

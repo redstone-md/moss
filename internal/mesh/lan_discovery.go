@@ -120,14 +120,6 @@ func lanDiscoveryInterfacesFrom(ifaces []net.Interface) []net.Interface {
 	return selected
 }
 
-func netInterfaces() []net.Interface {
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		return nil
-	}
-	return ifaces
-}
-
 func lanDiscoveryBroadcastAddrs(interfaces *interfaceSnapshot) []*net.UDPAddr {
 	ifaces := interfaces.multicast()
 	addrs := make([]*net.UDPAddr, 0, len(ifaces))

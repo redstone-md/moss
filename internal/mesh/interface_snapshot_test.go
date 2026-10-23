@@ -1,6 +1,7 @@
 package mesh
 
 import (
+	"encoding/json"
 	"net"
 	"testing"
 )
@@ -32,15 +33,24 @@ func TestLANBeaconReadsOneFreshInterfaceSnapshot(t *testing.T) {
 		if reads != operation+1 || addressReads != operation+1 {
 			t.Fatalf("operation %d: inventory reads=%d, address reads=%d; want one fresh read per operation", operation, reads, addressReads)
 		}
-		if len(targets.interfaces) != 1 || len(targets.broadcasts) != 1 {
-			t.Fatalf("incomplete beacon targets: %+v", targets)
-		}
-		want := "192.168.1.255"
-		if operation == 1 {
-			want = "192.168.2.255"
-		}
-		if got := targets.broadcasts[0].IP.String(); got != want {
-			t.Fatalf("broadcast=%s, want fresh %s", got, want)
-		}
+		assertFreshBeacon(t, targets, host, operation)
+	}
+}
+
+func assertFreshBeacon(t *testing.T, targets lanBeaconTargets, host string, operation int) {
+	t.Helper()
+	if len(targets.interfaces) != 1 || len(targets.broadcasts) != 1 {
+		t.Fatalf("incomplete beacon targets: %+v", targets)
+	}
+	var beacon lanBeacon
+	if err := json.Unmarshal(targets.payload, &beacon); err != nil || beacon.AdvertisedAddr != net.JoinHostPort(host, "0") {
+		t.Fatalf("advertised address did not refresh: %s err=%v", beacon.AdvertisedAddr, err)
+	}
+	want := "192.168.1.255"
+	if operation == 1 {
+		want = "192.168.2.255"
+	}
+	if got := targets.broadcasts[0].IP.String(); got != want {
+		t.Fatalf("broadcast=%s, want fresh %s", got, want)
 	}
 }
