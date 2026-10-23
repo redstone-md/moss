@@ -56,3 +56,8 @@ not remove network packets. A change in the measured component is not a claim
 about whole-Mosh CPU or bandwidth. Opportunity score: impact 2 × confidence 4
 / effort 3 = 2.67. Roll back the implementation commit to restore uncached
 verification through the same private boundary.
+
+Existing size exceptions: `node_types.go` and `node_peer_announce.go` already
+exceed the host's file/type/function limits. This change adds one private Node
+field and replaces two verifier calls; an unrelated Node/handler split is not
+part of this optimization. New modules and tests remain within the limits.

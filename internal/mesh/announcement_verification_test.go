@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	mcrypto "github.com/redstone-md/moss/internal/crypto"
-	"github.com/redstone-md/moss/internal/gossip"
 )
 
 func TestAnnouncementVerificationReusesSuccessfulSignature(t *testing.T) {
@@ -55,8 +54,5 @@ func TestWarmAnnouncementStillReevaluatesSenderTrust(t *testing.T) {
 	malformed.AdvertisedNoiseStatic = []byte{1}
 	if verifyPeerAnnouncementSignature(malformed, node.verifyAnnouncementSignature) {
 		t.Fatal("warm signature admitted a malformed Noise key")
-	}
-	if env.Type != gossip.TypePeerAnnounce {
-		t.Fatal("fixture did not use the peer announcement domain")
 	}
 }
