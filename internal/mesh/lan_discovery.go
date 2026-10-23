@@ -106,7 +106,7 @@ func lanDiscoveryReceiver(groupAddr *net.UDPAddr) (net.PacketConn, error) {
 }
 
 func lanDiscoveryInterfaces() []net.Interface {
-	return lanDiscoveryInterfacesFrom(netInterfaces())
+	return (&interfaceSnapshot{}).multicast()
 }
 
 func lanDiscoveryInterfacesFrom(ifaces []net.Interface) []net.Interface {
@@ -128,12 +128,12 @@ func netInterfaces() []net.Interface {
 	return ifaces
 }
 
-func lanDiscoveryBroadcastAddrs() []*net.UDPAddr {
-	ifaces := lanDiscoveryInterfaces()
+func lanDiscoveryBroadcastAddrs(interfaces *interfaceSnapshot) []*net.UDPAddr {
+	ifaces := interfaces.multicast()
 	addrs := make([]*net.UDPAddr, 0, len(ifaces))
 	seen := make(map[string]struct{})
 	for _, iface := range ifaces {
-		ifaceAddrs, err := iface.Addrs()
+		ifaceAddrs, err := interfaces.addrs(iface)
 		if err != nil {
 			continue
 		}
@@ -193,6 +193,10 @@ func (n *Node) lanDiscoveryReadLoop(ctx context.Context, conn net.PacketConn) {
 }
 
 func (n *Node) lanDiscoveryPayload() ([]byte, error) {
+	return n.lanDiscoveryPayloadWithInterfaces(&interfaceSnapshot{})
+}
+
+func (n *Node) lanDiscoveryPayloadWithInterfaces(interfaces *interfaceSnapshot) ([]byte, error) {
 	profile := n.natProfile.Load().(nat.Profile)
 	return json.Marshal(lanBeacon{
 		// LAN discovery is substrate connectivity: match on networkID so nodes
@@ -200,7 +204,7 @@ func (n *Node) lanDiscoveryPayload() ([]byte, error) {
 		MeshID:          n.networkID,
 		PeerID:          n.localPeerID(),
 		ListenPort:      n.listenPort,
-		AdvertisedAddr:  n.advertisedListenAddr(),
+		AdvertisedAddr:  n.advertisedListenAddrWithInterfaces(interfaces),
 		NATType:         string(profile.Type),
 		PublicReachable: profile.PublicReachable,
 		RelayCapable:    n.supernodeReady(profile),
@@ -211,11 +215,11 @@ func (n *Node) sendLANBeacon(conn *ipv4.PacketConn, groupAddr *net.UDPAddr) {
 	if conn == nil || groupAddr == nil {
 		return
 	}
-	payload, err := n.lanDiscoveryPayload()
+	targets, err := n.prepareLANBeacon(&interfaceSnapshot{})
 	if err != nil {
 		return
 	}
-	ifaces := lanDiscoveryInterfaces()
+	payload, ifaces := targets.payload, targets.interfaces
 	if len(ifaces) == 0 {
 		_, _ = conn.WriteTo(payload, nil, groupAddr)
 		return
@@ -226,7 +230,7 @@ func (n *Node) sendLANBeacon(conn *ipv4.PacketConn, groupAddr *net.UDPAddr) {
 		}
 		_, _ = conn.WriteTo(payload, nil, groupAddr)
 	}
-	for _, broadcast := range lanDiscoveryBroadcastAddrs() {
+	for _, broadcast := range targets.broadcasts {
 		broadcast.Port = groupAddr.Port
 		_, _ = conn.WriteTo(payload, nil, broadcast)
 	}
