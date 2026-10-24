@@ -70,8 +70,8 @@ func (n *Node) dialExplicitTargets() {
 }
 
 // dialExplicitTarget runs one connection attempt: the same direct → relay
-// pipeline as dialKnownPeer. A relayed connection is enough — promoteRelayPeers
-// keeps probing it for a direct upgrade.
+// pipeline as dialKnownPeer, then identity resolution for KnownPeers rooms.
+// A relayed connection is enough — promoteRelayPeers probes direct upgrades.
 func (n *Node) dialExplicitTarget(ctx context.Context, peerID string) {
 	n.mu.RLock()
 	_, connected := n.peers[peerID]
@@ -82,6 +82,9 @@ func (n *Node) dialExplicitTarget(ctx context.Context, peerID string) {
 	if !n.tryDirectContext(ctx, peerID, n.config.HandshakeTimeout(), false) && ctx.Err() == nil &&
 		n.establishedRelaySession(peerID) == "" {
 		_, _ = n.openRelaySessionAny(ctx, peerID, n.config.HandshakeTimeout())
+		if ctx.Err() == nil && n.roomNeedsPeerIdentity(peerID) {
+			_, _ = n.resolveRouteContext(ctx, peerID)
+		}
 	}
 }
 

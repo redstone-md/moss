@@ -774,7 +774,7 @@ func (n *Node) reachPeerViaHint(ctx context.Context, peerID string, hint reachab
 		if via == peerID {
 			return true // the "attachment" is the peer itself; we just connected
 		}
-		if _, err := n.OpenRelaySession(via, peerID, n.config.HandshakeTimeout()); err == nil {
+		if _, err := n.openRelaySession(ctx, via, peerID, n.config.HandshakeTimeout()); err == nil {
 			return true
 		}
 	}
@@ -833,6 +833,16 @@ type Route struct {
 // a relay, as a relayed peerConn. Callers that get a relayed Route use
 // RelaySendTo via ViaPeerID; direct routes can use the stream API.
 func (n *Node) ResolveRoute(peerID string) (Route, error) {
+	n.mu.RLock()
+	ctx := n.rootCtx
+	n.mu.RUnlock()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return n.resolveRouteContext(ctx, peerID)
+}
+
+func (n *Node) resolveRouteContext(ctx context.Context, peerID string) (Route, error) {
 	if peer := n.peerByID(peerID); peer != nil {
 		if !peer.relayed {
 			return Route{}, nil
@@ -844,12 +854,6 @@ func (n *Node) ResolveRoute(peerID string) (Route, error) {
 	id, ok := overlay.IDFromHex(peerID)
 	if !ok {
 		return Route{}, errors.New("mesh: peer id must be 64 hex characters")
-	}
-	// The loop is wg-tracked and context-bounded; on an unstarted node
-	// rootCtx is nil and WithTimeout would panic — fall back to Background.
-	ctx := n.rootCtx
-	if ctx == nil {
-		ctx = context.Background()
 	}
 	lookupCtx, cancel := withTimeout(ctx, 20*time.Second)
 	defer cancel()

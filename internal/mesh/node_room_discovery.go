@@ -70,6 +70,19 @@ func (n *Node) topicDiscoveryAutomatic(topic string) bool {
 	return n.topicDiscoveryPeersLocked(topic) == nil
 }
 
+// Only opted-in recipients replace topic rendezvous with identity lookup.
+// The existing explicit-target worker owns its retry spacing and cancellation.
+func (n *Node) roomNeedsPeerIdentity(peerID string) bool {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	for _, peers := range n.roomDiscovery {
+		if _, known := peers[peerID]; known {
+			return true
+		}
+	}
+	return false
+}
+
 func discoveryPeerSet(mode RoomPeerDiscovery, ids []string, self string) (map[string]struct{}, bool) {
 	if mode != RoomDiscoveryAutomatic && mode != RoomDiscoveryKnownPeers ||
 		(mode == RoomDiscoveryKnownPeers) != (len(ids) > 0) {

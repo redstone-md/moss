@@ -151,7 +151,10 @@ unjoined room return an error without replacing the previous policy.
 
 KnownPeers skips that room's topic rendezvous/provider publication and
 speculative GRAFTs to unrelated peers. The host must retain `Moss_ConnectToPeer`
-requests for the full recipient set. Substrate identity discovery, relays and
+requests for the full recipient set. After direct/relay attempts fail, that
+existing target worker resolves opted-in recipients by their overlay identity
+record, with the same cancellation and retry backoff. Unconfigured targets
+retain their existing behavior. Substrate identity discovery, relays and
 incoming subscriptions/messages continue. These are hints, never an ACL or an
 authorization check. Use Automatic when the full recipient set is unknown.
 
