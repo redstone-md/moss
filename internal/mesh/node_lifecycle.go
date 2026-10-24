@@ -92,6 +92,7 @@ func NewNodeWithIdentity(meshID string, psk []byte, cfg Config, identity *mcrypt
 		psk:              append([]byte(nil), psk...),
 		roomKey:          deriveRoomKey(meshID, psk),
 		subChannels:      make(map[string]subscription),
+		overlayRepublish: make(chan struct{}, 1),
 		rooms:            make(map[string][]byte),
 		config:           cfg,
 		infoHash:         infoHash,

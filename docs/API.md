@@ -136,6 +136,32 @@ anything still arriving for it is dropped rather than delivered. Callers
 should `Moss_UnsubscribeRoom` first if they want the mesh told; this only
 forgets the key. The node's own room cannot be left this way.
 
+### `Moss_SetRoomPeerDiscovery` (optional)
+
+```c
+int32_t Moss_SetRoomPeerDiscovery(MossHandle handle, const char* mesh_id,
+                                int32_t mode, const char* peer_ids_json);
+```
+
+Replaces discovery hints for a held room; empty `mesh_id` selects the default
+room. Mode `0` (Automatic) requires `"[]"` and preserves ordinary discovery.
+Mode `1` (KnownPeers) requires a nonempty JSON array of 64-digit hexadecimal
+peer IDs, excluding this node. Invalid mode, IDs, null/malformed JSON or an
+unjoined room return an error without replacing the previous policy.
+
+KnownPeers skips that room's topic rendezvous/provider publication and
+speculative GRAFTs to unrelated peers. The host must retain `Moss_ConnectToPeer`
+requests for the full recipient set. Substrate identity discovery, relays and
+incoming subscriptions/messages continue. These are hints, never an ACL or an
+authorization check. Use Automatic when the full recipient set is unknown.
+
+Policies are process-local and forgotten on LeaveRoom. Returning to Automatic
+wakes the existing overlay publisher immediately; an already-running bounded
+publication can finish first. In-flight work and old provider records can remain
+until completion/expiry. Older libraries lack this symbol: load it optionally
+and retain Automatic when absent. The Go API is `SetRoomPeerDiscovery` with
+`RoomDiscoveryAutomatic` / `RoomDiscoveryKnownPeers`.
+
 ### `Moss_SubscribeRoom`
 
 ```c

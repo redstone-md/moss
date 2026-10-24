@@ -602,19 +602,17 @@ func (n *Node) overlayPublishLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			n.republishOverlayRecords(ctx, n.overlaySeedFromKnownPeers())
-			n.mu.RLock()
-			store := n.overlayStore
-			n.mu.RUnlock()
-			if store != nil {
-				store.Expire(time.Now())
-			}
-			// Safety net for peers that connected after the last OnStream/
-			// SetStreamUnreliable registration: their inbound streams would
-			// sit undrained until someone re-registered. One sweep per
-			// republish tick (30s) closes that window.
-			n.ensureStreamReaders()
+		case <-n.overlayRepublish:
 		}
+		n.republishOverlayRecords(ctx, n.overlaySeedFromKnownPeers())
+		n.mu.RLock()
+		store := n.overlayStore
+		n.mu.RUnlock()
+		if store != nil {
+			store.Expire(time.Now())
+		}
+		// Also repair readers registered before their peers connected.
+		n.ensureStreamReaders()
 	}
 }
 
@@ -639,6 +637,9 @@ func (n *Node) republishOverlayRecords(ctx context.Context, seed overlaySeedTall
 	topics := n.pubsub.SnapshotLocal()
 	topicKeys := make([]string, 0, len(topics))
 	for _, topic := range topics {
+		if !n.topicDiscoveryAutomatic(topic) {
+			continue
+		}
 		if pubCtx.Err() != nil {
 			break
 		}
@@ -646,7 +647,7 @@ func (n *Node) republishOverlayRecords(ctx context.Context, seed overlaySeedTall
 		topicKeys = append(topicKeys, key.String()[:16])
 		stored += n.overlayPublish(pubCtx, key, hint)
 	}
-	n.reportOverlayPublish(stored, len(topics), topicKeys, started, seed)
+	n.reportOverlayPublish(stored, len(topicKeys), topicKeys, started, seed)
 	return stored
 }
 
@@ -668,6 +669,9 @@ const overlayTopicDiscoveryEvery = 15 * time.Second
 //
 // It never blocks the caller: maintainTopicMesh runs on the maintenance tick.
 func (n *Node) maybeDiscoverTopicPeers(topic string) {
+	if !n.topicDiscoveryAutomatic(topic) {
+		return
+	}
 	// Confirmed members only. ensureTopicMeshMinimum runs earlier in the same
 	// maintenance pass and, with nobody known to be on the topic, grafts up to D
 	// peers picked at random and marks them in-mesh before any of them answers.
@@ -708,6 +712,9 @@ func (n *Node) maybeDiscoverTopicPeers(topic string) {
 // makes each of them reachable, then re-runs mesh upkeep so the fresh peers can
 // be grafted.
 func (n *Node) discoverTopicPeers(ctx context.Context, topic string) {
+	if !n.topicDiscoveryAutomatic(topic) {
+		return
+	}
 	started := time.Now()
 	// The same derivation the publish side uses, reported alongside the result
 	// so a lookup and a store can be compared rather than assumed to agree.
@@ -721,7 +728,7 @@ func (n *Node) discoverTopicPeers(ctx context.Context, topic string) {
 	}
 	reached := 0
 	for peerID, hint := range found {
-		if lookupCtx.Err() != nil {
+		if lookupCtx.Err() != nil || !n.topicDiscoveryAutomatic(topic) {
 			break
 		}
 		if n.peerByID(peerID) != nil {

@@ -503,7 +503,7 @@ func (n *Node) markMeshGrafted(peer *peerConn, channel string, now time.Time) {
 func (n *Node) meshGraftEligible(peerID, channel string, now time.Time) bool {
 	n.mu.RLock()
 	peer := n.peers[peerID]
-	if peer == nil {
+	if peer == nil || !n.topicAllowsPeerLocked(channel, peerID) {
 		n.mu.RUnlock()
 		return false
 	}
@@ -692,6 +692,7 @@ func (n *Node) meshCandidateRanking(channel string) []meshCandidateSnapshot {
 	for i, peerID := range ids {
 		snap[i] = snapshotMeshCandidate(n.peers[peerID], now)
 		snap[i].id = peerID
+		snap[i].blocked = snap[i].blocked || !n.topicAllowsPeerLocked(channel, peerID)
 	}
 	n.mu.RUnlock()
 	for i := range snap {

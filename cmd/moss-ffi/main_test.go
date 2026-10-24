@@ -79,6 +79,7 @@ func TestBuildSharedLibrary(t *testing.T) {
 	}
 	for _, symbol := range []string{
 		"Moss_JoinRoom",
+		"Moss_SetRoomPeerDiscovery",
 		"Moss_LeaveRoom",
 		"Moss_SubscribeRoom",
 		"Moss_UnsubscribeRoom",
@@ -165,6 +166,17 @@ int main(void) {
     return 2;
   }
   expect_code("Moss_Start", Moss_Start(handle), 0);
+
+  /* Room discovery is optional and validates without changing admission. */
+  const char* peers = "[\"abababababababababababababababababababababababababababababababab\"]";
+  expect_code("Discovery nil room", Moss_SetRoomPeerDiscovery(handle, NULL, 1, peers), -8);
+  expect_code("Discovery nil json", Moss_SetRoomPeerDiscovery(handle, "", 1, NULL), -8);
+  expect_code("Discovery malformed", Moss_SetRoomPeerDiscovery(handle, "", 1, "bad"), -8);
+  expect_code("Discovery null", Moss_SetRoomPeerDiscovery(handle, "", 0, "null"), -8);
+  expect_code("Discovery empty known", Moss_SetRoomPeerDiscovery(handle, "", 1, "[]"), -8);
+  expect_code("Discovery invalid mode", Moss_SetRoomPeerDiscovery(handle, "", 2, peers), -8);
+  expect_code("Discovery known", Moss_SetRoomPeerDiscovery(handle, "", 1, peers), 0);
+  expect_code("Discovery reset", Moss_SetRoomPeerDiscovery(handle, "", 0, "[]"), 0);
 
   uint8_t one_byte = 'x';
 

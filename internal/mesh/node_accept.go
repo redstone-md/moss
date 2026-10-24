@@ -981,8 +981,7 @@ func (n *Node) evictPeerLocked(victim *peerConn) {
 	}
 	for sessionID, route := range n.relayRoutes {
 		if route.initiator == victim.id || route.target == victim.id {
-			delete(n.relayRoutes, sessionID)
-			n.relaySessions.Release(sessionID)
+			n.retireRelayRouteLocked(sessionID, time.Now())
 		}
 	}
 	if info, ok := n.knownPeers[victim.id]; ok {

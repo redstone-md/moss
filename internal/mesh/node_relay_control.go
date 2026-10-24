@@ -263,26 +263,14 @@ func (n *Node) pruneStaleRelayRoutes() {
 	}
 	n.mu.Lock()
 	now := time.Now()
-	if n.relayRouteExpiry == nil {
-		n.relayRouteExpiry = make(map[string]time.Time, len(stale))
-	}
+	retired := 0
 	for _, sessionID := range stale {
-		delete(n.relayRoutes, sessionID)
-		if len(n.relayRouteExpiry) >= relayRouteExpiryCap {
-			// At the cap, drop the oldest tombstone: the scan runs only
-			// on this ~1s maintenance path, never the relay hot path.
-			oldestID, oldest := "", time.Time{}
-			for id, ts := range n.relayRouteExpiry {
-				if oldestID == "" || ts.Before(oldest) {
-					oldestID, oldest = id, ts
-				}
-			}
-			delete(n.relayRouteExpiry, oldestID)
+		if !n.relaySessions.Active(sessionID) && n.retireRelayRouteLocked(sessionID, now) {
+			retired++
 		}
-		n.relayRouteExpiry[sessionID] = now
 	}
 	n.mu.Unlock()
-	for range stale {
+	for range retired {
 		n.countInbound("__relay_route_expired__")
 	}
 	n.refreshSupernodeStatus()
@@ -295,8 +283,8 @@ func (n *Node) pruneStaleRelayRoutes() {
 const relayRouteExpiryCap = 1024
 
 // replyRelayRouteExpired answers the first RelayData a source sends for a
-// route the TTL GC reaped: pruneStaleRelayRoutes left a tombstone, and the
-// close consumes it one-shot so a post-expiry burst costs a single reply.
+// route retired after expiry or disconnection: the tombstone records that the
+// close is one-shot, so a stale burst costs a single reply.
 // Without it every following payload is silently dropped and the origin
 // never learns the relay stopped carrying it. The close mirrors the Data it
 // answers, so the source's handleRelayClose tears down its relayLocals and
