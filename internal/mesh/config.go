@@ -71,9 +71,11 @@ type Config struct {
 	MaxPeers            int      `json:"max_peers"`
 	StaticPeers         []string `json:"static_peers"`
 	BootstrapTimeoutSec int      `json:"bootstrap_timeout_sec"`
-	LANDiscoveryEnabled bool     `json:"lan_discovery_enabled"`
-	LANDiscoveryPort    int      `json:"lan_discovery_port"`
-	LANDiscoveryMS      int      `json:"lan_discovery_ms"`
+	// ExplicitRetryMaxSec opts into exponential offline-target retries (0 keeps fixed gaps).
+	ExplicitRetryMaxSec int  `json:"explicit_retry_max_sec"`
+	LANDiscoveryEnabled bool `json:"lan_discovery_enabled"`
+	LANDiscoveryPort    int  `json:"lan_discovery_port"`
+	LANDiscoveryMS      int  `json:"lan_discovery_ms"`
 	// BindInterface forces outbound UDP packets through a specific NIC,
 	// overriding the host routing table. Accepts either an interface name
 	// ("Ethernet 2", "en0") or a numeric index ("3"). Empty value disables

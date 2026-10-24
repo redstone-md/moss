@@ -9,6 +9,14 @@ Use this together with [docs/API.md](./API.md):
 
 ## What You Ship
 
+For private rooms whose complete recipients are authenticated by the host,
+the optional `Moss_SetRoomPeerDiscovery` API can avoid redundant topic discovery.
+Keep explicit peer connection requests and update the hints when recipients
+change. Unknown/incomplete membership must use Automatic. Detect the symbol
+optionally so older packaged runtimes preserve their existing behavior. See
+the [API contract](API.md#moss_setroompeerdiscovery-optional) for lifecycle and
+validation; this setting does not authorize members or alter the wire protocol.
+
 `cmd/moss-ffi` builds a native shared library plus a generated C header:
 
 ```bash
@@ -121,6 +129,12 @@ Do not do heavy blocking work directly inside callbacks.
 - keep your app config in your own native format
 - render only the Moss-relevant subset to JSON
 - pass that JSON into `Moss_Init`
+
+Hosts maintaining many offline `Moss_ConnectToPeer` targets may set
+`"explicit_retry_max_sec": 30` to reduce background direct/relay work. Omit it
+to retain fixed retry gaps. Both policies coalesce overlapping registrations;
+new requests wake quiet targets and admitted address/key changes supersede
+obsolete attempts. See `API.md` for timing and shutdown semantics.
 
 Example:
 

@@ -40,7 +40,7 @@ func TestOverlayTableGrowsWhenARoutablePeerIsLearned(t *testing.T) {
 	}
 
 	env := announcementFrom(announcer, "203.0.113.7:4001", nat.TypePublic, true, true)
-	node.handleKnownPeerEnvelope(nil, env, gossip.TypeSupernodeAnnounce, true)
+	node.handleSupernodeStatus(&peerConn{id: announcer.localPeerID()}, env, env.AdvertisedRelayCapable)
 
 	if got := node.overlayTable.Len(); got != 1 {
 		t.Fatalf("table holds %d contacts after learning a routable peer, want 1 "+
@@ -62,7 +62,7 @@ func TestOverlayTableIgnoresAPeerThatCannotBeDialed(t *testing.T) {
 	}
 
 	env := announcementFrom(announcer, "203.0.113.9:4001", nat.TypeSymmetric, false, false)
-	node.handleKnownPeerEnvelope(nil, env, gossip.TypeSupernodeAnnounce, true)
+	node.handleSupernodeStatus(&peerConn{id: announcer.localPeerID()}, env, env.AdvertisedRelayCapable)
 
 	if got := node.overlayTable.Len(); got != 0 {
 		t.Fatalf("table holds %d contacts, want 0 — a NAT'd peer is not a hop", got)

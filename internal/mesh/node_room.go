@@ -232,6 +232,7 @@ func (n *Node) leaveRoom(meshID string) bool {
 	n.mu.Lock()
 	_, held := n.rooms[meshID]
 	delete(n.rooms, meshID)
+	delete(n.roomDiscovery, meshID)
 	n.mu.Unlock()
 	if held {
 		n.dropRoomAEAD(meshID)
