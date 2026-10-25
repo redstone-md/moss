@@ -48,7 +48,9 @@ type Config struct {
 	MaxPeers            int      `json:"max_peers,omitempty"`
 	StaticPeers         []string `json:"static_peers,omitempty"`
 	BootstrapTimeoutSec int      `json:"bootstrap_timeout_sec,omitempty"`
-	LANDiscoveryEnabled *bool    `json:"lan_discovery_enabled,omitempty"`
+	// ExplicitRetryMaxSec enables exponential explicit-target retry gaps; zero keeps fixed gaps.
+	ExplicitRetryMaxSec int   `json:"explicit_retry_max_sec,omitempty"`
+	LANDiscoveryEnabled *bool `json:"lan_discovery_enabled,omitempty"`
 
 	RelayMaxBandwidthKBPS int   `json:"relay_max_bandwidth_kbps,omitempty"`
 	RelayMaxSessions      int   `json:"relay_max_sessions,omitempty"`
@@ -160,6 +162,7 @@ func (c Config) toMeshConfig() mesh.Config {
 	if c.BootstrapTimeoutSec > 0 {
 		base.BootstrapTimeoutSec = c.BootstrapTimeoutSec
 	}
+	base.ExplicitRetryMaxSec = c.ExplicitRetryMaxSec
 	if c.LANDiscoveryEnabled != nil {
 		base.LANDiscoveryEnabled = *c.LANDiscoveryEnabled
 	}

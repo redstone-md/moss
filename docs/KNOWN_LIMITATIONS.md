@@ -10,6 +10,12 @@ This document exists to keep repository claims aligned with current runtime beha
 
 ### Reconnect and redial timing
 
+- Explicit `ConnectToPeer` targets have one in-flight direct/relay attempt.
+  Their default fixed retry gap starts at completion; `explicit_retry_max_sec`
+  opts into exponential failure spacing. New registrations bypass a quiet
+  cooldown and admitted route changes replace obsolete attempts. Ordinary
+  discovery below has its own policy.
+
 - After a failed dial, a peer is retried with exponential backoff (base
   `security.handshake_timeout_sec`, default 5s, doubling per consecutive
   failure, capped at 5 minutes) spaced across maintenance passes every ~3s.

@@ -418,8 +418,14 @@ func (n *Node) bootstrapSeedTargets() []string {
 
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	if n.directPeerCountLocked() >= n.config.MaxPeers {
+	limit := n.discoveryBatchLimitLocked()
+	if limit == 0 {
 		return nil
+	}
+	budget := n.discoveryDialBudgetLocked()
+	static := make(map[string]bool, len(n.config.StaticPeers))
+	for _, addr := range n.config.StaticPeers {
+		static[addr] = true
 	}
 
 	targets := make([]string, 0, len(n.trackerSeeds))
@@ -432,6 +438,9 @@ func (n *Node) bootstrapSeedTargets() []string {
 			delete(n.trackerSeeds, addr)
 			delete(n.bootstrapDials, addr)
 			delete(n.bootstrapDialFailures, addr)
+			continue
+		}
+		if budget <= 0 && !static[addr] {
 			continue
 		}
 		if addr == localAddr || hasPeerAddrLocked(n.peers, addr) {
@@ -469,17 +478,18 @@ func (n *Node) bootstrapSeedTargets() []string {
 	// One host, one seed per pass: the sorted list keeps the first addr of
 	// each host, so a 41-port litter takes a single slot.
 	targets = firstAddrPerHost(targets)
-	limit := n.config.GossipSub.DOut
-	if limit <= 0 {
-		limit = 2
-	}
-	if len(targets) < limit {
-		limit = len(targets)
-	}
-	selected := append([]string(nil), targets[:limit]...)
-	for _, addr := range selected {
+	selected := make([]string, 0, min(len(targets), limit))
+	for _, addr := range targets {
+		if budget <= 0 && !static[addr] {
+			continue
+		}
+		selected = append(selected, addr)
+		budget--
 		n.bootstrapDials[addr] = now
 		n.hostDials[dialHost(addr)] = now
+		if len(selected) == limit {
+			break
+		}
 	}
 	return selected
 }

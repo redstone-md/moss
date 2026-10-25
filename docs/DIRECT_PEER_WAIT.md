@@ -9,11 +9,18 @@ the peer table with a fresh timer every 25 ms. Sampler totals disagree with OS
 CPU counters, so this identifies a caller without predicting whole-Mosh gains.
 Evidence: [run 40145525630](https://github.com/redstone-md/mosh-flutter/actions/runs/40145525630).
 
-This experiment replaces only that readiness polling. It starts from main
-`8eb416d`; existing Mosh-specific changes in PR #29 remain separate. The owner
-explicitly authorized the Moss-source experiment after the Mosh scope rule
-blocked it. No public API, wire/storage format, dependency, discovery policy,
-retry interval, authorization or handshake behavior changes.
+This experiment replaces only that readiness polling. It is stacked on PR #29,
+Mosh's current `979a634`, and leaves that PR's discovery/cancellation changes
+intact. The owner explicitly authorized the Moss-source experiment after the
+Mosh scope rule blocked it. No public API, wire/storage format, dependency,
+discovery policy, retry interval, authorization or handshake behavior changes.
+
+A separate twenty-pair control on older main `8eb416d` does not establish median
+CPU savings and increases allocations: its wait uses reusable `time.Sleep`,
+whereas #29's context-aware wait creates a fresh `time.After` per poll. That
+control is not an acceptable allocation optimization for the older path. Stacking
+this PR on the actual context-aware baseline avoids that intermediate regression.
+Results for the two baselines must not be combined into one claimed gain.
 
 ## Plan
 

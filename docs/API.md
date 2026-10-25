@@ -136,6 +136,35 @@ anything still arriving for it is dropped rather than delivered. Callers
 should `Moss_UnsubscribeRoom` first if they want the mesh told; this only
 forgets the key. The node's own room cannot be left this way.
 
+### `Moss_SetRoomPeerDiscovery` (optional)
+
+```c
+int32_t Moss_SetRoomPeerDiscovery(MossHandle handle, const char* mesh_id,
+                                int32_t mode, const char* peer_ids_json);
+```
+
+Replaces discovery hints for a held room; empty `mesh_id` selects the default
+room. Mode `0` (Automatic) requires `"[]"` and preserves ordinary discovery.
+Mode `1` (KnownPeers) requires a nonempty JSON array of 64-digit hexadecimal
+peer IDs, excluding this node. Invalid mode, IDs, null/malformed JSON or an
+unjoined room return an error without replacing the previous policy.
+
+KnownPeers skips that room's topic rendezvous/provider publication and
+speculative GRAFTs to unrelated peers. The host must retain `Moss_ConnectToPeer`
+requests for the full recipient set. After direct/relay attempts fail, that
+existing target worker resolves opted-in recipients by their overlay identity
+record, with the same cancellation and retry backoff. Unconfigured targets
+retain their existing behavior. Substrate identity discovery, relays and
+incoming subscriptions/messages continue. These are hints, never an ACL or an
+authorization check. Use Automatic when the full recipient set is unknown.
+
+Policies are process-local and forgotten on LeaveRoom. Returning to Automatic
+wakes the existing overlay publisher immediately; an already-running bounded
+publication can finish first. In-flight work and old provider records can remain
+until completion/expiry. Older libraries lack this symbol: load it optionally
+and retain Automatic when absent. The Go API is `SetRoomPeerDiscovery` with
+`RoomDiscoveryAutomatic` / `RoomDiscoveryKnownPeers`.
+
 ### `Moss_SubscribeRoom`
 
 ```c
@@ -181,6 +210,19 @@ key (64 chars), using known addresses for it — worth calling when reaching
 one specific peer matters (e.g. a DM counterpart on the room-blind
 substrate, which organic discovery would only ever reach by chance). The
 registration survives disconnects and is dropped on `Moss_Stop`.
+
+Repeated registrations share one in-flight direct-then-relay attempt. A caller
+can wake an idle target immediately; a newly admitted address or Noise key
+supersedes an obsolete attempt. Stop cancels and joins explicit workers.
+
+The JSON/Go setting `explicit_retry_max_sec` / `ExplicitRetryMaxSec` optionally
+enables exponential gaps after complete failures. Omitted or nonpositive keeps
+the fixed gap `max(handshake timeout, heartbeat, 1s)`. Positive values cap the
+growing gap, measured from completion, at the requested seconds (at most five
+minutes and never below that base). Success clears failure history. Coalescing
+applies to both policies: default retry intervals are preserved, while the old
+overlapping start schedule is deliberately removed. This setting affects only
+registered explicit targets, not address-based Connect or established streams.
 
 ### `Moss_SendToPeer`
 

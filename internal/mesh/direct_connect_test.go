@@ -69,34 +69,30 @@ func TestPreferredKnownPeerAddrKeepsPublicEndpointOverPrivateAnnounce(t *testing
 }
 
 func TestHandleKnownPeerEnvelopeDoesNotOverwritePublicAddrWithPrivateAnnounce(t *testing.T) {
-	cfg := DefaultConfig()
-	cfg.Trackers = nil
-	node, err := NewNode("mesh-known-peer", nil, cfg)
-	if err != nil {
-		t.Fatalf("NewNode failed: %v", err)
-	}
+	node, origin, _ := peerExchangeFixture(t, 0)
+	peerID := origin.localPeerID()
 
 	node.mu.Lock()
-	node.knownPeers["peer-1"] = knownPeer{
-		id:              "peer-1",
+	node.knownPeers[peerID] = knownPeer{
+		id:              peerID,
 		addr:            "185.242.25.75:24598",
 		natType:         nat.TypeRestrictedCone,
 		publicReachable: false,
 	}
 	node.mu.Unlock()
 
-	node.handleKnownPeerEnvelope(&peerConn{}, gossip.Envelope{
-		AdvertisedPeerID:       "peer-1",
-		AdvertisedAddr:         "172.30.1.2:41035",
-		AdvertisedNATType:      string(nat.TypeRestrictedCone),
-		AdvertisedReachable:    false,
-		AdvertisedRelayCapable: false,
-	}, gossip.TypePeerAnnounce, false)
+	env := origin.peerAnnouncementEnvelope(knownPeer{
+		id: peerID, addr: "172.30.1.2:41035", noiseStatic: origin.identity.NoiseStaticPublic(),
+	})
+	node.handleKnownPeerEnvelope(&peerConn{id: "forwarder"}, env, gossip.TypePeerAnnounce)
 
 	node.mu.RLock()
 	defer node.mu.RUnlock()
-	if got := node.knownPeers["peer-1"].addr; got != "185.242.25.75:24598" {
+	if got := node.knownPeers[peerID].addr; got != "185.242.25.75:24598" {
 		t.Fatalf("expected public known peer addr to be preserved, got %q", got)
+	}
+	if !equalBytes(node.knownPeers[peerID].noiseStatic, env.AdvertisedNoiseStatic) {
+		t.Fatal("signed claim was rejected before testing address preservation")
 	}
 }
 
@@ -124,7 +120,7 @@ func TestHandleKnownPeerEnvelopeUpdatesDirectPeerAddrOnSelfAnnouncedPublicChange
 		AdvertisedNATType:      string(nat.TypeRestrictedCone),
 		AdvertisedReachable:    false,
 		AdvertisedRelayCapable: false,
-	}, gossip.TypePeerAnnounce, false)
+	}, gossip.TypePeerAnnounce)
 
 	node.mu.RLock()
 	defer node.mu.RUnlock()
@@ -155,7 +151,7 @@ func TestHandleKnownPeerEnvelopeRefreshesStalePrivateDirectAddrOnSelfAnnounce(t 
 		AdvertisedNATType:      string(nat.TypeUnknown),
 		AdvertisedReachable:    false,
 		AdvertisedRelayCapable: false,
-	}, gossip.TypePeerAnnounce, false)
+	}, gossip.TypePeerAnnounce)
 
 	node.mu.RLock()
 	defer node.mu.RUnlock()
@@ -196,7 +192,7 @@ func TestHandleKnownPeerEnvelopeRetainsDialCooldownOnEndpointChange(t *testing.T
 		AdvertisedNATType:      string(nat.TypeRestrictedCone),
 		AdvertisedReachable:    false,
 		AdvertisedRelayCapable: false,
-	}, gossip.TypePeerAnnounce, false)
+	}, gossip.TypePeerAnnounce)
 
 	node.mu.RLock()
 	gotAddr := node.knownPeers["peer-1"].addr

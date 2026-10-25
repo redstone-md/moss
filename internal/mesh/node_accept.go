@@ -468,14 +468,10 @@ func (n *Node) kickTargets(peers []string) []string {
 	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	if n.directPeerCountLocked() >= n.config.MaxPeers {
-		// Full before any attempt: nothing to dial and nothing to charge —
-		// a capacity refusal is not a host failure.
-		return nil
-	}
-	limit := n.config.GossipSub.DOut
+	limit := n.discoveryDialBudgetLocked()
 	if limit <= 0 {
-		limit = 2
+		// No discovery demand or capacity: do not charge a host failure.
+		return nil
 	}
 	kicked := make([]string, 0, min(len(peers), limit))
 	seenHosts := make(map[string]struct{}, limit)
@@ -636,6 +632,9 @@ func (n *Node) clientHandshakeAndRegister(ctx context.Context, conn net.Conn, ad
 	}()
 	hsCtx, cancel := withTimeout(ctx, n.config.HandshakeTimeout())
 	defer cancel()
+	// A superseded explicit target must release a blocked handshake immediately.
+	finished := make(chan struct{})
+	stopClosing := context.AfterFunc(hsCtx, func() { conn.Close(); close(finished) })
 	session, err := transport.ClientHandshake(hsCtx, conn, transport.HandshakeConfig{
 		MeshID:       n.networkID,
 		PSK:          n.transportHandshakePSK(),
@@ -643,6 +642,13 @@ func (n *Node) clientHandshakeAndRegister(ctx context.Context, conn net.Conn, ad
 		RemoteStatic: remoteStatic,
 		Buffers:      transportBufferConfig(n.config.Transport),
 	})
+	if !stopClosing() {
+		<-finished
+	}
+	if err == nil && hsCtx.Err() != nil {
+		session.Close()
+		err = hsCtx.Err()
+	}
 	if err != nil {
 		n.emitDial(addr, "", "handshake", err, time.Since(started))
 		_ = conn.Close()
@@ -816,6 +822,7 @@ func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origi
 		predictionObservations: appendObservation(current.predictionObservations, knownAddr),
 		noiseStatic:            append([]byte(nil), remoteStatic[:]...),
 	}
+	n.resetExplicitTargetLocked(peerID)
 	n.scoring.Ensure(peerID)
 	n.mu.Unlock()
 	// Teardown of the replaced/pruned sessions happens outside the node lock.
@@ -975,8 +982,7 @@ func (n *Node) evictPeerLocked(victim *peerConn) {
 	}
 	for sessionID, route := range n.relayRoutes {
 		if route.initiator == victim.id || route.target == victim.id {
-			delete(n.relayRoutes, sessionID)
-			n.relaySessions.Release(sessionID)
+			n.retireRelayRouteLocked(sessionID, time.Now())
 		}
 	}
 	if info, ok := n.knownPeers[victim.id]; ok {

@@ -35,20 +35,25 @@ type Node struct {
 	//
 	// subChannels maps an opaque topic back to the room and bare channel this
 	// node subscribed under, which is how delivery knows which key opens it.
-	roomKey     []byte
-	rooms       map[string][]byte
-	subChannels map[string]subscription
-	config      Config
-	infoHash    [20]byte
-	peerID      [20]byte
-	identity    *mcrypto.Identity
-	tracker     *bootstrap.Manager
-	pubsub      *gossip.Manager
-	cache       *gossip.Cache
-	scoring     *gossip.Engine
-	profiler    *nat.Profiler
-	portMapper  nat.PortMapper
-	listener    *transport.Listener
+	roomKey       []byte
+	rooms         map[string][]byte
+	subChannels   map[string]subscription
+	roomDiscovery map[string]map[string]struct{} // mu; immutable recipient sets
+	config        Config
+	infoHash      [20]byte
+	peerID        [20]byte
+	identity      *mcrypto.Identity
+	tracker       *bootstrap.Manager
+	pubsub        *gossip.Manager
+	cache         *gossip.Cache
+	scoring       *gossip.Engine
+	profiler      *nat.Profiler
+	portMapper    nat.PortMapper
+	listener      *transport.Listener
+
+	// Successful announcement signatures do not cache peer trust or policy.
+	announcementChecks announcementVerifier
+
 	// udpListener is an atomic pointer for the same reason masqDialer is:
 	// readers are NOT wg-tracked. probePortMapping is deliberately untracked
 	// (bounded by its own STUN/mapping timeouts, not by Stop's wg.Wait), and
@@ -129,8 +134,8 @@ type Node struct {
 	// from the instantaneous bucket. Keyed by the source peer id (same key as
 	// relayBuckets), torn down in removePeer and reset in Stop.
 	relayConsumers map[string]*relayConsumer
-	// relayRouteExpiry is the tombstone map for routes reaped by TTL GC:
-	// pruneStaleRelayRoutes records each reaped session so the first
+	// relayRouteExpiry holds routes retired after TTL or disconnection.
+	// Retirement records each removed session so the first
 	// RelayData for it is answered with a RelayClose
 	// (replyRelayRouteExpired, one-shot) instead of silently dropped —
 	// without it an origin whose session idled out streams into a
@@ -158,6 +163,7 @@ type Node struct {
 	// overlayDiscovery rate-limits topic rendezvous per topic; rootCtx lets the
 	// maintenance path launch a lookup that dies with the node.
 	overlayDiscovery map[string]time.Time
+	overlayRepublish chan struct{} // coalesced wakeup for policy resets
 	rootCtx          context.Context
 
 	directProbes     map[string]time.Time
@@ -186,7 +192,7 @@ type Node struct {
 	// what. Naming the type is the difference between fixing the flood and
 	// widening the buffer in front of it.
 	inboundByType    sync.Map
-	explicitTargets  map[string]time.Time
+	explicitTargets  map[string]*explicitTarget
 	bootstrapDials   map[string]time.Time
 	lanBeaconBuckets map[string]*lanBeaconRateBucket
 	lanBeaconGlobal  *nat.TokenBucket
