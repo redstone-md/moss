@@ -792,6 +792,7 @@ func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origi
 		knownAddr = current.addr
 	}
 	n.peers[peerID] = peer
+	n.notifyDirectPeerLocked(peerID)
 	n.emitSessionOpen(peer)
 	// A session at this addr — inbound dial, outbound masq, UDP punch, any
 	// leg — is the host proving itself alive: drop the host's dial backoff so
