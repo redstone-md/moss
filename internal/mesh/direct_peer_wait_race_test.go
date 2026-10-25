@@ -8,19 +8,26 @@ import (
 	"time"
 )
 
-func TestDirectPeerWaitRegistrationRace(t *testing.T) {
-	for range 200 {
+func TestDirectPeerWaitNotificationAfterSubscription(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
 		node := &Node{peers: make(map[string]*peerConn)}
 		done := make(chan bool, 1)
 		go func() { done <- node.waitForDirectPeer("target", time.Second) }()
+		synctest.Wait()
 		setReadinessPeer(node, "target", &peerConn{})
-		if !<-done {
-			t.Fatal("registration racing subscription was lost")
+		synctest.Wait()
+		select {
+		case ready := <-done:
+			if !ready {
+				t.Fatal("direct registration was lost")
+			}
+		default:
+			t.Fatal("subscribed waiter did not consume the notification")
 		}
 		if len(node.directWaits) != 0 {
-			t.Fatal("racing wait retained an identity")
+			t.Fatal("completed wait retained an identity")
 		}
-	}
+	})
 }
 
 func TestDirectPeerWaitReleasesTimedOutIdentities(t *testing.T) {
