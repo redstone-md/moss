@@ -14,6 +14,8 @@ func TestRelayLargeDatagramsSurviveStreamRefusalWithoutRepeatedProbes(t *testing
 	target := startCappedOverlayNode(t, "fallback-leaf")
 	waitingUDPRelayFixture(t, sender, core)
 	waitingRelayFixture(t, target, core)
+	// Client handshake completion can precede relay-side registration.
+	waitForPeerCount(t, core, 2)
 	core.listener.Close()
 	refused, err := net.Listen("tcp4", nodeAddr(core))
 	if err != nil {
@@ -36,7 +38,7 @@ func TestRelayLargeDatagramsSurviveStreamRefusalWithoutRepeatedProbes(t *testing
 	defer func() { refused.Close(); <-exited }()
 	session, err := sender.OpenRelaySession(core.localPeerID(), target.localPeerID(), time.Second)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("open: %v; core=%s sender=%s target=%s", err, core.MeshInfoJSON(), sender.MeshInfoJSON(), target.MeshInfoJSON())
 	}
 	payload := bytes.Repeat([]byte("datagram-fallback"), 200)
 	received := make(chan []byte, 16)
