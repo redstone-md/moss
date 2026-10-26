@@ -459,7 +459,7 @@ func (n *Node) enqueueOutboundWire(ctx context.Context, peer *peerConn, e outbou
 }
 
 // teardownOutboundQueue closes and removes a peer's outbound queue. Called
-// from removePeer AFTER dropping n.mu — never under it — and from the
+// from removePeer while holding n.mu in the same admission boundary, and from the
 // maintenance sweep for queues whose peer left via the eviction paths that
 // bypass removePeer. Closing makes the worker deliver what is already
 // buffered, then exit; its own deregistration no-ops on the deleted entry.
@@ -479,30 +479,15 @@ func (n *Node) teardownOutboundQueue(peerID string) {
 // — the eviction and relay-removal paths delete peers without removePeer.
 // Runs on the maintenance loop's conn-tick.
 //
-// Lock order is n.mu → outboundMu, NEVER the reverse: sendOrEnqueueWire
-// holds n.mu.RLock across enqueueOutboundWire, so nothing here may take n.mu
-// while holding outboundMu. The old per-queue RLock inside the outboundMu
-// section inverted that order and deadlocked the mesh: a pending writer
-// (registerPeerFrom) blocks the sweep's RLock — Go's RWMutex parks new
-// readers behind a waiting writer — while the sweep holds outboundMu
-// against every enqueue, each of which holds the RLock the writer needs.
-// Instead the connected set is snapshotted under n.mu.RLock with no other
-// lock held, and the orphan queues are closed under outboundMu alone.
-// A peer deleted between snapshot and close is reclaimed by the next pass;
-// a peer that returns in that window loses only the current queue — the
-// worker delivers what is buffered, and the next enqueue lazily spawns a
-// fresh one. Sends and closes both happen under outboundMu, which is what
-// makes closing safe.
+// Lock order is n.mu → outboundMu, NEVER the reverse. Holding that order
+// across the live check and closure also protects a returning peer's new
+// GRAFT queue from an old disconnected snapshot. Closure does not join workers.
 func (n *Node) sweepOrphanOutboundQueues() {
 	n.mu.RLock()
-	connected := make(map[string]struct{}, len(n.peers))
-	for peerID := range n.peers {
-		connected[peerID] = struct{}{}
-	}
-	n.mu.RUnlock()
+	defer n.mu.RUnlock()
 	n.outboundMu.Lock()
 	for peerID, queue := range n.outboundQueues {
-		if _, live := connected[peerID]; live {
+		if n.peers[peerID] != nil {
 			continue
 		}
 		delete(n.outboundQueues, peerID)

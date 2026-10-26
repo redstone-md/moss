@@ -144,6 +144,7 @@ func (n *Node) removePeerForPolicy(peerID string, session *transport.Session, wa
 		info.lastSeen = time.Now()
 		n.knownPeers[peerID] = info
 	}
+	n.cleanupDepartedPeersLocked(append(removedRelayed, peerID))
 	n.mu.Unlock()
 	if waitingAttachmentLost {
 		n.wakeActivity()
@@ -154,26 +155,6 @@ func (n *Node) removePeerForPolicy(peerID string, session *transport.Session, wa
 	if refusalAddr != "" {
 		n.noteHostDialOutcome(refusalAddr, false)
 	}
-	// The peer is gone: its outbound queue (~110KB at depth) must go with
-	// it, or every peer this node EVER connected leaks until Stop. Under
-	// NO n.mu here: the single lock order is n.mu → outboundMu
-	// (sendOrEnqueueWire enqueues while holding n.mu.RLock), so
-	// teardownOutboundQueue's outboundMu must never be taken under n.mu.
-	n.teardownOutboundQueue(peerID)
-	if fallback == nil {
-		n.pubsub.RemovePeer(peerID)
-	}
-	for _, relayedPeerID := range removedRelayed {
-		n.pubsub.RemovePeer(relayedPeerID)
-		n.scoring.Remove(relayedPeerID)
-	}
-	// The scoring engine outlives the peer: without eviction every peer the
-	// node EVER connected kept its entry (and Tick walked them all, every
-	// second, forever) — an unbounded map on a long-running node. Score()
-	// recreates an evicted peer at zero on first use, so this costs nothing.
-	if fallback == nil {
-		n.scoring.Remove(peerID)
-	}
 	n.recalculateIPColocationPenalties()
 	if fallback != nil {
 		n.activateRelayedPeer(fallback)
@@ -182,6 +163,20 @@ func (n *Node) removePeerForPolicy(peerID string, session *transport.Session, wa
 		n.reportSessionLifetime(endedRelayed, endedAt, endedMisses, endedOrigin, endedTransport, endedInbound, peerID)
 	}
 	return true
+}
+
+// Caller holds n.mu. Retirement and peer-keyed cleanup must be one admission
+// boundary: a fresh relay/GRAFT may otherwise be erased by an old direct tail.
+// Queue closure never waits for a worker and preserves n.mu → outboundMu order.
+func (n *Node) cleanupDepartedPeersLocked(ids []string) {
+	for _, id := range ids {
+		if n.peers[id] != nil {
+			continue
+		}
+		n.teardownOutboundQueue(id)
+		n.pubsub.RemovePeer(id)
+		n.scoring.Remove(id)
+	}
 }
 
 func (n *Node) observeMeshDelivery(channel, messageID, peerID string) {

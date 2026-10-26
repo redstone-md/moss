@@ -53,6 +53,9 @@ to authenticated end-to-end relay sessions before their old transport closes.
 The public packet callback and stable identity continue to represent the same
 peer. A prepared fallback prevents a direct carrier closing from erasing a new
 relay path or reporting a false peer departure.
+Directory retirement, outbound-queue closure and subscription/score cleanup
+share the admission lock. A late direct teardown cannot erase a newly admitted
+relay's GRAFT; the orphan-queue sweep uses the same lock order and live check.
 
 If an application path cannot migrate, the node reports actual `active`, desired
 `waiting`, reachability `unavailable`. It retains the required paths and retries;
