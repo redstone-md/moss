@@ -24,6 +24,10 @@ func (n *Node) removePeer(peerID string, session *transport.Session) {
 // Logical removal happens under the same lock as SetActivityMode; closing the
 // retired transport and the remaining cleanup need no policy lock.
 func (n *Node) removePeerForPolicy(peerID string, session *transport.Session, waitingAttempt *uint64) bool {
+	return n.removePeerWithPolicy(peerID, session, waitingAttempt, false)
+}
+
+func (n *Node) removePeerWithPolicy(peerID string, session *transport.Session, waitingAttempt *uint64, unusedCandidate bool) bool {
 	n.mu.Lock()
 	peer := n.peers[peerID]
 	if peer == nil || peer.session != session {
@@ -31,6 +35,10 @@ func (n *Node) removePeerForPolicy(peerID string, session *transport.Session, wa
 		return false
 	}
 	if waitingAttempt != nil && (!n.started || !n.waitingRequested() || n.activity.attempt != *waitingAttempt || peerID == n.activity.attachment || peerID == n.activity.candidate) {
+		n.mu.Unlock()
+		return false
+	}
+	if unusedCandidate && n.waitingCandidateCarriesApplicationLocked(peer) {
 		n.mu.Unlock()
 		return false
 	}
@@ -120,6 +128,9 @@ func (n *Node) removePeerForPolicy(peerID string, session *transport.Session, wa
 	var fallback *peerConn
 	for sessionID, relaySession := range n.relayLocals {
 		if relaySession.viaPeerID == peerID || relaySession.remotePeerID == peerID {
+			if waitingAttachmentLost && relaySession.viaPeerID == peerID {
+				n.retainWaitingApplicationPathLocked(relaySession)
+			}
 			// The old direct path may close before the carrier's accept arrives.
 			// Keep that bounded in-flight migration owned by its original waiter.
 			if n.waitingRequested() && relaySession.remotePeerID == peerID && !relaySession.established {

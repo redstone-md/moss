@@ -80,7 +80,7 @@ func (n *Node) reconcileWaiting(root context.Context) {
 	}
 	n.activity.actual = ActivityWaiting
 	n.activity.reachability = "unavailable"
-	if n.activity.attachment != "" && n.peers[n.activity.attachment] != nil {
+	if n.activity.attachment != "" && n.peers[n.activity.attachment] != nil && len(n.activity.recovering) == 0 {
 		n.activity.reachability = "ready"
 	}
 	n.mu.Unlock()
@@ -91,6 +91,11 @@ func (n *Node) reconcileWaiting(root context.Context) {
 func (n *Node) refuseWaitingAttempt(addr string, cancel context.CancelFunc) {
 	cancel()
 	n.mu.Lock()
+	unused := n.peers[n.activity.candidate]
+	retiringAttempt := n.activity.attempt
+	if len(n.activity.recovering) == 0 || unused == nil || unused.relayed || unused.id == n.activity.attachment {
+		unused = nil
+	}
 	n.activity.attemptCancel = nil
 	n.activity.candidate = ""
 	n.activity.candidateAddr = ""
@@ -98,42 +103,36 @@ func (n *Node) refuseWaitingAttempt(addr string, cancel context.CancelFunc) {
 	n.activity.actual = ActivityActive
 	n.activity.lastCandidate = addr
 	n.mu.Unlock()
+	if unused != nil && n.removePeerWithPolicy(unused.id, unused.session, &retiringAttempt, true) {
+		unused.closeSession()
+	}
 	n.emitActivityMode()
 }
 
 func (n *Node) migrateWaitingPeers(ctx context.Context, via string) bool {
-	important := make(map[string]bool)
-	for _, topic := range n.pubsub.SnapshotLocal() {
-		for _, peerID := range n.pubsub.Subscribers(topic) {
-			important[peerID] = true
-		}
+	pending := n.waitingMigrationTargets(via)
+	targets := make([]string, 0, len(pending))
+	for id := range pending {
+		targets = append(targets, id)
 	}
-	n.mu.RLock()
-	var targets []string
-	for id, peer := range n.peers {
-		if id != via && (!peer.relayed || peer.viaPeerID != via) && (important[id] || peer.applicationUsed.Load() || n.explicitTargets[id] != nil) {
-			targets = append(targets, id)
-		}
-	}
-	n.mu.RUnlock()
 	sort.Strings(targets)
 	for _, id := range targets {
 		if via == "" || ctx.Err() != nil || !n.waitingRequested() {
 			return false
 		}
-		if _, err := n.openRelaySession(ctx, via, id, n.config.HandshakeTimeout()); err != nil {
-			// A simultaneous incoming relay request may have already migrated
-			// this identity while our independent request was cancelled.
-			n.mu.RLock()
-			peer := n.peers[id]
-			ready := peer != nil && peer.relayed && peer.viaPeerID == via
-			n.mu.RUnlock()
-			if !ready {
-				return false
-			}
+		if n.completeWaitingRecovery(id, via, pending[id]) {
+			continue
+		}
+		_, _ = n.openRelaySession(ctx, via, id, n.config.HandshakeTimeout())
+		// A simultaneous incoming request may win even if our own waiter
+		// was cancelled. Verified admission is the completion boundary.
+		if !n.completeWaitingRecovery(id, via, pending[id]) {
+			return false
 		}
 	}
-	return true
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return len(n.activity.recovering) == 0
 }
 
 func (n *Node) trimWaitingMesh() {

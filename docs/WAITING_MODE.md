@@ -52,8 +52,11 @@ path. A carrier refusing the TCP session must leave its working datagram path
 and virtual routes intact. Noise
 alone can complete before the remote refuses admission. Existing ping probes
 and handshake deadlines supply this confirmation; the first packet is replayed
-to its normal handler. Cold direct startup is unchanged. Cancellation, Stop and
-current admission policy are rechecked before replacement.
+to its normal handler. A permitted cold Waiting candidate also requires this
+fresh mesh admission; cached signed capability and Noise alone can otherwise
+report ready immediately before a remote refusal closes the connection.
+Ordinary cold direct startup is unchanged. Cancellation, Stop and current
+admission policy are rechecked before replacement.
 
 Waiting is a policy for the embedding application to select automatically when
 it has no interactive work, accepted call or user-started transfer. It is not a
@@ -125,6 +128,17 @@ to authenticated end-to-end relay sessions before their old transport closes.
 The public packet callback and stable identity continue to represent the same
 peer. A prepared fallback prevents a direct carrier closing from erasing a new
 relay path or reporting a false peer departure.
+An attachment loss also retains the exact previously established application,
+explicit-target and subscribed paths removed with that carrier. The next
+attempt must migrate those paths before reporting ready, even though their
+virtual peers have already left the live directory. Unrelated saved offline
+targets do not become migration barriers. Verified replacement consumes the
+captured loss; a newer carrier loss survives an older completion. Returning
+active or stopping clears this Waiting-only intent.
+Failed handovers discard an unused candidate under the same policy-generation
+guard. A carrier already carrying a partially migrated application path is
+retained; failure never discards that working path just to reduce the socket
+count before reporting the incomplete transition.
 Directory retirement, outbound-queue closure and subscription/score cleanup
 share the admission lock. A late direct teardown cannot erase a newly admitted
 relay's GRAFT; the orphan-queue sweep uses the same lock order and live check.
@@ -154,8 +168,9 @@ the transition remains visibly incomplete and retries.
 The waiting node refreshes its own identity and necessary automatic room
 provider records only through its selected carrier, using the existing 30s
 record cadence and bounded outbound queue. This performs no lookup or fanout
-and creates no additional attachment. It prevents the existing 90s provider TTL
-from making an idle installation undiscoverable to a foreground sender.
+and creates no additional attachment. This retains the record beyond its
+existing 90s TTL at the selected carrier; a foreground origin still needs a
+working discovery or application route to that carrier.
 
 Identity and room lookups keep the existing no-dial rule and query budget.
 When the globally nearest K contacts are exhausted or unconnected, they ask

@@ -46,6 +46,7 @@ type activityState struct {
 	lastReport      activityReport
 	presenceAt      time.Time
 	draining        map[*peerConn]<-chan struct{}
+	recovering      map[string]*peerConn
 }
 
 type activityReport struct {
@@ -75,6 +76,7 @@ func (n *Node) SetActivityMode(mode ActivityMode) int32 {
 	n.activity.requested.Store(int32(mode))
 	if mode == ActivityActive {
 		n.activity.networkPending = false
+		n.activity.recovering = nil
 	}
 	if n.activity.attemptCancel != nil {
 		n.activity.attemptCancel()
