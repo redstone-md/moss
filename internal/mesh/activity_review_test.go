@@ -1,7 +1,6 @@
 package mesh
 
 import (
-	"context"
 	"testing"
 	"time"
 )
@@ -29,18 +28,24 @@ func TestActivityWaitingDoesNotPruneRelayedPeerForSuspendedProbe(t *testing.T) {
 }
 
 func TestActivityWaitingCandidateCanUseAuthenticatedUDP(t *testing.T) {
-	n := confirmUDPTestNode(t, "waiting-udp-fallback")
-	n.mu.RLock()
-	networkID := n.networkID
-	n.mu.RUnlock()
-	addr := echoUDPListener(t, networkID)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	if err := n.connectWaitingCandidate(ctx, addr, ""); err != nil {
-		t.Fatalf("live UDP candidate refused after its TCP port was unavailable: %v", err)
+	core := startCappedOverlayNode(t, "waiting-udp-core")
+	n := startCappedOverlayNode(t, "waiting-udp-leaf")
+	waitingRelayFixture(t, n, core)
+	waitFor(t, func() bool { return core.directPeerConnected(n.localPeerID()) }, "core admission did not finish")
+	core.mu.RLock()
+	listener := core.listener
+	core.mu.RUnlock()
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
 	}
-	if !n.hasPeerAddr(addr) {
-		t.Fatal("authenticated UDP candidate was not admitted")
+	core.peerByID(n.localPeerID()).closeSession()
+	waitFor(t, func() bool { return n.peerByID(core.localPeerID()) == nil }, "old TCP path did not close")
+	if code := n.SetActivityMode(ActivityWaiting); code != MOSS_OK {
+		t.Fatal(code)
+	}
+	state := awaitActivity(t, n, "waiting", "ready")
+	if state.Attachments != 1 || n.peerByID(core.localPeerID()) == nil {
+		t.Fatal("UDP-only carrier was not admitted and retained")
 	}
 }
 

@@ -108,10 +108,21 @@ invalidated. Their normal 90s TTL still applies, so a fresh lookup can encounter
 an old attachment hint after handover. Hosts retain route-failure/retry policy;
 an immediate route for every new origin is not inferred from carrier readiness.
 
-There is currently no OS network-change observer or explicit host connectivity
-notification API. A silent Wi-Fi/mobile switch is noticed through carrier
-failure or the bounded retry timer; instantaneous handover on that event is
-not claimed. A future host notification seam needs its own approved contract.
+Hosts can observe their default network and call optional
+`Moss_NotifyNetworkChanged(handle)` / `Node.NotifyNetworkChanged()`. This never
+opts an ordinary consumer into waiting and is a no-op in active mode. Hints
+coalesce in the existing attachment worker, with a five-second floor and one
+pending latest check. An eligible hint cancels an obsolete candidate; healthy
+carriers receive the existing authenticated liveness probe and remain in place.
+Unavailable nodes can retry once without resetting ordinary outage backoff.
+There is no OS observer inside Moss; older libraries still require failure or
+timer recovery. A host hint alone never establishes delivery or reachability.
+
+Waiting transitions revalidate captured trim work against the current policy
+generation. Suspended virtual-peer probes cannot evict room membership, and
+application use survives both sending and receiving over relay. A direct path
+being replaced by relay drains for the existing one-second migration grace;
+settled waiting is reported after that physical path has closed.
 
 ## Host responsibilities and limitations
 

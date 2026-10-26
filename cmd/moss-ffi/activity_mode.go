@@ -16,3 +16,12 @@ func Moss_SetActivityMode(handle C.MossHandle, mode C.int32_t) C.int32_t {
 	}
 	return C.int32_t(node.SetActivityMode(mesh.ActivityMode(mode)))
 }
+
+//export Moss_NotifyNetworkChanged
+func Moss_NotifyNetworkChanged(handle C.MossHandle) C.int32_t {
+	node, code := getNode(int64(handle))
+	if code != mesh.MOSS_OK {
+		return C.int32_t(code)
+	}
+	return C.int32_t(node.NotifyNetworkChanged())
+}

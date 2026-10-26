@@ -28,6 +28,10 @@ type activityState struct {
 	optedIn         bool
 	wake            chan struct{}
 	maintenanceWake chan struct{}
+	networkWake     chan struct{}
+	networkPending  bool
+	networkDue      time.Time
+	networkLast     time.Time
 	attachment      string
 	candidate       string
 	candidateAddr   string
@@ -69,6 +73,9 @@ func (n *Node) SetActivityMode(mode ActivityMode) int32 {
 		return MOSS_OK
 	}
 	n.activity.requested.Store(int32(mode))
+	if mode == ActivityActive {
+		n.activity.networkPending = false
+	}
 	if n.activity.attemptCancel != nil {
 		n.activity.attemptCancel()
 	}
@@ -95,10 +102,19 @@ func (n *Node) activityLoop(ctx context.Context) {
 	timer := time.NewTimer(time.Hour)
 	timer.Stop()
 	defer timer.Stop()
+	networkTimer := time.NewTimer(time.Hour)
+	networkTimer.Stop()
+	defer networkTimer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-n.activity.networkWake:
+			n.processNetworkSignal(ctx, networkTimer)
+			continue
+		case <-networkTimer.C:
+			n.processNetworkSignal(ctx, networkTimer)
+			continue
 		case <-n.activity.wake:
 		case <-timer.C:
 		}

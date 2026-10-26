@@ -15,3 +15,9 @@ const (
 func (n *Node) SetActivityMode(mode ActivityMode) error {
 	return errorCode(n.inner.SetActivityMode(mode))
 }
+
+// NotifyNetworkChanged schedules a bounded waiting-path check without changing
+// policy, discarding a healthy carrier or declaring reachability from a hint.
+func (n *Node) NotifyNetworkChanged() error {
+	return errorCode(n.inner.NotifyNetworkChanged())
+}

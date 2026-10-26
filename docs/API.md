@@ -91,8 +91,26 @@ reachability. Request active before user-generated sends; a waiting recipient
 can reply through the resulting session. Its own provider records refresh only
 through its selected carrier. Detect a missing symbol as unsupported.
 See [waiting mode](WAITING_MODE.md) for migration failures, bounded recovery,
-stream restrictions and OS network-change limitations. The Go wrapper exposes
+stream restrictions and OS network-change handling. The Go wrapper exposes
 `Node.SetActivityMode(ActivityActive|ActivityWaiting) error`.
+
+### `Moss_NotifyNetworkChanged` (optional)
+
+```c
+int32_t Moss_NotifyNetworkChanged(MossHandle handle);
+```
+
+Inform a waiting node that the host's default network changed. Invalid handles
+return `-1`, unstarted nodes `-3`; accepted hints return `0`. Ordinary nodes and
+active mode accept a no-op without opting into waiting. The Go wrapper is
+`Node.NotifyNetworkChanged() error`.
+
+Hints share the existing attachment worker and coalesce to at most one immediate
+check per five seconds, retaining one later check for a burst. An eligible hint
+cancels an obsolete candidate handshake. Existing carrier probes determine
+liveness; a healthy carrier, identity, rooms and sessions survive the hint.
+The OS event never proves reachability or resets ordinary outage backoff.
+Hosts observe their OS network changes and detect missing support in old libraries.
 
 ### `Moss_Connect`
 

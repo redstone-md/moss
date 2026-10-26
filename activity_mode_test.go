@@ -23,10 +23,16 @@ func TestGoHostCanOptIntoWaitingWithoutRecreatingNode(t *testing.T) {
 	}
 	defer n.Stop()
 	identity := n.PublicKey()
+	if err = n.NotifyNetworkChanged(); err != nil {
+		t.Fatal(err)
+	}
 	if err = n.SetActivityMode(moss.ActivityMode(-1)); err == nil {
 		t.Fatal("invalid mode accepted")
 	}
 	if err = n.SetActivityMode(moss.ActivityWaiting); err != nil {
+		t.Fatal(err)
+	}
+	if err = n.NotifyNetworkChanged(); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(3 * time.Second)

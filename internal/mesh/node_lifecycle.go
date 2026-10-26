@@ -242,6 +242,10 @@ func (n *Node) Start() int32 {
 	n.rootCtx = ctx
 	n.activity.wake = make(chan struct{}, 1)
 	n.activity.maintenanceWake = make(chan struct{}, 1)
+	n.activity.networkWake = make(chan struct{}, 1)
+	n.activity.networkPending = false
+	n.activity.networkDue = time.Time{}
+	n.activity.networkLast = time.Time{}
 	n.activity.reachability = "unavailable"
 	n.activity.actual = ActivityActive
 	n.activity.optedIn = false
