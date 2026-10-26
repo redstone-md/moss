@@ -368,7 +368,20 @@ func (n *Node) overlayLookup(ctx context.Context, key overlay.NodeID, wantValue 
 			}
 		}
 		if len(batch) == 0 {
-			break
+			// The closest K can all be unconnected while a farther live carrier
+			// holds the record. Use existing sessions within the same round and
+			// alpha budget; discovery must not create speculative connections.
+			for _, c := range n.overlayReachableContacts(key) {
+				if !queried[c.ID.String()] {
+					batch = append(batch, c)
+					if len(batch) == overlayAlpha {
+						break
+					}
+				}
+			}
+			if len(batch) == 0 {
+				break
+			}
 		}
 		// Query the batch concurrently. alpha means "ask this many at once" —
 		// asking them one after another turned a 4s query timeout into alpha x 4s
@@ -777,7 +790,7 @@ func (n *Node) reachPeerViaHint(ctx context.Context, peerID string, hint reachab
 		if ctx.Err() != nil {
 			return false
 		}
-		via := n.peerIDByAddr(addr)
+		via := n.peerIDByAddr(addr, peerID)
 		if via == "" {
 			dialCtx, cancel := withTimeout(ctx, overlayQueryTimeout)
 			err := n.connectPeer(dialCtx, addr)
@@ -785,7 +798,7 @@ func (n *Node) reachPeerViaHint(ctx context.Context, peerID string, hint reachab
 			if err != nil {
 				continue
 			}
-			if via = n.peerIDByAddr(addr); via == "" {
+			if via = n.peerIDByAddr(addr, peerID); via == "" {
 				continue
 			}
 		}
@@ -799,17 +812,20 @@ func (n *Node) reachPeerViaHint(ctx context.Context, peerID string, hint reachab
 	return false
 }
 
-func (n *Node) peerIDByAddr(addr string) string {
+func (n *Node) peerIDByAddr(addr, targetID string) string {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
+	previous := n.explicitTargets[targetID]
+	reuseHint := n.activity.optedIn || (previous != nil && previous.identityRetry)
 	for id, peer := range n.peers {
 		if peer == nil || peer.relayed {
 			continue
 		}
-		// Inbound sessions use an ephemeral source port. Lifecycle-opted hosts
-		// may reuse the same authenticated identity's advertised listen address.
+		// Inbound sessions use an ephemeral source port. A lifecycle host or
+		// explicit target recovering its lost relay can reuse the live carrier's
+		// authenticated listen address without another duplicate handshake.
 		info := n.knownPeers[id]
-		if peer.addr == addr || (n.activity.optedIn && info.verified && info.addr == addr) {
+		if peer.addr == addr || (reuseHint && info.verified && info.addr == addr) {
 			return id
 		}
 	}

@@ -157,6 +157,14 @@ record cadence and bounded outbound queue. This performs no lookup or fanout
 and creates no additional attachment. It prevents the existing 90s provider TTL
 from making an idle installation undiscoverable to a foreground sender.
 
+Identity and room lookups keep the existing no-dial rule and query budget.
+When the globally nearest K contacts are exhausted or unconnected, they ask
+farther contacts already connected locally. A fresh record on a live carrier
+must not become invisible merely because unrelated unconnected contacts are
+closer in the keyspace. An ordinary explicit target recovering a lost relay
+also reuses a live carrier's authenticated listen-address hint; this does not
+change healthy ordinary direct startup or admit unsigned address aliases.
+
 Waiting maintenance uses the existing carrier probe interval, ping timeout and
 miss limit. It stops the ordinary gossip heartbeat. A small resource sweep still
 bounds the peer directory; it does not dial or refresh the whole mesh. No wire
