@@ -669,7 +669,9 @@ func (n *Node) clientHandshakeAndRegister(ctx context.Context, conn net.Conn, ad
 	}
 	n.emitDial(addr, "", "handshake", nil, time.Since(started))
 	attempt, _ := ctx.Value(waitingAttemptKey{}).(uint64)
-	n.registerPeerFromAttempt(session, true, originDialTCP, attempt)
+	if !n.registerPeerFromContext(hsCtx, session, true, originDialTCP, attempt) && hsCtx.Err() != nil {
+		return hsCtx.Err()
+	}
 	return nil
 }
 
@@ -696,6 +698,10 @@ func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origi
 }
 
 func (n *Node) registerPeerFromAttempt(session *transport.Session, outbound bool, origin string, attempt uint64) bool {
+	return n.registerPeerFromContext(context.Background(), session, outbound, origin, attempt)
+}
+
+func (n *Node) registerPeerFromContext(ctx context.Context, session *transport.Session, outbound bool, origin string, attempt uint64) bool {
 	remoteID := session.RemoteID()
 	peerID := hex.EncodeToString(remoteID[:])
 	addr := session.RemoteAddr().String()
@@ -704,7 +710,7 @@ func (n *Node) registerPeerFromAttempt(session *transport.Session, outbound bool
 	var overflowPeer *peerConn
 	var replacedPeer *peerConn
 	n.mu.Lock()
-	if !n.started {
+	if !n.started || ctx.Err() != nil {
 		n.mu.Unlock()
 		_ = session.Close()
 		return false
