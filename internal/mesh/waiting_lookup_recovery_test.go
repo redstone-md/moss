@@ -23,19 +23,7 @@ func TestWaitingIdentityLookupAsksConnectedCarrierOutsideNearestK(t *testing.T) 
 		time.Sleep(time.Millisecond)
 	}
 	core := mustOverlayID(t, carrier.localPeerID())
-	var origin *Node
-	for attempt := 0; attempt < 64; attempt++ {
-		candidate := startCappedOverlayNode(t, "lookup-leaf")
-		self := mustOverlayID(t, candidate.localPeerID())
-		if overlay.BucketIndex(self, key) != overlay.BucketIndex(self, core) {
-			origin = candidate
-			break
-		}
-		candidate.Stop()
-	}
-	if origin == nil {
-		t.Fatal("could not isolate decoys from carrier bucket")
-	}
+	origin := lookupDecoyOrigin(t)
 	waitingRelayFixture(t, origin, carrier)
 	for _, decoy := range decoyContacts(key, overlay.DefaultK) {
 		origin.overlayTable.Add(decoy)
@@ -57,4 +45,22 @@ func TestWaitingIdentityLookupAsksConnectedCarrierOutsideNearestK(t *testing.T) 
 		}
 	}
 	t.Fatal("waiting identity was invisible although its authenticated carrier was connected and held its fresh record")
+}
+
+func lookupDecoyOrigin(t *testing.T) *Node {
+	t.Helper()
+	cfg := overlayTestConfig()
+	cfg.Security.HandshakeTimeoutSec = overlayUpgradeCeilingSec
+	n, err := NewNode("lookup-leaf", nil, withFixtureListenPort(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Keep the real carrier plus K decoys even when all land in one bucket.
+	// The lookup still selects its ordinary K closest contacts, excluding it.
+	n.overlayTable = overlay.NewTable(mustOverlayID(t, n.localPeerID()), overlay.DefaultK+1)
+	if code := n.Start(); code != MOSS_OK {
+		t.Fatal(code)
+	}
+	t.Cleanup(func() { n.Stop() })
+	return n
 }
