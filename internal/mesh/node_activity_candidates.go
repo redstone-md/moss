@@ -8,6 +8,7 @@ import (
 type waitingCandidate struct {
 	id, addr  string
 	connected bool
+	stream    bool
 }
 
 // Caller holds n.mu. A refused UDP peer must not receive a confirm probe
@@ -34,7 +35,9 @@ func (n *Node) waitingCandidatesLocked() []waitingCandidate {
 			}
 		}
 		peer := n.peers[id]
-		byAddr[info.addr] = waitingCandidate{id: id, addr: info.addr, connected: peer != nil && !peer.relayed}
+		connected := peer != nil && !peer.relayed
+		stream := connected && peer.session != nil && isStreamNetwork(peer.session.RemoteAddr())
+		byAddr[info.addr] = waitingCandidate{id: id, addr: info.addr, connected: connected, stream: stream}
 	}
 	add := func(addr string) {
 		if addr != "" {
@@ -59,6 +62,9 @@ func (n *Node) waitingCandidatesLocked() []waitingCandidate {
 		candidates = append(candidates, candidate)
 	}
 	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].stream != candidates[j].stream {
+			return candidates[i].stream
+		}
 		if candidates[i].connected != candidates[j].connected {
 			return candidates[i].connected
 		}

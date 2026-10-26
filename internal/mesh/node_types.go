@@ -329,6 +329,9 @@ type Node struct {
 }
 
 type peerConn struct {
+	streamUpgradeMu sync.Mutex
+	streamUpgradeAt time.Time // guarded by streamUpgradeMu; bounds failed carrier probes
+
 	applicationUsed atomic.Bool // directed host traffic must survive carrier migration
 	id              string
 	addr            string

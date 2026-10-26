@@ -6,6 +6,16 @@ waiting leaves on different carriers. A live carrier alone is not evidence of
 a route to an application peer. Mosh must select active for outgoing user work;
 the waiting recipient can reply through the resulting relay session.
 
+Waiting prefers an already authenticated stream carrier, then attempts a stream
+upgrade of an existing UDP attachment. TCP/Veil carries application envelopes
+without relying on IP fragmentation; small UDP keepalives alone do not prove
+that a path carries application-sized frames. UDP-only relays keep their
+existing best-effort datagram behavior when no stream is reachable. Large relay
+frames on either endpoint also try that existing stream transport, including an
+ordinary desktop sender. The upgrade is serialized per physical carrier;
+failures retain UDP and suppress another probe on that carrier for one minute.
+This changes relay data transport only, not ordinary discovery or mesh policy.
+
 A waiting node refuses unrelated direct UDP peers before sending a mesh
 confirmation probe. A rejected upgrade must not make its initiator retire
 a working relayed path. Final peer admission revalidates the same policy.
