@@ -170,6 +170,9 @@ func (n *Node) attemptHolePunchContext(ctx context.Context, targetPeerID string,
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
+	if ctx.Err() != nil || n.waitingRequested() {
+		return false
+	}
 	// A punch that ran out of time is the single most useful negative result in
 	// the whole NAT layer: it is what fills in which pairs of NAT types never
 	// work, and that cannot be inferred from successes alone.

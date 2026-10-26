@@ -1,9 +1,40 @@
 package mesh
 
 import (
+	"context"
 	"testing"
 	"time"
 )
+
+func TestActivityAbandonedPunchDoesNotCountTimeout(t *testing.T) {
+	for _, reason := range []string{"waiting", "cancelled"} {
+		t.Run(reason, func(t *testing.T) {
+			n := startCappedOverlayNode(t, "punch-policy-cancel")
+			addTrustedRelayCandidate(n, "relay-peer")
+			n.mu.Lock()
+			n.knownPeers["target-peer"] = knownPeer{id: "target-peer", addr: "203.0.113.9:45000"}
+			n.mu.Unlock()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			result := make(chan bool, 1)
+			go func() { result <- n.attemptHolePunchContext(ctx, "target-peer", 30*time.Second, false) }()
+			waitFor(t, func() bool { return counterValue(n, "__punch_attempt__") == 1 }, "punch did not begin")
+			if reason == "waiting" {
+				n.SetActivityMode(ActivityWaiting)
+			} else {
+				cancel()
+			}
+			select {
+			case connected := <-result:
+				if connected || counterValue(n, "__punch_timeout__") != 0 {
+					t.Fatal("an abandoned punch was recorded as a network timeout")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("abandoned punch did not finish")
+			}
+		})
+	}
+}
 
 func TestActivityWaitingDoesNotPruneRelayedPeerForSuspendedProbe(t *testing.T) {
 	n, err := NewNode("waiting-pending-probe", nil, DefaultConfig())

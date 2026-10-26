@@ -129,14 +129,20 @@ func TestActivityPendingMigrationKeepsDirectedPathForLaterHandover(t *testing.T)
 	}()
 	a.SetActivityMode(ActivityWaiting)
 	deadline := time.Now().Add(time.Second)
+	pending := false
 	for time.Now().Before(deadline) {
 		a.mu.RLock()
-		pending := len(a.relayLocals) > 0
+		for _, session := range a.relayLocals {
+			pending = pending || session.remotePeerID == b.localPeerID() && !session.established
+		}
 		a.mu.RUnlock()
 		if pending {
 			break
 		}
 		time.Sleep(time.Millisecond)
+	}
+	if !pending {
+		t.Fatal("leaf did not start a pending relay migration")
 	}
 	b.peerByID(a.localPeerID()).closeSession()
 	for a.directPeerConnected(b.localPeerID()) && time.Now().Before(deadline) {

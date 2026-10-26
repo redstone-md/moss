@@ -38,7 +38,7 @@ func (n *Node) startActiveWorkersLocked() {
 	if n.config.LANDiscoveryEnabled && !transport.RunningGoTest() {
 		start(n.lanDiscoveryLoop)
 	}
-	n.startVeilDialers(ctx)
+	n.startVeilDialers(ctx, &workers)
 	listener := n.udpListener.Load()
 	if listener != nil {
 		go n.probePortMapping(ctx, listener.Addr().String(), n.listenPort)

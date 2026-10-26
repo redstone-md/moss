@@ -4,10 +4,47 @@ package mesh
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
+
+func TestActivityVeilDialerStaysInActiveScopeUntilItExits(t *testing.T) {
+	const coverSNI = "www.wikipedia.org"
+	addr := freeTCPAddr(t)
+	relay := startActivityVeilNode(t, VeilConfig{Enabled: true, Role: "listener", ListenAddr: addr, CoverSNI: coverSNI})
+	client := startActivityVeilNode(t, VeilConfig{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var workers sync.WaitGroup
+	func() {
+		client.mu.Lock()
+		defer client.mu.Unlock()
+		client.config.Veil = VeilConfig{Enabled: true, Role: "dialer", Relays: []VeilRelay{{
+			Addr: addr, CoverSNI: coverSNI, PubKeyHex: hex.EncodeToString(relay.identity.NoiseStaticPublic()),
+		}}}
+		client.startVeilDialers(ctx, &workers)
+		waitForPeerCount(t, relay, 1)
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+		done := make(chan struct{})
+		go func() { workers.Wait(); close(done) }()
+		select {
+		case <-done:
+			t.Error("active scope finished while its canceled Veil admission was blocked")
+		case <-time.After(50 * time.Millisecond):
+		}
+	}()
+	done := make(chan struct{})
+	go func() { workers.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("active Veil scope did not drain after admission resumed")
+	}
+}
 
 func TestActivityVeilCanceledHandshakeCannotAdmitLatePeer(t *testing.T) {
 	const coverSNI = "www.wikipedia.org"
