@@ -23,7 +23,7 @@ func masqTestConfig(name string) Config {
 // UDP half needs) surfaces as a test failure, not a silently degraded mesh.
 func startMasqNode(t *testing.T, meshID string, cfg Config) *Node {
 	t.Helper()
-	n, err := NewNode(meshID, nil, cfg)
+	n, err := NewNode(meshID, nil, withFixtureListenPort(cfg))
 	if err != nil {
 		t.Fatalf("NewNode: %v", err)
 	}

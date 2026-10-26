@@ -104,7 +104,7 @@ func TestExplicitOfflineBackoffIsOptIn(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			caller, err := NewNode("mesh-explicit-target", nil, cfg)
+			caller, err := NewNode("mesh-explicit-target", nil, withFixtureListenPort(cfg))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -112,7 +112,7 @@ func TestExplicitOfflineBackoffIsOptIn(t *testing.T) {
 				t.Fatalf("caller Start: %d (%s)", code, caller.LastError())
 			}
 			t.Cleanup(func() { caller.Stop() })
-			neighbor, err := NewNode("mesh-explicit-target", nil, cfg)
+			neighbor, err := NewNode("mesh-explicit-target", nil, withFixtureListenPort(cfg))
 			if err != nil {
 				t.Fatal(err)
 			}

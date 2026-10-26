@@ -14,7 +14,7 @@ func startDiscoveryBudgetNode(t *testing.T) *Node {
 	cfg := isolatedTestConfig(t.Name())
 	cfg.GossipSub.D, cfg.GossipSub.DLo, cfg.GossipSub.DHigh, cfg.GossipSub.DOut = 1, 1, 1, 1
 	cfg.Security.HandshakeTimeoutSec = 1
-	node, err := NewNode("discovery-budget-contact", nil, cfg)
+	node, err := NewNode("discovery-budget-contact", nil, withFixtureListenPort(cfg))
 	if err != nil {
 		t.Fatal(err)
 	}

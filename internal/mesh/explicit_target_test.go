@@ -14,7 +14,7 @@ func startExplicitTargetNode(t *testing.T, name string, retryMax ...int) *Node {
 	if len(retryMax) != 0 {
 		cfg.ExplicitRetryMaxSec = retryMax[0]
 	}
-	node, err := NewNode("mesh-explicit-target", nil, cfg)
+	node, err := NewNode("mesh-explicit-target", nil, withFixtureListenPort(cfg))
 	if err != nil {
 		t.Fatalf("NewNode failed: %v", err)
 	}
@@ -57,7 +57,7 @@ func waitForConnectedPeer(t *testing.T, node *Node, peerID string, dur time.Dura
 
 func TestConnectToPeerValidatesInput(t *testing.T) {
 	cfg := isolatedTestConfig("explicit-validate")
-	node, err := NewNode("mesh-explicit-target", nil, cfg)
+	node, err := NewNode("mesh-explicit-target", nil, withFixtureListenPort(cfg))
 	if err != nil {
 		t.Fatalf("NewNode failed: %v", err)
 	}

@@ -11,6 +11,15 @@ import (
 // select a UDP-valid/TCP-forbidden port (or the reverse for masquerade tests).
 // Fixtures requiring both transports must reserve-check both before Start.
 // Production's deliberate UDP-only fallback remains unchanged.
+// Allocate at node construction, never in reusable Config factories. A single
+// config often starts several distinct nodes, each needing its own free port.
+func withFixtureListenPort(cfg Config) Config {
+	if cfg.ListenPort == 0 {
+		cfg.ListenPort = fixtureListenPort()
+	}
+	return cfg
+}
+
 func fixtureListenPort() int {
 	if runtime.GOOS != "windows" {
 		return 0

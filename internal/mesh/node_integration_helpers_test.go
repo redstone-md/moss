@@ -19,7 +19,6 @@ import (
 // DHT/trackers and pick up real nodes — breaking topology and peer-count checks.
 func isolatedTestConfig(name string) Config {
 	c := DefaultConfig()
-	c.ListenPort = fixtureListenPort()
 	c.NetworkID = "moss-test-" + name
 	c.Trackers = nil
 	c.DHTEnabled = false

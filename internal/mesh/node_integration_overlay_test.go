@@ -18,7 +18,6 @@ import (
 // opted out (a masked ear would relabel accepted sessions inbound_masq).
 func overlayTestConfig() Config {
 	cfg := DefaultConfig()
-	cfg.ListenPort = fixtureListenPort()
 	cfg.Trackers = nil
 	cfg.LANDiscoveryEnabled = false
 	cfg.DHTEnabled = false
@@ -41,7 +40,7 @@ func startOverlayNodeWithConfig(t *testing.T, meshID string, cfg Config, maxPeer
 	if len(maxPeers) > 0 && maxPeers[0] > 0 {
 		cfg.MaxPeers = maxPeers[0]
 	}
-	n, err := NewNode(meshID, nil, cfg)
+	n, err := NewNode(meshID, nil, withFixtureListenPort(cfg))
 	if err != nil {
 		t.Fatalf("NewNode: %v", err)
 	}
