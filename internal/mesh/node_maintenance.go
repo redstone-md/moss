@@ -52,6 +52,12 @@ func (n *Node) removePeerForPolicy(peerID string, session *transport.Session, wa
 	// telemetry field.
 	endedTransport := ""
 	waitingAttachmentLost := n.waitingRequested() && peerID == n.activity.attachment
+	if waitingAttachmentLost {
+		n.activity.lastCandidate = n.knownPeers[peerID].addr
+		if n.activity.lastCandidate == "" {
+			n.activity.lastCandidate = peer.addr
+		}
+	}
 	if peer.session != nil {
 		if remote := peer.session.RemoteAddr(); remote != nil {
 			endedTransport = remote.Network()

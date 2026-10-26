@@ -79,6 +79,34 @@ func TestActivityWaitingRecoversOneCarrierAfterRelayOutage(t *testing.T) {
 	t.Fatalf("known alternative never attached: %s", a.MeshInfoJSON())
 }
 
+func TestActivityWaitingRotatesLostCarrierBeforeRetryingItsAddress(t *testing.T) {
+	first := startCappedOverlayNode(t, "waiting-rotation-first")
+	second := startCappedOverlayNode(t, "waiting-rotation-second")
+	leaf := startCappedOverlayNode(t, "waiting-rotation-leaf")
+	for _, relay := range []*Node{first, second} {
+		waitingRelayFixture(t, leaf, relay)
+	}
+	leaf.SetActivityMode(ActivityWaiting)
+	awaitActivity(t, leaf, "waiting", "ready")
+	leaf.mu.RLock()
+	current := leaf.activity.attachment
+	leaf.mu.RUnlock()
+	dead, live := first, second
+	if current == second.localPeerID() {
+		dead, live = second, first
+	}
+	dead.Stop()
+	deadline := time.Now().Add(1500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		ids := connectedDirectIDs(t, leaf)
+		if len(ids) == 1 && ids[0] == live.localPeerID() && readActivity(t, leaf).Reachability == "ready" {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("healthy known alternative waited behind the lost carrier: %s", leaf.MeshInfoJSON())
+}
+
 func TestActivityWaitingCannotDiscardAnApplicationPathWithoutRelay(t *testing.T) {
 	a := startCappedOverlayNode(t, "waiting-no-relay")
 	b := startCappedOverlayNode(t, "waiting-no-relay")
