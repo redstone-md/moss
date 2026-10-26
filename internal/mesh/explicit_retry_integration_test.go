@@ -109,7 +109,7 @@ func TestExplicitOfflineBackoffIsOptIn(t *testing.T) {
 				t.Fatal(err)
 			}
 			if code := caller.Start(); code != MOSS_OK {
-				t.Fatal(code)
+				t.Fatalf("caller Start: %d (%s)", code, caller.LastError())
 			}
 			t.Cleanup(func() { caller.Stop() })
 			neighbor, err := NewNode("mesh-explicit-target", nil, cfg)
@@ -117,7 +117,7 @@ func TestExplicitOfflineBackoffIsOptIn(t *testing.T) {
 				t.Fatal(err)
 			}
 			if code := neighbor.Start(); code != MOSS_OK {
-				t.Fatal(code)
+				t.Fatalf("neighbor Start: %d (%s)", code, neighbor.LastError())
 			}
 			t.Cleanup(func() { neighbor.Stop() })
 			if code := caller.Connect(nodeAddr(neighbor)); code != MOSS_OK {

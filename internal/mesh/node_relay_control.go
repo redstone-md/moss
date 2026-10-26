@@ -44,6 +44,9 @@ func (n *Node) handleRelayRequest(peer *peerConn, env gossip.Envelope) {
 		n.mu.Lock()
 		n.relayLocals[env.RelaySession] = session
 		relayPeer, capped := n.registerRelayedPeerLocked(session)
+		if !capped {
+			n.confirmExplicitRelayRecoveryLocked(session.remotePeerID)
+		}
 		if capped {
 			delete(n.relayLocals, env.RelaySession)
 		}
@@ -113,6 +116,7 @@ func (n *Node) handleRelayAccept(peer *peerConn, env gossip.Envelope) {
 			session.established = true
 			relayPeer, capped = n.registerRelayedPeerLocked(session)
 			if !capped {
+				n.confirmExplicitRelayRecoveryLocked(session.remotePeerID)
 				n.relayLocals[env.RelaySession] = session
 				if session.wait != nil {
 					close(session.wait)
@@ -619,11 +623,6 @@ func (n *Node) registerRelayedPeerLocked(session relayLocalSession) (*peerConn, 
 	info.lastSeen = time.Now()
 	n.knownPeers[session.remotePeerID] = info
 	n.resetExplicitTargetLocked(session.remotePeerID)
-	if !n.activity.optedIn && session.established {
-		if target := n.explicitTargets[session.remotePeerID]; target != nil {
-			target.identityRetry = false
-		}
-	}
 	n.scoring.Ensure(session.remotePeerID)
 	return peer, false
 }
@@ -742,5 +741,15 @@ func (n *Node) closeRelayRouteForPolicy(sessionID, source, target string, waitin
 	}
 	if targetPeer != nil && targetPeer != sourcePeer {
 		n.sendEnvelope(targetPeer, msg)
+	}
+}
+
+// Only fresh authenticated relay control consumes ordinary identity recovery;
+// restoring an old local fallback is not proof of current remote admission.
+func (n *Node) confirmExplicitRelayRecoveryLocked(peerID string) {
+	if !n.activity.optedIn {
+		if target := n.explicitTargets[peerID]; target != nil {
+			target.identityRetry = false
+		}
 	}
 }

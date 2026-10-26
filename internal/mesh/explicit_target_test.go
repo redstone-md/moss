@@ -20,9 +20,12 @@ func startExplicitTargetNode(t *testing.T, name string, retryMax ...int) *Node {
 		t.Fatalf("NewNode failed: %v", err)
 	}
 	if code := node.Start(); code != MOSS_OK {
-		t.Fatalf("Start failed: %d", code)
+		t.Fatalf("Start failed: %d (%s)", code, node.LastError())
 	}
 	t.Cleanup(func() { node.Stop() })
+	if node.listener == nil {
+		t.Fatalf("plain-TCP fixture started UDP-only on port %d", node.ListenPort())
+	}
 	return node
 }
 

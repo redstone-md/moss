@@ -61,8 +61,8 @@ func TestOrdinaryRecoveryConsumesOnlyConfirmedPaths(t *testing.T) {
 		if refused || peer == nil {
 			t.Fatal("replacement relay refused")
 		}
-		if got := n.explicitTargets["target"].identityRetry; got != opted {
-			t.Fatalf("established relay opted=%t retry=%t", opted, got)
+		if !n.explicitTargets["target"].identityRetry {
+			t.Fatal("old fallback registration consumed identity recovery")
 		}
 	}
 }

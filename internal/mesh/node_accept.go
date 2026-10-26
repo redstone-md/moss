@@ -669,6 +669,9 @@ func (n *Node) clientHandshakeAndRegister(ctx context.Context, conn net.Conn, ad
 	}
 	n.emitDial(addr, "", "handshake", nil, time.Since(started))
 	attempt, _ := ctx.Value(waitingAttemptKey{}).(uint64)
+	if n.relayUpgradeNeedsConfirmation(session) {
+		return n.confirmAndRegisterRelayUpgrade(hsCtx, session, attempt)
+	}
 	if !n.registerPeerFromContext(hsCtx, session, true, originDialTCP, attempt) && hsCtx.Err() != nil {
 		return hsCtx.Err()
 	}

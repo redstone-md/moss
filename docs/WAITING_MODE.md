@@ -46,6 +46,13 @@ A waiting node refuses unrelated direct UDP peers before sending a mesh
 confirmation probe. A rejected upgrade must not make its initiator retire
 a working relayed path. Final peer admission revalidates the same policy.
 
+An outbound TCP replacement of an existing virtual peer also waits for an
+ordinary authenticated mesh packet before retiring that virtual route. Noise
+alone can complete before the remote refuses admission. Existing ping probes
+and handshake deadlines supply this confirmation; the first packet is replayed
+to its normal handler. Cold direct startup is unchanged. Cancellation, Stop and
+current admission policy are rechecked before replacement.
+
 Waiting is a policy for the embedding application to select automatically when
 it has no interactive work, accepted call or user-started transfer. It is not a
 new end-user setting. Every node starts active; Bastion, games and other hosts
@@ -67,8 +74,9 @@ known direct path retains its existing startup behavior.
 An ordinary host also refreshes one explicit target's identity after losing
 that target's current established relay. The recipient may now be waiting on a
 different carrier and refuse direct physical sessions after Noise succeeds.
-Those speculative admissions do not consume recovery; an established relay or
-a direct session with actual inbound traffic does. Existing per-target retry
+Those speculative admissions and restoration of old local relay state do not
+consume recovery; fresh authenticated relay acceptance or a direct session
+with actual inbound traffic does. Existing per-target retry
 coalescing, deadlines and backoff still apply. Unregistered peers, pending or
 replaced relay sessions and ordinary direct-only targets retain their original
 routing order. This does not opt the host into lifecycle or change discovery.
