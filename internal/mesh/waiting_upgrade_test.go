@@ -16,9 +16,7 @@ func TestTCPUpgradeKeepsLiveRelayUntilRemoteAdmission(t *testing.T) {
 	_, carrier, receiver := waitingRecipient(t)
 	origin := startCappedOverlayNode(t, "upgrade-origin")
 	waitingRelayFixture(t, origin, carrier)
-	if _, err := origin.OpenRelaySession(carrier.localPeerID(), receiver.localPeerID(), time.Second); err != nil {
-		t.Fatal(err)
-	}
+	openUpgradeFixtureRelay(t, carrier, origin, receiver)
 	assertWaitingBidirectionalPackets(t, origin, receiver)
 	addr, negotiated, release := heldWaitingPolicyEndpoint(t, receiver)
 	done := make(chan error, 1)
@@ -108,9 +106,7 @@ func TestRelayTCPConfirmationReplaysFirstFrame(t *testing.T) {
 	origin, remote := startCappedOverlayNode(t, "replay-leaf"), startCappedOverlayNode(t, "replay-leaf")
 	waitingRelayFixture(t, origin, carrier)
 	waitingRelayFixture(t, remote, carrier)
-	if _, err := origin.OpenRelaySession(carrier.localPeerID(), remote.localPeerID(), time.Second); err != nil {
-		t.Fatal(err)
-	}
+	openUpgradeFixtureRelay(t, carrier, origin, remote)
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -157,9 +153,7 @@ func TestRelayTCPConfirmationCancellationKeepsVirtualRoute(t *testing.T) {
 	_, carrier, receiver := waitingRecipient(t)
 	origin := startCappedOverlayNode(t, "cancel-upgrade")
 	waitingRelayFixture(t, origin, carrier)
-	if _, err := origin.OpenRelaySession(carrier.localPeerID(), receiver.localPeerID(), time.Second); err != nil {
-		t.Fatal(err)
-	}
+	openUpgradeFixtureRelay(t, carrier, origin, receiver)
 	addr, negotiated, release := heldWaitingPolicyEndpoint(t, receiver)
 	defer release()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -202,9 +196,7 @@ func TestFreshRelayControlConsumesOrdinaryRecovery(t *testing.T) {
 			n.explicitTargets[other.localPeerID()] = &explicitTarget{identityRetry: true}
 			n.mu.Unlock()
 		}
-		if _, err := a.OpenRelaySession(carrier.localPeerID(), b.localPeerID(), time.Second); err != nil {
-			t.Fatal(err)
-		}
+		openUpgradeFixtureRelay(t, carrier, a, b)
 		for _, n := range []*Node{a, b} {
 			n.mu.RLock()
 			other := a
@@ -218,5 +210,29 @@ func TestFreshRelayControlConsumesOrdinaryRecovery(t *testing.T) {
 			}
 		}
 		assertWaitingBidirectionalPackets(t, a, b)
+	}
+}
+
+// Local Noise completion can precede remote admission. This fixture needs
+// both signed endpoint identities at the carrier before asking it to relay.
+func openUpgradeFixtureRelay(t *testing.T, carrier, a, b *Node) {
+	t.Helper()
+	deadline := time.Now().Add(carrier.config.HandshakeTimeout())
+	ready := false
+	for time.Now().Before(deadline) {
+		carrier.mu.RLock()
+		aPeer, bPeer := carrier.peers[a.localPeerID()], carrier.peers[b.localPeerID()]
+		ready = aPeer != nil && bPeer != nil && aPeer.selfAnnouncement != nil && bPeer.selfAnnouncement != nil
+		carrier.mu.RUnlock()
+		if ready {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if !ready {
+		t.Fatal("carrier has not authenticated both relay endpoints")
+	}
+	if _, err := a.OpenRelaySession(carrier.localPeerID(), b.localPeerID(), time.Second); err != nil {
+		t.Fatal(err)
 	}
 }
