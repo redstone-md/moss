@@ -2,9 +2,9 @@ package mesh
 
 import (
 	"math/rand/v2"
-	"net"
 	"runtime"
-	"strconv"
+
+	"github.com/redstone-md/moss/internal/transport"
 )
 
 // Windows reserves different ranges for TCP and UDP. Port zero can repeatedly
@@ -26,17 +26,16 @@ func fixtureListenPort() int {
 	}
 	for attempt := 0; attempt < 32; attempt++ {
 		port := 20000 + rand.IntN(20000)
-		addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
-		tcp, err := net.Listen("tcp4", addr)
-		if err != nil {
+		tcp, udp, _, err := transport.ListenPair(port, transport.HandshakeConfig{})
+		if tcp != nil {
+			tcp.Close()
+		}
+		if udp != nil {
+			udp.Close()
+		}
+		if err != nil || tcp == nil || udp == nil {
 			continue
 		}
-		udp, err := net.ListenPacket("udp4", addr)
-		tcp.Close()
-		if err != nil {
-			continue
-		}
-		udp.Close()
 		return port
 	}
 	panic("no shared TCP/UDP loopback fixture port on Windows")
