@@ -22,7 +22,7 @@ func (n *Node) waitingAdmissionAllowedLocked(peerID string, outbound bool, attem
 }
 
 // Cache/config addresses are candidates, never evidence of relay capability.
-// Only a successful Noise handshake and signed capability make one ready.
+// Only current mesh admission and signed capability make one ready.
 func (n *Node) waitingCandidatesLocked() []waitingCandidate {
 	byAddr := make(map[string]waitingCandidate)
 	for id, info := range n.knownPeers {

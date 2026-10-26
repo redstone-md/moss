@@ -8,11 +8,15 @@ import (
 	"github.com/redstone-md/moss/internal/transport"
 )
 
-func (n *Node) relayUpgradeNeedsConfirmation(session *transport.Session) bool {
+func (n *Node) relayUpgradeNeedsConfirmation(session *transport.Session, attempt uint64) bool {
 	id := session.RemoteID()
 	n.mu.RLock()
 	defer n.mu.RUnlock()
-	peer := n.peers[hex.EncodeToString(id[:])]
+	peerID := hex.EncodeToString(id[:])
+	if n.waitingRequested() && attempt != 0 && attempt == n.activity.attempt && n.waitingAdmissionAllowedLocked(peerID, true, attempt) {
+		return true
+	}
+	peer := n.peers[peerID]
 	return peer != nil && (peer.relayed ||
 		(peer.session != nil && !isStreamNetwork(peer.session.RemoteAddr())))
 }
@@ -20,7 +24,9 @@ func (n *Node) relayUpgradeNeedsConfirmation(session *transport.Session) bool {
 // A TCP Noise handshake may precede a mesh-level refusal. Keep an existing
 // virtual path or datagram carrier until a mesh packet confirms admission;
 // replacing a carrier would otherwise also strand all its virtual sessions.
-// Cold direct connections retain their original path.
+// A permitted Waiting candidate also needs fresh admission: cached signed
+// capability plus a cold Noise handshake must not announce Ready for a peer
+// that refuses mesh traffic. Ordinary cold direct startup remains unchanged.
 func (n *Node) confirmAndRegisterRelayUpgrade(ctx context.Context, session *transport.Session, attempt uint64) error {
 	packet, ok := n.awaitMeshConfirm(ctx, session)
 	if !ok || !n.registerPeerFromContext(ctx, session, true, originDialTCP, attempt) {
