@@ -6,6 +6,10 @@ waiting leaves on different carriers. A live carrier alone is not evidence of
 a route to an application peer. Mosh must select active for outgoing user work;
 the waiting recipient can reply through the resulting relay session.
 
+A waiting node refuses unrelated direct UDP peers before sending a mesh
+confirmation probe. A rejected upgrade must not make its initiator retire
+a working relayed path. Final peer admission revalidates the same policy.
+
 Waiting is a policy for the embedding application to select automatically when
 it has no interactive work, accepted call or user-started transfer. It is not a
 new end-user setting. Every node starts active; Bastion, games and other hosts

@@ -715,12 +715,12 @@ func (n *Node) registerPeerFromContext(ctx context.Context, session *transport.S
 		_ = session.Close()
 		return false
 	}
+	if !n.waitingAdmissionAllowedLocked(peerID, outbound, attempt) {
+		n.mu.Unlock()
+		_ = session.Close()
+		return false
+	}
 	if n.waitingRequested() && peerID != n.activity.attachment && peerID != n.activity.candidate {
-		if !outbound || attempt == 0 || attempt != n.activity.attempt || n.activity.candidateAddr == "" || n.activity.candidate != "" {
-			n.mu.Unlock()
-			_ = session.Close()
-			return false
-		}
 		n.activity.candidate = peerID
 	}
 	if peerID == n.localPeerID() {

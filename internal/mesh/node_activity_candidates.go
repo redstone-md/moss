@@ -10,6 +10,16 @@ type waitingCandidate struct {
 	connected bool
 }
 
+// Caller holds n.mu. A refused UDP peer must not receive a confirm probe
+// before this same policy is revalidated at final physical admission.
+func (n *Node) waitingAdmissionAllowedLocked(peerID string, outbound bool, attempt uint64) bool {
+	if !n.waitingRequested() || peerID == n.activity.attachment || peerID == n.activity.candidate {
+		return true
+	}
+	return outbound && attempt != 0 && attempt == n.activity.attempt &&
+		n.activity.candidateAddr != "" && n.activity.candidate == ""
+}
+
 // Cache/config addresses are candidates, never evidence of relay capability.
 // Only a successful Noise handshake and signed capability make one ready.
 func (n *Node) waitingCandidatesLocked() []waitingCandidate {

@@ -57,8 +57,16 @@ func (n *Node) confirmAndRegisterUDPPeer(ctx context.Context, session *transport
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	packet, ok := n.awaitUDPConfirm(ctx, session)
 	attempt, _ := ctx.Value(waitingAttemptKey{}).(uint64)
+	remoteID := session.RemoteID()
+	n.mu.RLock()
+	allowed := n.started && ctx.Err() == nil && n.waitingAdmissionAllowedLocked(hex.EncodeToString(remoteID[:]), outbound, attempt)
+	n.mu.RUnlock()
+	if !allowed {
+		_ = session.Close()
+		return errUDPUnconfirmed
+	}
+	packet, ok := n.awaitUDPConfirm(ctx, session)
 	if !ok || !n.registerPeerFromContext(ctx, session, outbound, origin, attempt) {
 		// Either the window expired with the far side silent, or the node
 		// refused its half of the session (capacity, duplicate, stopped) —
