@@ -21,6 +21,27 @@ new room participant exchange traffic immediately when known-recipient hints
 had suppressed a speculative introduction; repeated claims do not echo, and
 topic refusals and peer health exclusions still control admission.
 
+Topic interest and mesh admission are separate. A healthy connected peer with a
+mildly negative IP-colocation score can receive our bounded subscription claim
+without becoming a mesh member. Score-only mesh backoff is kept separately
+from health backoff; maintenance must not turn P6 into a health exclusion that
+suppresses the claim again. Both backoffs still prevent mesh admission.
+This prevents a small household cohort from
+losing all subscriber routes before its first group-admission packet. The
+non-negative mesh baseline, existing gossip floor, room-discovery constraints,
+PRUNE backoff and health exclusions remain unchanged. This correction also
+applies to ordinary active consumers; it does not whitelist public IPs or
+weaken P6.
+
+The [GossipSub specification](https://github.com/libp2p/specs/blob/master/pubsub/gossipsub/gossipsub-v1.1.md)
+separates mesh, gossip and own-publish score thresholds;
+[base PubSub](https://github.com/libp2p/specs/blob/master/pubsub/README.md) also
+separates subscription controls from content. Moss uses its existing bounded
+GRAFT as both an interest claim and a mesh request. It still uses the gossip
+floor (-10) for interest and own flood publishing, rather than the separately
+declared publish floor (-100). This patch does not change that restriction or
+guarantee arbitrary numbers of installations behind one public IP.
+
 A waiting node refuses unrelated direct UDP peers before sending a mesh
 confirmation probe. A rejected upgrade must not make its initiator retire
 a working relayed path. Final peer admission revalidates the same policy.
@@ -186,4 +207,9 @@ reproduced a migration race: direct teardown deleted an in-flight relay accept.
 Waiting now preserves that bounded pending admission through its existing
 waiter. Fresh foreground callers are also tested after the real 90s provider TTL,
 using only recipient identity or room knowledge, without a test-supplied target
-carrier address. These are not physical Android acceptance tests.
+carrier address. Three- and four-node TCP tests also verify subscription
+exchange under the real P6 engine output after score-pruning maintenance,
+without granting mesh membership. Their loopback topology pins that negative
+score through the existing host hook; separate policy tests use actual public
+address metadata and default scoring. These are not physical Android acceptance
+tests.

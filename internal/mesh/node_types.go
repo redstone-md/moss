@@ -364,6 +364,7 @@ type peerConn struct {
 	lastRTT          time.Duration
 	relayed          bool
 	meshBlocked      time.Time // peer-wide health exclusion; topic PRUNEs live in pubsub
+	meshScoreBlocked time.Time // score-only mesh backoff must not suppress subscription interest
 	// graftedAt records when we last sent this peer a GRAFT, per channel, so
 	// the maintenance path does not re-graft on every heartbeat tick. See
 	// markMeshGrafted / meshGraftEligible in node_peer_discovery.go.

@@ -479,7 +479,7 @@ func (n *Node) collectPruneLocked(now time.Time) pruneLists {
 // sessions of disconnect peers.
 func (n *Node) applyPruneLists(lists pruneLists) {
 	for _, id := range lists.meshOnly {
-		n.prunePeerFromAllMeshes(id)
+		n.prunePeerFromAllMeshes(id, meshBlockHealth)
 	}
 	for _, id := range lists.disconnect {
 		n.mu.RLock()
@@ -676,16 +676,29 @@ func (n *Node) pruneLowScoringPeers() {
 	n.mu.RUnlock()
 	for _, id := range ids {
 		if n.peerScore(id) < 0 {
-			n.prunePeerFromAllMeshes(id)
+			n.prunePeerFromAllMeshes(id, meshBlockScore)
 		}
 	}
 }
 
-func (n *Node) prunePeerFromAllMeshes(peerID string) {
+type meshBlockReason uint8
+
+const (
+	meshBlockHealth meshBlockReason = iota
+	meshBlockScore
+)
+
+func (n *Node) prunePeerFromAllMeshes(peerID string, reason meshBlockReason) {
 	until := time.Now().Add(n.peerPruneBackoff())
 	n.mu.Lock()
-	if peer := n.peers[peerID]; peer != nil && until.After(peer.meshBlocked) {
-		peer.meshBlocked = until
+	if peer := n.peers[peerID]; peer != nil {
+		blocked := &peer.meshBlocked
+		if reason == meshBlockScore {
+			blocked = &peer.meshScoreBlocked
+		}
+		if until.After(*blocked) {
+			*blocked = until
+		}
 	}
 	n.mu.Unlock()
 	for _, channel := range n.pubsub.SnapshotLocal() {

@@ -112,7 +112,7 @@ func (n *Node) announceLocalSubscription(channel string) {
 	}
 	n.mu.RUnlock()
 	for _, peer := range peers {
-		if !n.canGossipWithPeer(peer.id) || !n.eligibleForMeshCandidate(peer.id) {
+		if !n.canGossipWithPeer(peer.id) || !n.healthyForTopicClaim(peer.id) {
 			continue
 		}
 		// Record announcements as sends too, so speculative retries obey the
@@ -168,13 +168,23 @@ func (n *Node) announceLocalSubscriptionsToPeer(peer *peerConn) {
 		}
 		// A joiner gets one speculative GRAFT per channel per retry window.
 		// Both topic refusal and peer-wide health exclusion remain in force.
-		if !n.eligibleForMeshCandidate(peer.id) || !n.meshGraftEligible(peer.id, channel, now) {
+		if !n.healthyForTopicClaim(peer.id) || !n.meshGraftEligible(peer.id, channel, now) {
 			continue
 		}
 		if n.sendOrEnqueue(peer, gossip.Envelope{Type: gossip.TypeGraft, Channel: channel}) {
 			n.markMeshGrafted(peer, channel, now)
 		}
 	}
+}
+
+// Subscription interest permits own publishing outside the mesh. A mildly
+// negative P6 score must not prevent two household peers learning that interest;
+// actual mesh admission still checks its independent non-negative baseline.
+func (n *Node) healthyForTopicClaim(peerID string) bool {
+	n.mu.RLock()
+	current := snapshotMeshCandidate(n.peers[peerID], time.Now())
+	n.mu.RUnlock()
+	return current.healthy()
 }
 
 func (n *Node) refreshLocalSubscriptions() {

@@ -610,14 +610,15 @@ func (n *Node) pruneTopicMeshExcess(channel string) {
 // mesh-blocked, and (relayed OR responsive-and-low-latency) — so a snapshot
 // can be assessed without going back for either lock.
 type meshCandidateSnapshot struct {
-	id          string
-	score       float64
-	outbound    bool
-	alive       bool
-	blocked     bool
-	relayed     bool
-	highLatency bool
-	pingMiss    bool
+	id           string
+	score        float64
+	outbound     bool
+	alive        bool
+	blocked      bool
+	scoreBlocked bool
+	relayed      bool
+	highLatency  bool
+	pingMiss     bool
 }
 
 // The caller holds n.mu while capturing connection health; scoring runs outside it.
@@ -627,14 +628,18 @@ func snapshotMeshCandidate(peer *peerConn, now time.Time) meshCandidateSnapshot 
 	}
 	return meshCandidateSnapshot{
 		id: peer.id, alive: true, outbound: peer.outbound,
-		blocked: now.Before(peer.meshBlocked), relayed: peer.relayed,
+		blocked: now.Before(peer.meshBlocked), scoreBlocked: now.Before(peer.meshScoreBlocked), relayed: peer.relayed,
 		highLatency: peer.lastRTT > peerLatencyPruneThreshold,
 		pingMiss:    peer.pingMisses != 0,
 	}
 }
 
 func (c meshCandidateSnapshot) eligible() bool {
-	if !c.alive || c.blocked || c.score < gossip.BaselineThreshold {
+	return !c.scoreBlocked && c.score >= gossip.BaselineThreshold && c.healthy()
+}
+
+func (c meshCandidateSnapshot) healthy() bool {
+	if !c.alive || c.blocked {
 		return false
 	}
 	if c.relayed {
