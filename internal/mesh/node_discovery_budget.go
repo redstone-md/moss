@@ -39,6 +39,9 @@ func (n *Node) tryDiscoveredRelay(peerID string) bool {
 }
 
 func (n *Node) discoveryBatchLimitLocked() int {
+	if n.waitingRequested() {
+		return 0
+	}
 	batch := n.config.GossipSub.DOut
 	if batch <= 0 {
 		batch = 2

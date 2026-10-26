@@ -57,6 +57,43 @@ Stops the node, closes sessions, releases runtime resources, and invalidates the
 
 ## Connectivity
 
+### `Moss_SetActivityMode` (optional)
+
+```c
+int32_t Moss_SetActivityMode(MossHandle handle, int32_t mode);
+```
+
+Opt in at integration time: `0` requests active operation, `1` requests
+economical waiting. Nodes default to active and existing consumers keep their
+ordinary behavior. Requires Start; invalid handles return `-1`, unstarted nodes
+`-3`, invalid modes `MOSS_ERR_ACTIVITY_MODE_INVALID (-15)`. Stop invalidates the
+C handle. Invalid input does
+not mutate the requested mode. Success accepts a desired mode asynchronously;
+it does not promise a reachable carrier. Duplicate requests are idempotent.
+Stop serializes with requests and remains destructive.
+
+Even an initial active request explicitly opts the node into this lifecycle.
+Foreground explicit targets with missing/refused paths may resolve identity
+before retrying direct transport; healthy known direct paths retain their
+existing startup behavior. Nodes that never call the setter keep their original
+routing order.
+
+Additive MeshInfo fields `activity_mode` / `requested_activity_mode` use
+`active` or `waiting`. `waiting_reachability` uses `attaching`, `ready` or
+`unavailable`; `waiting_attachment_count` counts physical carrier connections,
+not end-to-end virtual peer sessions. Event `12` (`EventActivityModeChanged`)
+reports these same four fields when their state changes. Poll MeshInfo after
+callback loss. No existing event or error number changes.
+
+Waiting preserves listeners, identity, callbacks, room subscriptions and host
+state; it does not Stop/Start the node. Carrier `ready` does not assert pairwise
+reachability. Request active before user-generated sends; a waiting recipient
+can reply through the resulting session. Its own provider records refresh only
+through its selected carrier. Detect a missing symbol as unsupported.
+See [waiting mode](WAITING_MODE.md) for migration failures, bounded recovery,
+stream restrictions and OS network-change limitations. The Go wrapper exposes
+`Node.SetActivityMode(ActivityActive|ActivityWaiting) error`.
+
 ### `Moss_Connect`
 
 ```c
@@ -447,6 +484,7 @@ Current event IDs:
 - `9` `EventMessageRead` — *reserved, not dispatched by this runtime*
 - `10` `EventTyping` — *reserved, not dispatched by this runtime*
 - `11` `EventPresence` — *reserved, not dispatched by this runtime*
+- `12` `EventActivityModeChanged` — actual/requested mode and waiting carrier state
 
 Events 8–11 are pinned for the messenger layer but the mesh runtime never
 dispatches them yet. Connection-level presence is already covered by
@@ -719,6 +757,7 @@ Current error codes:
 - `-13` `MOSS_ERR_LISTEN_FAILED` — the OS refused the bind; call
   `Moss_LastError` for the underlying reason
 - `-14` `MOSS_ERR_NOT_IN_ROOM` — the room was never joined on this handle
+- `-15` `MOSS_ERR_ACTIVITY_MODE_INVALID` — activity mode must be active (0) or waiting (1)
 
 ## Config JSON
 

@@ -111,6 +111,7 @@ type Node struct {
 	heartbeat        uint64
 
 	mu              sync.RWMutex
+	activity        activityState
 	started         bool
 	supernodeActive bool
 	cancel          context.CancelFunc
@@ -230,7 +231,7 @@ type Node struct {
 	// held while taking n.mu (snapshot peers first, then lock streamMu).
 	streamMu         sync.RWMutex
 	streamHandlers   map[transport.StreamID]StreamHandler
-	streamReaders    map[string]map[transport.StreamID]bool
+	streamReaders    map[string]map[transport.StreamID]*transport.Session
 	streamUnreliable map[transport.StreamID]bool
 
 	// Outbound per-peer envelope queues, drained by dedicated workers so no
@@ -328,9 +329,10 @@ type Node struct {
 }
 
 type peerConn struct {
-	id      string
-	addr    string
-	session *transport.Session
+	applicationUsed atomic.Bool // directed host traffic must survive carrier migration
+	id              string
+	addr            string
+	session         *transport.Session
 	// origin names the path that opened this session. A session that dies at
 	// zero seconds was a duplicate the dedup closed on arrival, and knowing
 	// WHICH path keeps producing them is the difference between fixing the
@@ -449,12 +451,13 @@ func (c *relayConsumer) charge(now time.Time, n int64) int64 {
 }
 
 type relayLocalSession struct {
-	sessionID    string
-	viaPeerID    string
-	remotePeerID string
-	established  bool
-	wait         chan struct{}
-	lastSendAt   time.Time
+	sessionID       string
+	viaPeerID       string
+	remotePeerID    string
+	established     bool
+	wait            chan struct{}
+	lastSendAt      time.Time
+	applicationUsed bool
 }
 
 const (
@@ -493,24 +496,28 @@ type knownPeer struct {
 }
 
 type meshInfo struct {
-	MeshID                string       `json:"mesh_id"`
-	ListenPort            int          `json:"listen_port"`
-	AdvertisedAddr        string       `json:"advertised_addr"`
-	PeerCount             int          `json:"peer_count"`
-	Peers                 []string     `json:"peers"`
-	PeerDetails           []peerDetail `json:"peer_details,omitempty"`
-	KnownPeerCount        int          `json:"known_peer_count"`
-	KnownPeers            []string     `json:"known_peers,omitempty"`
-	DirectPeerCount       int          `json:"direct_peer_count"`
-	RelayedPeerCount      int          `json:"relayed_peer_count"`
-	RelayCapablePeerCount int          `json:"relay_capable_peer_count"`
-	RelaySessionCount     int          `json:"relay_session_count"`
-	RelayRouteCount       int          `json:"relay_route_count"`
-	Channels              []string     `json:"channels"`
-	NATType               string       `json:"nat_type"`
-	PublicKey             string       `json:"public_key"`
-	SupernodeReady        bool         `json:"supernode_ready"`
-	TelemetryEnabled      bool         `json:"telemetry_enabled"`
+	ActivityMode           string       `json:"activity_mode"`
+	RequestedActivityMode  string       `json:"requested_activity_mode"`
+	WaitingReachability    string       `json:"waiting_reachability"`
+	WaitingAttachmentCount int          `json:"waiting_attachment_count"`
+	MeshID                 string       `json:"mesh_id"`
+	ListenPort             int          `json:"listen_port"`
+	AdvertisedAddr         string       `json:"advertised_addr"`
+	PeerCount              int          `json:"peer_count"`
+	Peers                  []string     `json:"peers"`
+	PeerDetails            []peerDetail `json:"peer_details,omitempty"`
+	KnownPeerCount         int          `json:"known_peer_count"`
+	KnownPeers             []string     `json:"known_peers,omitempty"`
+	DirectPeerCount        int          `json:"direct_peer_count"`
+	RelayedPeerCount       int          `json:"relayed_peer_count"`
+	RelayCapablePeerCount  int          `json:"relay_capable_peer_count"`
+	RelaySessionCount      int          `json:"relay_session_count"`
+	RelayRouteCount        int          `json:"relay_route_count"`
+	Channels               []string     `json:"channels"`
+	NATType                string       `json:"nat_type"`
+	PublicKey              string       `json:"public_key"`
+	SupernodeReady         bool         `json:"supernode_ready"`
+	TelemetryEnabled       bool         `json:"telemetry_enabled"`
 	// AxiomShipping tells an operator whether this node is actually reporting.
 	// A host can set the sink config and still ship nothing (the FFI dropped it
 	// silently for the whole client fleet); this makes that visible.
@@ -582,7 +589,7 @@ func (n *Node) OnStream(streamID transport.StreamID, handler StreamHandler) int3
 	n.streamMu.Lock()
 	if n.streamHandlers == nil {
 		n.streamHandlers = make(map[transport.StreamID]StreamHandler)
-		n.streamReaders = make(map[string]map[transport.StreamID]bool)
+		n.streamReaders = make(map[string]map[transport.StreamID]*transport.Session)
 		n.streamUnreliable = make(map[transport.StreamID]bool)
 	}
 	n.streamHandlers[streamID] = handler
@@ -636,16 +643,27 @@ func (n *Node) snapshotPeersWithSession() []*peerConn {
 // registration still get their inbound streams drained.
 func (n *Node) ensureStreamReaders() {
 	peers := n.snapshotPeersWithSession()
-	n.streamMu.RLock()
-	streamIDs := make([]transport.StreamID, 0, len(n.streamHandlers))
-	for streamID := range n.streamHandlers {
-		streamIDs = append(streamIDs, streamID)
-	}
-	n.streamMu.RUnlock()
+	streamIDs := n.registeredStreamIDs()
 	for _, peer := range peers {
 		for _, streamID := range streamIDs {
 			n.ensureStreamReader(peer, streamID)
 		}
+	}
+}
+
+func (n *Node) registeredStreamIDs() []transport.StreamID {
+	n.streamMu.RLock()
+	defer n.streamMu.RUnlock()
+	streamIDs := make([]transport.StreamID, 0, len(n.streamHandlers))
+	for streamID := range n.streamHandlers {
+		streamIDs = append(streamIDs, streamID)
+	}
+	return streamIDs
+}
+
+func (n *Node) ensureRegisteredStreamReaders(peer *peerConn) {
+	for _, id := range n.registeredStreamIDs() {
+		n.ensureStreamReader(peer, id)
 	}
 }
 
@@ -657,7 +675,7 @@ func (n *Node) ensureStreamReaders() {
 func (n *Node) ensureStreamReader(peer *peerConn, streamID transport.StreamID) {
 	n.streamMu.Lock()
 	if n.streamReaders == nil {
-		n.streamReaders = make(map[string]map[transport.StreamID]bool)
+		n.streamReaders = make(map[string]map[transport.StreamID]*transport.Session)
 	}
 	handler, ok := n.streamHandlers[streamID]
 	if !ok || handler == nil {
@@ -665,13 +683,13 @@ func (n *Node) ensureStreamReader(peer *peerConn, streamID transport.StreamID) {
 		return
 	}
 	if n.streamReaders[peer.id] == nil {
-		n.streamReaders[peer.id] = make(map[transport.StreamID]bool)
+		n.streamReaders[peer.id] = make(map[transport.StreamID]*transport.Session)
 	}
-	if n.streamReaders[peer.id][streamID] {
+	if n.streamReaders[peer.id][streamID] == peer.session {
 		n.streamMu.Unlock()
 		return
 	}
-	n.streamReaders[peer.id][streamID] = true
+	n.streamReaders[peer.id][streamID] = peer.session
 	unreliable := n.streamUnreliable[streamID]
 	n.streamMu.Unlock()
 
@@ -679,9 +697,7 @@ func (n *Node) ensureStreamReader(peer *peerConn, streamID transport.StreamID) {
 	if stream == nil {
 		// Mux closed: peer is going away; forget the marker so a future
 		// call retries if the session is replaced.
-		n.streamMu.Lock()
-		delete(n.streamReaders[peer.id], streamID)
-		n.streamMu.Unlock()
+		n.forgetStreamReader(peer, streamID)
 		return
 	}
 	if unreliable {
@@ -690,19 +706,32 @@ func (n *Node) ensureStreamReader(peer *peerConn, streamID transport.StreamID) {
 	n.wg.Add(1)
 	go func() {
 		defer n.wg.Done()
-		defer func() {
-			n.streamMu.Lock()
-			delete(n.streamReaders[peer.id], streamID)
-			n.streamMu.Unlock()
-		}()
+		defer n.forgetStreamReader(peer, streamID)
 		for {
 			data, err := stream.ReadPacket()
 			if err != nil {
 				return
 			}
+			n.mu.RLock()
+			if current := n.peers[peer.id]; current != nil {
+				current.applicationUsed.Store(true)
+			}
+			n.mu.RUnlock()
 			handler(peer.id, data)
 		}
 	}()
+}
+
+func (n *Node) forgetStreamReader(peer *peerConn, id transport.StreamID) {
+	n.streamMu.Lock()
+	defer n.streamMu.Unlock()
+	if n.streamReaders[peer.id][id] != peer.session {
+		return
+	}
+	delete(n.streamReaders[peer.id], id)
+	if len(n.streamReaders[peer.id]) == 0 {
+		delete(n.streamReaders, peer.id)
+	}
 }
 
 // OpenStream resolves peerID (overlay lookup + hint dial if unknown — see
@@ -753,6 +782,7 @@ func (n *Node) SendStream(peerID string, streamID transport.StreamID, data []byt
 	if peer.session == nil {
 		return MOSS_ERR_NO_PEERS
 	}
+	peer.applicationUsed.Store(true)
 	if err := peer.session.Stream(streamID).WritePacket(data); err != nil {
 		return MOSS_ERR_CONNECT_FAILED
 	}

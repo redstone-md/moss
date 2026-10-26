@@ -29,12 +29,18 @@ func (n *Node) removePeer(peerID string, session *transport.Session) {
 	// and it should be a query rather than something to reconstruct from logs.
 	endedRelayed, endedAt, endedMisses, endedOrigin := peer.relayed, peer.connectedAt, peer.pingMisses, peer.origin
 	endedInbound := peer.inboundPackets.Load()
+	if n.activity.optedIn && !peer.relayed {
+		if target := n.explicitTargets[peerID]; target != nil {
+			target.identityRetry = true
+		}
+	}
 	// A non-nil session can still have no remote: a relayed peer carries none at
 	// all, and a session whose carrier is already gone returns nil here. Reading
 	// through that panicked a test outright — in production it would have taken
 	// the node down on an ordinary disconnect, which is a poor trade for a
 	// telemetry field.
 	endedTransport := ""
+	waitingAttachmentLost := n.waitingRequested() && peerID == n.activity.attachment
 	if peer.session != nil {
 		if remote := peer.session.RemoteAddr(); remote != nil {
 			endedTransport = remote.Network()
@@ -90,8 +96,25 @@ func (n *Node) removePeer(peerID string, session *transport.Session) {
 		refusalAddr = peer.addr
 	}
 	removedRelayed := make([]string, 0)
+	var fallback *peerConn
 	for sessionID, relaySession := range n.relayLocals {
 		if relaySession.viaPeerID == peerID || relaySession.remotePeerID == peerID {
+			// The old direct path may close before the carrier's accept arrives.
+			// Keep that bounded in-flight migration owned by its original waiter.
+			if n.waitingRequested() && relaySession.remotePeerID == peerID && !relaySession.established {
+				if via := n.peers[relaySession.viaPeerID]; via != nil && !via.relayed {
+					continue
+				}
+			}
+			if relaySession.remotePeerID == peerID && relaySession.viaPeerID != peerID && relaySession.established {
+				if via := n.peers[relaySession.viaPeerID]; via != nil && !via.relayed {
+					if replacement, refused := n.registerRelayedPeerLocked(relaySession); !refused && replacement != nil {
+						replacement.applicationUsed.Store(peer.applicationUsed.Load())
+						fallback = replacement
+						continue
+					}
+				}
+			}
 			if n.removeRelayedPeerLocked(relaySession) {
 				removedRelayed = append(removedRelayed, relaySession.remotePeerID)
 			}
@@ -111,6 +134,9 @@ func (n *Node) removePeer(peerID string, session *transport.Session) {
 		n.knownPeers[peerID] = info
 	}
 	n.mu.Unlock()
+	if waitingAttachmentLost {
+		n.wakeActivity()
+	}
 	// The refusal's host charge: under NO n.mu (noteHostDialOutcome takes the
 	// node lock itself). The kick and seed passes skip a host in backoff, so
 	// a machine that keeps slamming the door stops costing them slots.
@@ -123,7 +149,9 @@ func (n *Node) removePeer(peerID string, session *transport.Session) {
 	// (sendOrEnqueueWire enqueues while holding n.mu.RLock), so
 	// teardownOutboundQueue's outboundMu must never be taken under n.mu.
 	n.teardownOutboundQueue(peerID)
-	n.pubsub.RemovePeer(peerID)
+	if fallback == nil {
+		n.pubsub.RemovePeer(peerID)
+	}
 	for _, relayedPeerID := range removedRelayed {
 		n.pubsub.RemovePeer(relayedPeerID)
 		n.scoring.Remove(relayedPeerID)
@@ -132,9 +160,13 @@ func (n *Node) removePeer(peerID string, session *transport.Session) {
 	// node EVER connected kept its entry (and Tick walked them all, every
 	// second, forever) — an unbounded map on a long-running node. Score()
 	// recreates an evicted peer at zero on first use, so this costs nothing.
-	n.scoring.Remove(peerID)
+	if fallback == nil {
+		n.scoring.Remove(peerID)
+	}
 	n.recalculateIPColocationPenalties()
-	if peer != nil {
+	if fallback != nil {
+		n.activateRelayedPeer(fallback)
+	} else if peer != nil {
 		n.enqueueEvent(EventPeerLeft, map[string]string{"peer": peerID, "addr": peer.addr})
 		n.reportSessionLifetime(endedRelayed, endedAt, endedMisses, endedOrigin, endedTransport, endedInbound, peerID)
 	}
@@ -248,6 +280,9 @@ func (n *Node) collectPingTargetsLocked(now time.Time) []pingTarget {
 	interval := n.peerProbeInterval()
 	targets := make([]pingTarget, 0, len(n.peers))
 	for _, peer := range n.peers {
+		if n.waitingRequested() && peer.relayed {
+			continue
+		}
 		if peer.pingPending != "" {
 			continue
 		}
@@ -403,7 +438,7 @@ func (n *Node) collectPruneLocked(now time.Time) pruneLists {
 		disconnect: make([]string, 0),
 	}
 	for id, peer := range n.peers {
-		if peer.lastRTT > peerLatencyPruneThreshold {
+		if !n.waitingRequested() && peer.lastRTT > peerLatencyPruneThreshold {
 			lists.meshOnly = append(lists.meshOnly, id)
 			continue
 		}
@@ -491,7 +526,21 @@ func (n *Node) maintenanceLoop(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-n.activity.maintenanceWake:
+			if n.waitingRequested() {
+				ticker.Reset(time.Millisecond)
+			} else {
+				ticker.Reset(n.config.Heartbeat())
+			}
+			continue
 		case <-ticker.C:
+			if n.waitingRequested() {
+				n.connTickProbeAndPrune(time.Now())
+				n.sweepKnownPeers(time.Now())
+				n.refreshWaitingPresence(time.Now())
+				ticker.Reset(n.waitingProbeDelay(time.Now()))
+				continue
+			}
 			ticks := atomic.AddUint64(&n.heartbeat, 1)
 			// Pub/sub mesh upkeep and supernode-status broadcasts run at the
 			// gossip heartbeat, which a chat client may set very low (e.g. 250ms)

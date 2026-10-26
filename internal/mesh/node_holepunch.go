@@ -69,7 +69,7 @@ func (n *Node) attemptHolePunchPolicy(targetPeerID string, timeout time.Duration
 }
 
 func (n *Node) attemptHolePunchContext(ctx context.Context, targetPeerID string, timeout time.Duration, force bool) bool {
-	if ctx.Err() != nil || timeout <= 0 {
+	if ctx.Err() != nil || timeout <= 0 || n.waitingRequested() {
 		return false
 	}
 	if !force && n.shouldPreferRelayForTarget(targetPeerID) {
@@ -96,6 +96,9 @@ func (n *Node) attemptHolePunchContext(ctx context.Context, targetPeerID string,
 		return false
 	}
 	sourceAddr := n.freshObservedUDPAddr(viaPeerID, minDuration(750*time.Millisecond, timeout/3))
+	if n.waitingRequested() {
+		return false
+	}
 	coordAt := time.Now().Add(holePunchCoordGrace)
 	coordRetries := 0
 	deadline := time.Now().Add(timeout)
@@ -124,7 +127,7 @@ func (n *Node) attemptHolePunchContext(ctx context.Context, targetPeerID string,
 	punchStarted := time.Now()
 
 	triedAddr := targetInfo.addr
-	for ctx.Err() == nil && time.Now().Before(deadline) {
+	for ctx.Err() == nil && !n.waitingRequested() && time.Now().Before(deadline) {
 		if n.directPeerConnected(targetPeerID) {
 			n.countInbound("__punch_success__")
 			n.emitPunchResult(targetPeerID, n.knownPeerNATType(targetPeerID), true, time.Since(punchStarted))

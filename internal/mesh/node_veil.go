@@ -224,6 +224,7 @@ func (n *Node) veilDial(ctx context.Context, addr, coverSNI string, remoteStatic
 	}
 	remoteID := session.RemoteID()
 	peerID := hex.EncodeToString(remoteID[:])
-	n.registerPeerFrom(session, true, originVeilDial)
+	attempt, _ := ctx.Value(waitingAttemptKey{}).(uint64)
+	n.registerPeerFromAttempt(session, true, originVeilDial, attempt)
 	return peerID, nil
 }

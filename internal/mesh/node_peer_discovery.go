@@ -463,6 +463,9 @@ func (n *Node) rememberSuppression(peerID string, ids []string, fallback string)
 }
 
 func (n *Node) maintainTopicMesh(channel string) {
+	if n.waitingRequested() {
+		return
+	}
 	if !n.pubsub.IsLocalSubscriber(channel) {
 		return
 	}

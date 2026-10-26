@@ -521,6 +521,12 @@ func (n *Node) connectPeer(ctx context.Context, addr string) error {
 }
 
 func (n *Node) connectPeerWithHint(ctx context.Context, addr, peerID string) error {
+	if ctx == nil {
+		return errors.New("mesh: peer dial requires a non-nil context")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if addr == "" {
 		return errors.New("peer address is required")
 	}
@@ -532,7 +538,14 @@ func (n *Node) connectPeerWithHint(ctx context.Context, addr, peerID string) err
 		return nil
 	}
 	n.mu.RLock()
-	if n.directPeerCountLocked() >= n.config.MaxPeers {
+	attempt, _ := ctx.Value(waitingAttemptKey{}).(uint64)
+	waitingDial := n.waitingRequested() && ((peerID != "" && (peerID == n.activity.candidate || peerID == n.activity.attachment)) ||
+		(attempt != 0 && attempt == n.activity.attempt && addr == n.activity.candidateAddr))
+	if n.waitingRequested() && !waitingDial {
+		n.mu.RUnlock()
+		return errors.New("direct dialing suspended in waiting mode")
+	}
+	if n.directPeerCountLocked() >= n.config.MaxPeers && !(waitingDial && n.directPeerCountLocked() < 2) {
 		n.mu.RUnlock()
 		return errors.New("max peers reached")
 	}
@@ -655,7 +668,8 @@ func (n *Node) clientHandshakeAndRegister(ctx context.Context, conn net.Conn, ad
 		return err
 	}
 	n.emitDial(addr, "", "handshake", nil, time.Since(started))
-	n.registerPeerFrom(session, true, originDialTCP)
+	attempt, _ := ctx.Value(waitingAttemptKey{}).(uint64)
+	n.registerPeerFromAttempt(session, true, originDialTCP, attempt)
 	return nil
 }
 
@@ -678,6 +692,10 @@ const (
 // peer from a candidate whose far side silently refused — a datagram carrier
 // never signals the refusal to the dialer across the wire.
 func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origin string) bool {
+	return n.registerPeerFromAttempt(session, outbound, origin, 0)
+}
+
+func (n *Node) registerPeerFromAttempt(session *transport.Session, outbound bool, origin string, attempt uint64) bool {
 	remoteID := session.RemoteID()
 	peerID := hex.EncodeToString(remoteID[:])
 	addr := session.RemoteAddr().String()
@@ -690,6 +708,14 @@ func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origi
 		n.mu.Unlock()
 		_ = session.Close()
 		return false
+	}
+	if n.waitingRequested() && peerID != n.activity.attachment && peerID != n.activity.candidate {
+		if !outbound || attempt == 0 || attempt != n.activity.attempt || n.activity.candidateAddr == "" || n.activity.candidate != "" {
+			n.mu.Unlock()
+			_ = session.Close()
+			return false
+		}
+		n.activity.candidate = peerID
 	}
 	if peerID == n.localPeerID() {
 		delete(n.trackerSeeds, addr)
@@ -765,7 +791,8 @@ func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origi
 	// different connection). The scores themselves are knowingly a
 	// microsecond stale; re-scoring under the lock would re-break the
 	// invariant the scan just fixed.
-	if replacedPeer == nil && n.directPeerCountLocked() >= n.config.MaxPeers {
+	waitingSlot := n.waitingRequested() && peerID == n.activity.candidate && n.directPeerCountLocked() < 2
+	if replacedPeer == nil && n.directPeerCountLocked() >= n.config.MaxPeers && !waitingSlot {
 		n.mu.Unlock()
 		victim := n.selectOverflowPrunePeerLocked()
 		n.mu.Lock()
@@ -791,6 +818,9 @@ func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origi
 		id: peerID, addr: addr, session: session, origin: origin,
 		outbound: outbound, bootstrap: bootstrapSeed, connectedAt: time.Now(),
 		announceBudget: nat.NewTokenBucket(announceBurst, announceRatePerSecond),
+	}
+	if replacedPeer != nil {
+		peer.applicationUsed.Store(replacedPeer.applicationUsed.Load())
 	}
 	current := n.knownPeers[peerID]
 	knownAddr := addr
@@ -873,11 +903,14 @@ func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origi
 		n.introduceSelfTo(peer)
 		n.announceSelfToPeers(peerID)
 		n.migrateRelaySessions(peerID)
+		n.ensureRegisteredStreamReaders(peer)
 		for _, channel := range n.pubsub.SnapshotLocal() {
 			n.maintainTopicMesh(channel)
 		}
 	}()
-	go n.refreshExternalAddress(time.Now().Add(n.config.HandshakeTimeout()))
+	if !n.waitingRequested() {
+		go n.refreshExternalAddress(time.Now().Add(n.config.HandshakeTimeout()))
+	}
 	n.mu.Lock()
 	delete(n.directProbes, peerID)
 	delete(n.peerDials, peerID)

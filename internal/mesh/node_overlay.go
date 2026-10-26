@@ -45,6 +45,9 @@ const (
 // overlayEnabled reports whether this node answers overlay queries. Only a
 // publicly reachable node can: a query to an undialable node never arrives.
 func (n *Node) overlayIsCore() bool {
+	if n.waitingRequested() {
+		return false
+	}
 	profile, ok := n.natProfile.Load().(nat.Profile)
 	return ok && profile.PublicReachable
 }
@@ -131,6 +134,9 @@ func (n *Node) overlaySeedFromKnownPeers() overlaySeedTally {
 
 // handleOverlayFindNode returns the contacts we know nearest the key.
 func (n *Node) handleOverlayFindNode(peer *peerConn, env gossip.Envelope) {
+	if n.waitingRequested() {
+		return
+	}
 	key, ok := overlayKeyOf(env)
 	if !ok || peer == nil {
 		return
@@ -145,6 +151,9 @@ func (n *Node) handleOverlayFindNode(peer *peerConn, env gossip.Envelope) {
 // handleOverlayFindValue returns providers for the key, and the nearer contacts
 // so the asker can narrow if we hold nothing.
 func (n *Node) handleOverlayFindValue(peer *peerConn, env gossip.Envelope) {
+	if n.waitingRequested() {
+		return
+	}
 	key, ok := overlayKeyOf(env)
 	if !ok || peer == nil {
 		return
@@ -244,6 +253,9 @@ func overlayKeyOf(env gossip.Envelope) (overlay.NodeID, bool) {
 // Skipping unconnected contacts costs little: a node's core peers are exactly
 // the ones it is already attached to, so the contacts worth asking are on hand.
 func (n *Node) overlayQuery(ctx context.Context, c overlay.Contact, env gossip.Envelope) (gossip.Envelope, error) {
+	if n.waitingRequested() {
+		return gossip.Envelope{}, errors.New("overlay discovery suspended in waiting mode")
+	}
 	peerID := c.ID.String()
 	peer := n.peerByID(peerID)
 	if peer == nil {
@@ -321,6 +333,9 @@ func (n *Node) overlayReachableContacts(key overlay.NodeID) []overlay.Contact {
 }
 
 func (n *Node) overlayLookup(ctx context.Context, key overlay.NodeID, wantValue bool) ([]gossip.OverlayProvider, []overlay.Contact) {
+	if n.waitingRequested() {
+		return nil, nil
+	}
 	table := n.overlayTable
 	var shortlist []overlay.Contact
 	if table != nil {
@@ -669,6 +684,9 @@ const overlayTopicDiscoveryEvery = 15 * time.Second
 //
 // It never blocks the caller: maintainTopicMesh runs on the maintenance tick.
 func (n *Node) maybeDiscoverTopicPeers(topic string) {
+	if n.waitingRequested() {
+		return
+	}
 	if !n.topicDiscoveryAutomatic(topic) {
 		return
 	}
@@ -785,7 +803,13 @@ func (n *Node) peerIDByAddr(addr string) string {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 	for id, peer := range n.peers {
-		if peer != nil && !peer.relayed && peer.addr == addr {
+		if peer == nil || peer.relayed {
+			continue
+		}
+		// Inbound sessions use an ephemeral source port. Lifecycle-opted hosts
+		// may reuse the same authenticated identity's advertised listen address.
+		info := n.knownPeers[id]
+		if peer.addr == addr || (n.activity.optedIn && info.verified && info.addr == addr) {
 			return id
 		}
 	}

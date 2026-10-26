@@ -68,6 +68,10 @@ func (n *Node) sendKnownPeerSnapshot(peer *peerConn) {
 		return
 	}
 	n.sendOrEnqueue(peer, n.peerAnnouncementEnvelope(n.localKnownPeer()))
+	if n.waitingRequested() {
+		n.announceLocalSubscriptionsToPeer(peer)
+		return
+	}
 
 	n.mu.RLock()
 	known := make([]knownPeer, 0, len(n.knownPeers))
@@ -239,8 +243,12 @@ func (n *Node) handlePeerAnnounce(peer *peerConn, env gossip.Envelope) {
 }
 
 func (n *Node) handleSupernodeStatus(peer *peerConn, env gossip.Envelope, relayCapable bool) {
+	n.mu.RLock()
+	previouslyTrusted := n.isTrustedRelayCandidateLocked(env.AdvertisedPeerID)
+	n.mu.RUnlock()
 	env.AdvertisedRelayCapable = relayCapable
 	n.handleKnownPeerEnvelope(peer, env, env.Type)
+	n.signalWaitingCandidate(env.AdvertisedPeerID, previouslyTrusted)
 }
 
 func directSenderMatches(peer *peerConn, env gossip.Envelope) bool {
@@ -335,6 +343,9 @@ const announceForwardsSweepInterval = 60 * time.Second
 // verifiable, which is not a 5am change. This bounds the blast radius instead:
 // even a permanent oscillation now costs one message per peer per cooldown.
 func (n *Node) shouldForwardAnnounce(advertisedPeerID string) bool {
+	if n.waitingRequested() {
+		return false
+	}
 	if advertisedPeerID == "" {
 		return false
 	}

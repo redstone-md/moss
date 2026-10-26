@@ -60,6 +60,9 @@ func (n *Node) tryDirect(targetPeerID string, timeout time.Duration, force bool)
 }
 
 func (n *Node) tryDirectContext(ctx context.Context, targetPeerID string, timeout time.Duration, force bool) bool {
+	if n.waitingRequested() {
+		return false
+	}
 	if ctx.Err() != nil {
 		return false
 	}

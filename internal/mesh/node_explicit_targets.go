@@ -7,12 +7,13 @@ import (
 )
 
 type explicitTarget struct {
-	lastAttempt time.Time
-	running     bool
-	pending     bool
-	hint        string
-	cancel      context.CancelFunc
-	failures    int
+	lastAttempt   time.Time
+	running       bool
+	pending       bool
+	hint          string
+	cancel        context.CancelFunc
+	failures      int
+	identityRetry bool
 }
 
 // ConnectToPeer registers peerID as an explicit priority target: the node
@@ -79,6 +80,14 @@ func (n *Node) dialExplicitTarget(ctx context.Context, peerID string) {
 	if connected {
 		return
 	}
+	if n.activityIdentityFirst(peerID) {
+		lookupCtx, cancel := context.WithTimeout(ctx, n.config.HandshakeTimeout())
+		_, err := n.resolveRouteContext(lookupCtx, peerID)
+		cancel()
+		if err == nil {
+			return
+		}
+	}
 	if !n.tryDirectContext(ctx, peerID, n.config.HandshakeTimeout(), false) && ctx.Err() == nil &&
 		n.establishedRelaySession(peerID) == "" {
 		_, _ = n.openRelaySessionAny(ctx, peerID, n.config.HandshakeTimeout())
@@ -90,6 +99,9 @@ func (n *Node) dialExplicitTarget(ctx context.Context, peerID string) {
 
 // Callers hold n.mu: claim before launching so concurrent registrations coalesce.
 func (n *Node) startExplicitTargetLocked(peerID string, entry *explicitTarget) {
+	if n.waitingRequested() {
+		return
+	}
 	if entry.running {
 		return
 	}

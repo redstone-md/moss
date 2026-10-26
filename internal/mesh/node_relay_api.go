@@ -22,6 +22,8 @@ func (n *Node) openRelaySession(ctx context.Context, viaPeerID, targetPeerID str
 	}
 	n.mu.RLock()
 	peer := n.peers[viaPeerID]
+	target := n.peers[targetPeerID]
+	applicationUsed := target != nil && target.applicationUsed.Load()
 	n.mu.RUnlock()
 	if peer == nil || peer.relayed {
 		return "", errors.New("relay peer is not connected")
@@ -33,10 +35,11 @@ func (n *Node) openRelaySession(ctx context.Context, viaPeerID, targetPeerID str
 	wait := make(chan struct{})
 	n.mu.Lock()
 	n.relayLocals[sessionID] = relayLocalSession{
-		sessionID:    sessionID,
-		viaPeerID:    viaPeerID,
-		remotePeerID: targetPeerID,
-		wait:         wait,
+		sessionID:       sessionID,
+		viaPeerID:       viaPeerID,
+		remotePeerID:    targetPeerID,
+		wait:            wait,
+		applicationUsed: applicationUsed,
 	}
 	n.mu.Unlock()
 	if !n.sendRelayControlWithIdentity(peer, n.signRelayRequestEnvelope(gossip.Envelope{
@@ -185,6 +188,9 @@ func (n *Node) SendToPeer(peerID string, payload []byte, timeout time.Duration) 
 	}
 	n.mu.RLock()
 	peer := n.peers[peerID]
+	if peer != nil {
+		peer.applicationUsed.Store(true)
+	}
 	n.mu.RUnlock()
 	if peer != nil {
 		env := gossip.Envelope{
@@ -218,6 +224,11 @@ func (n *Node) handleDirectPacket(peer *peerConn, env gossip.Envelope) {
 		n.emitPenalty(peer.id, "direct packet over the message size limit")
 		return
 	}
+	n.mu.RLock()
+	if current := n.peers[peer.id]; current != nil {
+		current.applicationUsed.Store(true)
+	}
+	n.mu.RUnlock()
 	var sender [32]byte
 	copy(sender[:], env.SenderID)
 	// queueKey is the authenticated session identity (peer.id is the 64-char

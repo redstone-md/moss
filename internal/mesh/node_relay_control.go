@@ -25,6 +25,9 @@ const relayMigrationGracePeriod = time.Second
 const maxRelayPayloadBytes = 190 * 1024
 
 func (n *Node) handleRelayRequest(peer *peerConn, env gossip.Envelope) {
+	if n.waitingRequested() && env.RelayTarget != n.localPeerID() {
+		return
+	}
 	if env.RelaySession == "" || env.RelaySource == "" || env.RelayTarget == "" {
 		return
 	}
@@ -40,11 +43,15 @@ func (n *Node) handleRelayRequest(peer *peerConn, env gossip.Envelope) {
 		}
 		n.mu.Lock()
 		n.relayLocals[env.RelaySession] = session
+		previous := n.peers[session.remotePeerID]
 		relayPeer, capped := n.registerRelayedPeerLocked(session)
 		if capped {
 			delete(n.relayLocals, env.RelaySession)
 		}
 		n.mu.Unlock()
+		if relayPeer != nil && previous != nil && previous != relayPeer {
+			previous.closeSession()
+		}
 		if capped {
 			// No slot or no policy admission for another relayed peer:
 			// refuse with a close, not an accept that would leave the
@@ -89,6 +96,9 @@ func (n *Node) handleRelayRequest(peer *peerConn, env gossip.Envelope) {
 }
 
 func (n *Node) handleRelayAccept(peer *peerConn, env gossip.Envelope) {
+	if n.waitingRequested() && env.RelayTarget != n.localPeerID() {
+		return
+	}
 	if env.RelaySession == "" || env.RelaySource == "" || env.RelayTarget == "" {
 		return
 	}
@@ -100,11 +110,13 @@ func (n *Node) handleRelayAccept(peer *peerConn, env gossip.Envelope) {
 			return
 		}
 		var relayPeer *peerConn
+		var previous *peerConn
 		capped := false
 		n.mu.Lock()
 		session, ok := n.relayLocals[env.RelaySession]
 		if ok && session.viaPeerID == peer.id && session.remotePeerID == env.RelaySource {
 			session.established = true
+			previous = n.peers[session.remotePeerID]
 			relayPeer, capped = n.registerRelayedPeerLocked(session)
 			if !capped {
 				n.relayLocals[env.RelaySession] = session
@@ -116,6 +128,9 @@ func (n *Node) handleRelayAccept(peer *peerConn, env gossip.Envelope) {
 			}
 		}
 		n.mu.Unlock()
+		if relayPeer != nil && previous != nil && previous != relayPeer {
+			previous.closeSession()
+		}
 		if capped {
 			// The via-peer already registered a forwarding route on our
 			// behalf, so a refused target — at relayed fan-out cap or not
@@ -144,6 +159,9 @@ func (n *Node) handleRelayAccept(peer *peerConn, env gossip.Envelope) {
 }
 
 func (n *Node) handleRelayData(peer *peerConn, env gossip.Envelope) {
+	if n.waitingRequested() && env.RelayTarget != n.localPeerID() {
+		return
+	}
 	if env.RelaySession == "" || env.RelaySource == "" || env.RelayTarget == "" {
 		return
 	}
@@ -430,7 +448,7 @@ func (n *Node) deferRelayMigration(session relayLocalSession) {
 		started := n.started
 		current, ok := n.relayLocals[session.sessionID]
 		n.mu.RUnlock()
-		if !started || !ok || current.remotePeerID != session.remotePeerID {
+		if !started || !ok || current.remotePeerID != session.remotePeerID || !n.directPeerConnected(session.remotePeerID) {
 			return
 		}
 		n.closeRelaySession(current)
@@ -562,7 +580,7 @@ func (n *Node) registerRelayedPeerLocked(session relayLocalSession) (*peerConn, 
 		return nil, false
 	}
 	existing := n.peers[session.remotePeerID]
-	if existing != nil && !existing.relayed {
+	if existing != nil && !existing.relayed && (!n.waitingRequested() || session.remotePeerID == n.activity.attachment || session.remotePeerID == n.activity.candidate) {
 		return nil, false
 	}
 	if len(n.knownPeers[session.remotePeerID].noiseStatic) != 32 {
@@ -595,6 +613,11 @@ func (n *Node) registerRelayedPeerLocked(session relayLocalSession) (*peerConn, 
 		viaPeerID:      session.viaPeerID,
 		relaySessionID: session.sessionID,
 		connectedAt:    time.Now(),
+	}
+	if existing != nil {
+		peer.applicationUsed.Store(existing.applicationUsed.Load())
+	} else {
+		peer.applicationUsed.Store(session.applicationUsed)
 	}
 	n.peers[session.remotePeerID] = peer
 	info := n.knownPeers[session.remotePeerID]
