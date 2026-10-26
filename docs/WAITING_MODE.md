@@ -46,8 +46,10 @@ A waiting node refuses unrelated direct UDP peers before sending a mesh
 confirmation probe. A rejected upgrade must not make its initiator retire
 a working relayed path. Final peer admission revalidates the same policy.
 
-An outbound TCP replacement of an existing virtual peer also waits for an
-ordinary authenticated mesh packet before retiring that virtual route. Noise
+An outbound TCP replacement of an existing virtual peer or datagram carrier
+also waits for an ordinary authenticated mesh packet before retiring the old
+path. A carrier refusing the TCP session must leave its working datagram path
+and virtual routes intact. Noise
 alone can complete before the remote refuses admission. Existing ping probes
 and handshake deadlines supply this confirmation; the first packet is replayed
 to its normal handler. Cold direct startup is unchanged. Cancellation, Stop and

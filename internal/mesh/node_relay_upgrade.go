@@ -13,12 +13,14 @@ func (n *Node) relayUpgradeNeedsConfirmation(session *transport.Session) bool {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 	peer := n.peers[hex.EncodeToString(id[:])]
-	return peer != nil && peer.relayed
+	return peer != nil && (peer.relayed ||
+		(peer.session != nil && !isStreamNetwork(peer.session.RemoteAddr())))
 }
 
-// A TCP Noise handshake may precede the remote's Waiting/capacity refusal.
-// Keep the established virtual path until an existing mesh packet confirms
-// actual remote admission. Cold direct connections retain their original path.
+// A TCP Noise handshake may precede a mesh-level refusal. Keep an existing
+// virtual path or datagram carrier until a mesh packet confirms admission;
+// replacing a carrier would otherwise also strand all its virtual sessions.
+// Cold direct connections retain their original path.
 func (n *Node) confirmAndRegisterRelayUpgrade(ctx context.Context, session *transport.Session, attempt uint64) error {
 	packet, ok := n.awaitMeshConfirm(ctx, session)
 	if !ok || !n.registerPeerFromContext(ctx, session, true, originDialTCP, attempt) {
