@@ -18,6 +18,7 @@ import (
 // opted out (a masked ear would relabel accepted sessions inbound_masq).
 func overlayTestConfig() Config {
 	cfg := DefaultConfig()
+	cfg.ListenPort = fixtureListenPort()
 	cfg.Trackers = nil
 	cfg.LANDiscoveryEnabled = false
 	cfg.DHTEnabled = false

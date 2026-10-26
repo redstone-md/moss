@@ -10,7 +10,6 @@ import (
 func startExplicitTargetNode(t *testing.T, name string, retryMax ...int) *Node {
 	t.Helper()
 	cfg := isolatedTestConfig(name)
-	cfg.ListenPort = 0
 	cfg.Security.HandshakeTimeoutSec = 2
 	if len(retryMax) != 0 {
 		cfg.ExplicitRetryMaxSec = retryMax[0]
