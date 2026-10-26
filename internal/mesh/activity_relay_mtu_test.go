@@ -17,10 +17,7 @@ import (
 // authenticated relay at its advertised address without this datagram limit.
 func datagramMTUProxy(t *testing.T, target string, mtu int) string {
 	t.Helper()
-	proxy, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
-	if err != nil {
-		t.Fatal(err)
-	}
+	proxy, listener := mtuProxyListeners(t)
 	remote, err := net.ResolveUDPAddr("udp4", target)
 	if err != nil {
 		t.Fatal(err)
@@ -66,16 +63,30 @@ func datagramMTUProxy(t *testing.T, target string, mtu int) string {
 			}
 		}
 	}()
-	streamMTUProxy(t, proxy.LocalAddr().String(), target)
+	streamMTUProxy(t, listener, target)
 	return proxy.LocalAddr().String()
 }
 
-func streamMTUProxy(t *testing.T, addr, target string) {
+func mtuProxyListeners(t *testing.T) (*net.UDPConn, net.Listener) {
 	t.Helper()
-	listener, err := net.Listen("tcp4", addr)
-	if err != nil {
-		t.Fatal(err)
+	for range 20 {
+		listener, err := net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		addr := listener.Addr().(*net.TCPAddr)
+		proxy, err := net.ListenUDP("udp4", &net.UDPAddr{IP: addr.IP, Port: addr.Port})
+		if err == nil {
+			return proxy, listener
+		}
+		listener.Close()
 	}
+	t.Fatal("could not reserve one proxy port for both UDP and TCP")
+	return nil, nil
+}
+
+func streamMTUProxy(t *testing.T, listener net.Listener, target string) {
+	t.Helper()
 	var mu sync.Mutex
 	var workers sync.WaitGroup
 	var closing bool
