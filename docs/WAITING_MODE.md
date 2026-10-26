@@ -16,6 +16,11 @@ ordinary desktop sender. The upgrade is serialized per physical carrier;
 failures retain UDP and suppress another probe on that carrier for one minute.
 This changes relay data transport only, not ordinary discovery or mesh policy.
 
+A first accepted topic subscription receives one reciprocal claim. This lets a
+new room participant exchange traffic immediately when known-recipient hints
+had suppressed a speculative introduction; repeated claims do not echo, and
+topic refusals and peer health exclusions still control admission.
+
 A waiting node refuses unrelated direct UDP peers before sending a mesh
 confirmation probe. A rejected upgrade must not make its initiator retire
 a working relayed path. Final peer admission revalidates the same policy.
@@ -23,7 +28,8 @@ a working relayed path. Final peer admission revalidates the same policy.
 Waiting is a policy for the embedding application to select automatically when
 it has no interactive work, accepted call or user-started transfer. It is not a
 new end-user setting. Every node starts active; Bastion, games and other hosts
-that never call the setter retain their existing discovery and relay behavior.
+that never call the setter retain their existing discovery, forwarding and
+maintenance policy.
 
 The Go API is `Node.SetActivityMode(ActivityActive|ActivityWaiting)`; the optional
 C symbol is `Moss_SetActivityMode(handle, 0|1)`. Success accepts a desired mode,

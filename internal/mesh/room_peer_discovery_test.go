@@ -3,6 +3,7 @@ package mesh
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/redstone-md/moss/internal/gossip"
 )
@@ -92,4 +93,44 @@ func TestKnownRoomReplacesHintsAndAcceptsNewSubscription(t *testing.T) {
 	if !node.pubsub.InMesh(node.roomTopic("moves"), first) {
 		t.Fatal("a fresh subscription was rejected by discovery hints")
 	}
+}
+
+func TestKnownRoomReturnsItsFirstSubscriptionClaimWithoutPeriodicRefresh(t *testing.T) {
+	node, peer, sent := topicPrunePeer(t)
+	known := strings.Repeat("ab", 32)
+	if code := node.SetRoomPeerDiscovery("", RoomDiscoveryKnownPeers, []string{known}); code != MOSS_OK {
+		t.Fatal(code)
+	}
+	if code := node.Subscribe("late-subscriber"); code != MOSS_OK {
+		t.Fatal(code)
+	}
+	if sent.writeCount() != 0 {
+		t.Fatal("known-room discovery probed an unrelated peer")
+	}
+	topic := node.roomTopic("late-subscriber")
+	node.handleEnvelope(peer, gossip.Envelope{Type: gossip.TypeGraft, Channel: topic})
+	if sent.writeCount() != 1 {
+		t.Fatal("accepted late subscriber did not receive our positive subscription claim")
+	}
+	for range 16 {
+		node.handleEnvelope(peer, gossip.Envelope{Type: gossip.TypeGraft, Channel: topic})
+	}
+	if sent.writeCount() != 1 {
+		t.Fatal("repeated claims created a GRAFT response loop")
+	}
+}
+
+func TestKnownRoomLateSubscriberExchangesTrafficBeforePeriodicMaintenance(t *testing.T) {
+	cfg := overlayTestConfig()
+	cfg.GossipSub.HeartbeatMS = 60000
+	first := startOverlayNodeWithConfig(t, "reciprocal-room", cfg)
+	fresh := startOverlayNodeWithConfig(t, "reciprocal-room", cfg)
+	const room, channel = "late-room", "messages"
+	key := []byte("late-room-key")
+	first.JoinRoom(room, key)
+	first.SetRoomPeerDiscovery(room, RoomDiscoveryKnownPeers, []string{strings.Repeat("ab", 32)})
+	first.SubscribeRoom(room, channel)
+	attachLeaf(t, fresh, first)
+	received := relayDeliverySink(t, room, channel, key, first, fresh)
+	assertActivityRoomTraffic(t, first, fresh, received, room, channel, "late", time.Second)
 }

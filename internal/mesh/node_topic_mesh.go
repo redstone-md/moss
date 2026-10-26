@@ -24,23 +24,30 @@ func (n *Node) graftTopicPeer(peer *peerConn, channel string, now time.Time) {
 func (n *Node) handleTopicGraft(peer *peerConn, channel string) {
 	// Scoring may call host code, so evaluate it outside the node lock.
 	score := n.peerScore(peer.id)
-	n.mu.RLock()
+	n.mu.Lock()
 	currentPeer := n.topicPeerLocked(peer)
 	if currentPeer == nil {
-		n.mu.RUnlock()
+		n.mu.Unlock()
 		return
 	}
 	current := snapshotMeshCandidate(currentPeer, time.Now())
 	current.score = score
+	firstClaim := !n.pubsub.HasPeerSubscription(peer.id, channel)
 	n.pubsub.SetPeerSubscription(peer.id, channel, true)
 	joined := current.eligible() && n.pubsub.IsLocalSubscriber(channel) &&
 		!n.pubsub.InBackoff(channel, peer.id, time.Now())
 	if joined {
 		joined = n.pubsub.SetMeshPeer(channel, peer.id, true)
 	}
-	n.mu.RUnlock()
+	n.mu.Unlock()
 	if joined {
-		n.sendRecentIHave(peer, channel)
+		// Discovery hints may have suppressed our speculative introduction.
+		// A first accepted claim needs one reciprocal claim, never an echo loop.
+		if firstClaim {
+			n.graftTopicPeer(peer, channel, time.Now())
+		} else {
+			n.sendRecentIHave(peer, channel)
+		}
 	} else {
 		n.sendEnvelope(peer, gossip.Envelope{Type: gossip.TypePrune, Channel: channel})
 	}
