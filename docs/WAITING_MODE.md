@@ -60,10 +60,18 @@ Mode changes serialize with Stop. Stop still invalidates the C handle and is
 never the implementation of a policy change.
 
 A valid setter call opts that node into the lifecycle, including an initial
-active request. Only opted-in nodes prefer foreground identity resolution when
-an explicit target has no direct address or its direct path was refused. A
-healthy known direct path retains its existing startup behavior. Hosts that
-never call the setter retain their original routing order too.
+active request. Opted-in nodes prefer foreground identity resolution when an
+explicit target has no direct address or its direct path was refused. A healthy
+known direct path retains its existing startup behavior.
+
+An ordinary host also refreshes one explicit target's identity after losing
+that target's current established relay. The recipient may now be waiting on a
+different carrier and refuse direct physical sessions after Noise succeeds.
+Those speculative admissions do not consume recovery; an established relay or
+a direct session with actual inbound traffic does. Existing per-target retry
+coalescing, deadlines and backoff still apply. Unregistered peers, pending or
+replaced relay sessions and ordinary direct-only targets retain their original
+routing order. This does not opt the host into lifecycle or change discovery.
 
 ## State and carrier
 

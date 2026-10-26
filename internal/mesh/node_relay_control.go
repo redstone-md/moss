@@ -619,6 +619,11 @@ func (n *Node) registerRelayedPeerLocked(session relayLocalSession) (*peerConn, 
 	info.lastSeen = time.Now()
 	n.knownPeers[session.remotePeerID] = info
 	n.resetExplicitTargetLocked(session.remotePeerID)
+	if !n.activity.optedIn && session.established {
+		if target := n.explicitTargets[session.remotePeerID]; target != nil {
+			target.identityRetry = false
+		}
+	}
 	n.scoring.Ensure(session.remotePeerID)
 	return peer, false
 }
@@ -648,6 +653,14 @@ func (n *Node) removeRelayedPeerLocked(session relayLocalSession) bool {
 	peer := n.peers[session.remotePeerID]
 	if peer == nil || !peer.relayed || peer.relaySessionID != session.sessionID {
 		return false
+	}
+	// An explicit application target reached by relay may now be waiting on
+	// another carrier. Refresh that identity before a refused direct handshake
+	// can repeatedly look successful to an ordinary, non-opted-in caller.
+	if session.established {
+		if target := n.explicitTargets[session.remotePeerID]; target != nil {
+			target.identityRetry = true
+		}
 	}
 	delete(n.peers, session.remotePeerID)
 	return true

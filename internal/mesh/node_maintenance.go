@@ -40,9 +40,13 @@ func (n *Node) removePeerForPolicy(peerID string, session *transport.Session, wa
 	// and it should be a query rather than something to reconstruct from logs.
 	endedRelayed, endedAt, endedMisses, endedOrigin := peer.relayed, peer.connectedAt, peer.pingMisses, peer.origin
 	endedInbound := peer.inboundPackets.Load()
-	if n.activity.optedIn && !peer.relayed {
+	if !peer.relayed {
 		if target := n.explicitTargets[peerID]; target != nil {
-			target.identityRetry = true
+			if n.activity.optedIn {
+				target.identityRetry = true
+			} else if endedInbound > 0 {
+				target.identityRetry = false
+			}
 		}
 	}
 	// A non-nil session can still have no remote: a relayed peer carries none at
