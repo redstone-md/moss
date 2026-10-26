@@ -123,6 +123,26 @@ wait:
 	}
 }
 
+func TestActivityFreshRoomOriginAfterIdentityOrigin(t *testing.T) {
+	first, second, receiver := waitingRecipient(t, 2)
+	origin, received := activeOrigin(t, first, receiver, true)
+	awaitWaitingRecipientRoute(t, origin, receiver, first, second)
+	assertActivityTraffic(t, origin, receiver, received, waitingOriginRoom, waitingOriginChannel, "first-origin")
+	roomOrigin, roomReceived := activeOrigin(t, first, receiver, false)
+	t.Cleanup(func() {
+		if t.Failed() {
+			for label, node := range map[string]*Node{"first-origin": origin, "room-origin": roomOrigin, "receiver": receiver} {
+				topic := node.roomTopicIn(waitingOriginRoom, waitingOriginChannel)
+				node.mu.RLock()
+				peers := len(node.peers)
+				node.mu.RUnlock()
+				t.Logf("%s peers=%d subscribed=%d mesh=%d", label, peers, len(node.pubsub.Subscribers(topic)), len(node.pubsub.MeshPeers(topic)))
+			}
+		}
+	})
+	assertActivityRoomTraffic(t, roomOrigin, receiver, roomReceived, waitingOriginRoom, waitingOriginChannel, "room-origin", 25*time.Second)
+}
+
 func TestActivityOptInKeepsLiveDirectStartupPath(t *testing.T) {
 	for _, opted := range []bool{false, true} {
 		core := startCappedOverlayNode(t, "startup-core")

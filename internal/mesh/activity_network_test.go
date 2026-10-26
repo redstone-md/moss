@@ -74,7 +74,11 @@ func TestActivityNetworkHintsPreserveAuthenticatedCarrier(t *testing.T) {
 	waitFor(t, func() bool {
 		n.mu.RLock()
 		defer n.mu.RUnlock()
-		return carrier.pingPending == "" && carrier.pingSentAt.After(started)
+		// Windows' monotonic clock can give the hint and its immediate Pong
+		// the same timestamp. Consumption proves the hint ran; the acknowledged
+		// probe must be at or after the hint, not strictly in a later tick.
+		return !n.activity.networkPending && !n.activity.networkLast.IsZero() &&
+			carrier.pingPending == "" && !carrier.pingSentAt.Before(started)
 	}, "network hint was not processed")
 	after := readActivity(t, n)
 	if after.Requested != "waiting" || after.Reachability != "ready" || after.Attachments != 1 || after.Key != before.Key || n.peerByID(core.localPeerID()) != carrier {

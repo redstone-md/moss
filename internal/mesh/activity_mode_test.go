@@ -97,25 +97,43 @@ func assertActivityTraffic(t *testing.T, a, b *Node, received <-chan string, roo
 
 func assertActivityRoomTraffic(t *testing.T, a, b *Node, received <-chan string, room, channel, phase string, budget time.Duration) {
 	t.Helper()
-	seen := map[string]bool{"0/pub/" + phase + "/b": false, "1/pub/" + phase + "/a": false, "0/direct/" + phase + "/b": false, "1/direct/" + phase + "/a": false}
-	deadline := time.Now().Add(budget)
+	seen := map[string]bool{"0/pub/" + phase + "/b": false, "1/pub/" + phase + "/a": false}
+	deadline := time.NewTimer(budget)
+	defer deadline.Stop()
+	retry := time.NewTicker(20 * time.Millisecond)
+	defer retry.Stop()
 	// Pub/sub must work before a directed send could create missing relay state.
-	for time.Now().Before(deadline) {
-		a.PublishRoom(room, channel, []byte(phase+"/a"))
-		b.PublishRoom(room, channel, []byte(phase+"/b"))
+	// Keep publishing independent of callbacks: two local echoes per retry
+	// otherwise cause another two publishes after consuming only one echo.
+	for {
 		select {
+		case <-retry.C:
+			a.PublishRoom(room, channel, []byte(phase+"/a"))
+			b.PublishRoom(room, channel, []byte(phase+"/b"))
 		case value := <-received:
 			if _, ok := seen[value]; ok {
 				seen[value] = true
 			}
-		case <-time.After(20 * time.Millisecond):
+		case <-deadline.C:
+			logActivityRoomPaths(t, a, b, room, channel)
+			t.Fatalf("subscriptions/callbacks lost across %s: %v", phase, seen)
 		}
 		if seen["0/pub/"+phase+"/b"] && seen["1/pub/"+phase+"/a"] {
-			break
+			return
 		}
 	}
-	if !seen["0/pub/"+phase+"/b"] || !seen["1/pub/"+phase+"/a"] {
-		t.Fatalf("subscriptions/callbacks lost across %s: %v", phase, seen)
+}
+
+func logActivityRoomPaths(t *testing.T, a, b *Node, room, channel string) {
+	t.Helper()
+	for label, node := range map[string]*Node{"a": a, "b": b} {
+		topic := node.roomTopicIn(room, channel)
+		node.mu.RLock()
+		for id, peer := range node.peers {
+			t.Logf("[activity-path] %s peer=%.8s relay=%t incoming=%d subscribed=%t mesh=%t pending=%t misses=%d", label, id, peer.relayed, peer.inboundPackets.Load(), node.pubsub.HasPeerSubscription(id, topic), node.pubsub.InMesh(topic, id), peer.pingPending != "", peer.pingMisses)
+		}
+		t.Logf("[activity-path] %s routes=%d sessions=%d", label, len(node.relayRoutes), len(node.relayLocals))
+		node.mu.RUnlock()
 	}
 }
 
