@@ -54,6 +54,48 @@ func TestActivityDirectLossDoesNotCancelPendingRelayMigration(t *testing.T) {
 	assertActivityTraffic(t, a, b, received, room, channel, "migrated")
 }
 
+func TestActivityWaitingMigrationDrainsOriginalDirectPackets(t *testing.T) {
+	core := startCappedOverlayNode(t, "drain-core")
+	a := startCappedOverlayNode(t, "drain-leaf")
+	b := startCappedOverlayNode(t, "drain-leaf")
+	waitingRelayFixture(t, a, core)
+	waitingRelayFixture(t, b, core)
+	attachLeaf(t, a, b)
+	waitFor(t, func() bool { return b.directPeerConnected(a.localPeerID()) }, "remote direct admission did not finish")
+	old := b.peerByID(a.localPeerID())
+	if !b.sendEnvelope(old, gossip.Envelope{Type: gossip.TypePing, RequestID: "before-migration"}) {
+		t.Fatal("original path was not usable before migration")
+	}
+	if err := a.SendToPeer(b.localPeerID(), []byte("establish-use"), time.Second); err != nil {
+		t.Fatal(err)
+	}
+	received := make(chan string, 1)
+	a.SetPacketCallback(func(_ [32]byte, data []byte) { received <- string(data) })
+	if code := a.SetActivityMode(ActivityWaiting); code != MOSS_OK {
+		t.Fatal(code)
+	}
+	waitFor(t, func() bool {
+		peer := a.peerByID(b.localPeerID())
+		return peer != nil && peer.relayed
+	}, "waiting did not admit the relay replacement")
+	// This is the packet the remote had already queued on the old encrypted
+	// path when our relay accept arrived. It must still reach the application.
+	if !b.sendEnvelope(old, gossip.Envelope{
+		Type: gossip.TypeDirect, SenderID: b.identity.PublicKeyBytes(), Payload: []byte("in-flight"),
+	}) {
+		t.Fatal("relay admission immediately closed the original direct path")
+	}
+	select {
+	case value := <-received:
+		if value != "in-flight" {
+			t.Fatal(value)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("migration dropped a packet already assigned to the original path")
+	}
+	awaitActivity(t, a, "waiting", "ready")
+}
+
 func TestActivityPendingMigrationKeepsDirectedPathForLaterHandover(t *testing.T) {
 	first := startCappedOverlayNode(t, "direct-first")
 	second := startCappedOverlayNode(t, "direct-second")

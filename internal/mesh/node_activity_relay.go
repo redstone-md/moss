@@ -51,6 +51,7 @@ func (n *Node) reconcileWaiting(root context.Context) {
 		n.setLastError("waiting transition could not migrate all application paths through one relay")
 		return
 	}
+	n.awaitWaitingDrains()
 	cancel()
 	n.mu.Lock()
 	n.activity.attemptCancel = nil
@@ -142,6 +143,7 @@ func (n *Node) trimWaitingMesh() {
 		return
 	}
 	keep := n.activity.attachment
+	attempt := n.activity.attempt
 	var drop []*peerConn
 	for id, peer := range n.peers {
 		if !peer.relayed && id != keep {
@@ -154,11 +156,12 @@ func (n *Node) trimWaitingMesh() {
 	}
 	n.mu.RUnlock()
 	for id, route := range routes {
-		n.closeRelayRouteWithClose(id, route.initiator, route.target)
+		n.closeRelayRouteForPolicy(id, route.initiator, route.target, &attempt)
 	}
 	for _, peer := range drop {
-		peer.closeSession()
-		n.removePeer(peer.id, peer.session)
+		if n.removePeerForPolicy(peer.id, peer.session, &attempt) {
+			peer.closeSession()
+		}
 	}
 }
 

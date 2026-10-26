@@ -41,6 +41,7 @@ type activityState struct {
 	lastCandidate   string
 	lastReport      activityReport
 	presenceAt      time.Time
+	draining        map[*peerConn]<-chan struct{}
 }
 
 type activityReport struct {

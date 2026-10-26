@@ -19,5 +19,13 @@ func (n *Node) connectWaitingCandidate(ctx context.Context, addr, peerID string)
 		_, err = n.veilDial(ctx, relay.Addr, relay.CoverSNI, key)
 		return err
 	}
-	return n.connectPeerWithHint(ctx, addr, peerID)
+	// Match static-peer fallback without racing two physical admissions.
+	_ = n.connectPeerWithHint(ctx, addr, peerID)
+	if n.hasPeerAddr(addr) || (peerID != "" && n.directPeerConnected(peerID)) {
+		return nil
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return n.connectPeerUDPWithHint(ctx, peerID, addr)
 }

@@ -100,10 +100,25 @@ func (n *Node) RelaySend(sessionID string, data []byte) error {
 	if len(data) > maxRelayPayloadBytes {
 		return fmt.Errorf("relay payload of %d bytes exceeds the %d-byte limit", len(data), maxRelayPayloadBytes)
 	}
+	n.markRelayApplicationUsed(sessionID)
 	if !n.sendRelayPayload(sessionID, data) {
 		return errors.New("relay send failed")
 	}
 	return nil
+}
+
+func (n *Node) markRelayApplicationUsed(sessionID string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	session, ok := n.relayLocals[sessionID]
+	if !ok || !session.established {
+		return
+	}
+	session.applicationUsed = true
+	n.relayLocals[sessionID] = session
+	if peer := n.peers[session.remotePeerID]; peer != nil {
+		peer.applicationUsed.Store(true)
+	}
 }
 
 func (n *Node) RelaySendTo(targetPeerID string, data []byte, timeout time.Duration) error {

@@ -54,8 +54,12 @@ func (n *Node) confirmAndRegisterUDPPeer(ctx context.Context, session *transport
 	if session == nil {
 		return errors.New("mesh: udp registration requires a session")
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	packet, ok := n.awaitUDPConfirm(ctx, session)
-	if !ok || !n.registerPeerFrom(session, outbound, origin) {
+	attempt, _ := ctx.Value(waitingAttemptKey{}).(uint64)
+	if !ok || !n.registerPeerFromContext(ctx, session, outbound, origin, attempt) {
 		// Either the window expired with the far side silent, or the node
 		// refused its half of the session (capacity, duplicate, stopped) —
 		// registerPeerFrom has already closed the session in that case. For

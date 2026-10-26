@@ -17,11 +17,22 @@ import (
 const supernodeReannounceEveryTicks uint64 = 10
 
 func (n *Node) removePeer(peerID string, session *transport.Session) {
+	n.removePeerForPolicy(peerID, session, nil)
+}
+
+// Retire a captured waiting path only while its policy generation still owns it.
+// Logical removal happens under the same lock as SetActivityMode; closing the
+// retired transport and the remaining cleanup need no policy lock.
+func (n *Node) removePeerForPolicy(peerID string, session *transport.Session, waitingAttempt *uint64) bool {
 	n.mu.Lock()
 	peer := n.peers[peerID]
 	if peer == nil || peer.session != session {
 		n.mu.Unlock()
-		return
+		return false
+	}
+	if waitingAttempt != nil && (!n.started || !n.waitingRequested() || n.activity.attempt != *waitingAttempt || peerID == n.activity.attachment || peerID == n.activity.candidate) {
+		n.mu.Unlock()
+		return false
 	}
 	// Capture before the entry goes: how long the session held, and whether it
 	// died on missed pings, is what tells a NAT mapping timing out apart from an
@@ -170,6 +181,7 @@ func (n *Node) removePeer(peerID string, session *transport.Session) {
 		n.enqueueEvent(EventPeerLeft, map[string]string{"peer": peerID, "addr": peer.addr})
 		n.reportSessionLifetime(endedRelayed, endedAt, endedMisses, endedOrigin, endedTransport, endedInbound, peerID)
 	}
+	return true
 }
 
 func (n *Node) observeMeshDelivery(channel, messageID, peerID string) {
@@ -438,6 +450,13 @@ func (n *Node) collectPruneLocked(now time.Time) pruneLists {
 		disconnect: make([]string, 0),
 	}
 	for id, peer := range n.peers {
+		if n.waitingRequested() && peer.relayed {
+			// The carrier owns liveness in waiting mode. A probe from the
+			// previous active phase must not evict a virtual room member.
+			peer.pingPending = ""
+			peer.pingSentAt = time.Time{}
+			continue
+		}
 		if !n.waitingRequested() && peer.lastRTT > peerLatencyPruneThreshold {
 			lists.meshOnly = append(lists.meshOnly, id)
 			continue

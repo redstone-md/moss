@@ -43,15 +43,11 @@ func (n *Node) handleRelayRequest(peer *peerConn, env gossip.Envelope) {
 		}
 		n.mu.Lock()
 		n.relayLocals[env.RelaySession] = session
-		previous := n.peers[session.remotePeerID]
 		relayPeer, capped := n.registerRelayedPeerLocked(session)
 		if capped {
 			delete(n.relayLocals, env.RelaySession)
 		}
 		n.mu.Unlock()
-		if relayPeer != nil && previous != nil && previous != relayPeer {
-			previous.closeSession()
-		}
 		if capped {
 			// No slot or no policy admission for another relayed peer:
 			// refuse with a close, not an accept that would leave the
@@ -110,13 +106,11 @@ func (n *Node) handleRelayAccept(peer *peerConn, env gossip.Envelope) {
 			return
 		}
 		var relayPeer *peerConn
-		var previous *peerConn
 		capped := false
 		n.mu.Lock()
 		session, ok := n.relayLocals[env.RelaySession]
 		if ok && session.viaPeerID == peer.id && session.remotePeerID == env.RelaySource {
 			session.established = true
-			previous = n.peers[session.remotePeerID]
 			relayPeer, capped = n.registerRelayedPeerLocked(session)
 			if !capped {
 				n.relayLocals[env.RelaySession] = session
@@ -128,9 +122,6 @@ func (n *Node) handleRelayAccept(peer *peerConn, env gossip.Envelope) {
 			}
 		}
 		n.mu.Unlock()
-		if relayPeer != nil && previous != nil && previous != relayPeer {
-			previous.closeSession()
-		}
 		if capped {
 			// The via-peer already registered a forwarding route on our
 			// behalf, so a refused target — at relayed fan-out cap or not
@@ -181,6 +172,7 @@ func (n *Node) handleRelayData(peer *peerConn, env gossip.Envelope) {
 		// cannot open is counted and dropped, never handed to the
 		// application unread.
 		if plaintext, err := n.openDMPayload(env.RelaySource, env.Payload); err == nil {
+			n.markRelayApplicationUsed(session.sessionID)
 			var sender [32]byte
 			if raw, err := hex.DecodeString(env.RelaySource); err == nil {
 				copy(sender[:], raw)
@@ -620,6 +612,7 @@ func (n *Node) registerRelayedPeerLocked(session relayLocalSession) (*peerConn, 
 		peer.applicationUsed.Store(session.applicationUsed)
 	}
 	n.peers[session.remotePeerID] = peer
+	n.deferDirectMigrationLocked(existing)
 	info := n.knownPeers[session.remotePeerID]
 	info.id = session.remotePeerID
 	info.direct = false
@@ -706,7 +699,15 @@ func (n *Node) relayConsumerCapped(consumerID string, bytes int64, now time.Time
 // explicit close on both legs is the only thing that propagates past the
 // relay itself.
 func (n *Node) closeRelayRouteWithClose(sessionID, source, target string) {
+	n.closeRelayRouteForPolicy(sessionID, source, target, nil)
+}
+
+func (n *Node) closeRelayRouteForPolicy(sessionID, source, target string, waitingAttempt *uint64) {
 	n.mu.Lock()
+	if waitingAttempt != nil && (!n.started || !n.waitingRequested() || n.activity.attempt != *waitingAttempt) {
+		n.mu.Unlock()
+		return
+	}
 	_, hadRoute := n.relayRoutes[sessionID]
 	delete(n.relayRoutes, sessionID)
 	sourcePeer := n.peers[source]
