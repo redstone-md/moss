@@ -83,6 +83,19 @@ coalescing, deadlines and backoff still apply. Unregistered peers, pending or
 replaced relay sessions and ordinary direct-only targets retain their original
 routing order. This does not opt the host into lifecycle or change discovery.
 
+Active virtual peers also retire at the existing unanswered end-to-end probe
+limit. They have no physical socket to close: retirement removes only the
+matching failed relay-session incarnation and lets an ordinary explicit target
+refresh its identity route, while retaining its healthy carrier. A stale probe
+cannot prune or retire a newer peer incarnation. Waiting virtual peers still
+rely on carrier liveness and do not start per-conversation probes.
+
+This recovery does not change the probe interval, miss limit, retention grace
+or host authentication timeout. A carrier that silently loses a route can
+therefore cause a transient application-offline interval before the existing
+probe budget expires and fresh routing succeeds. No fixed recovery latency
+or uninterrupted-presence guarantee is inferred from carrier readiness.
+
 ## State and carrier
 
 Read these additive fields from MeshInfo, or subscribe to event 12:

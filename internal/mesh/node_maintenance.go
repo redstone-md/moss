@@ -443,18 +443,18 @@ func (n *Node) clearFailedPings(failed []pingTarget) {
 // pruneLists is one prune scan's outcome: peers to drop from topic meshes,
 // and the subset whose session must also be closed.
 type pruneLists struct {
-	meshOnly   []string
-	disconnect []string
+	meshOnly   []*peerConn
+	disconnect []*peerConn
 }
 
 // collectPruneLocked consumes expired pings and partitions the affected peers
 // into mesh-prune and disconnect lists. Caller must hold n.mu.
 func (n *Node) collectPruneLocked(now time.Time) pruneLists {
 	lists := pruneLists{
-		meshOnly:   make([]string, 0, len(n.peers)),
-		disconnect: make([]string, 0),
+		meshOnly:   make([]*peerConn, 0, len(n.peers)),
+		disconnect: make([]*peerConn, 0),
 	}
-	for id, peer := range n.peers {
+	for _, peer := range n.peers {
 		if n.waitingRequested() && peer.relayed {
 			// The carrier owns liveness in waiting mode. A probe from the
 			// previous active phase must not evict a virtual room member.
@@ -463,16 +463,16 @@ func (n *Node) collectPruneLocked(now time.Time) pruneLists {
 			continue
 		}
 		if !n.waitingRequested() && peer.lastRTT > peerLatencyPruneThreshold {
-			lists.meshOnly = append(lists.meshOnly, id)
+			lists.meshOnly = append(lists.meshOnly, peer)
 			continue
 		}
 		if peer.pingPending != "" && now.Sub(peer.pingSentAt) > peerPingTimeout {
 			peer.pingPending = ""
 			peer.pingSentAt = time.Time{}
 			peer.pingMisses++
-			lists.meshOnly = append(lists.meshOnly, id)
+			lists.meshOnly = append(lists.meshOnly, peer)
 			if !n.shouldRetainPeerLocked(peer) && peer.pingMisses >= peerDisconnectMissLimit {
-				lists.disconnect = append(lists.disconnect, id)
+				lists.disconnect = append(lists.disconnect, peer)
 			}
 		}
 	}
@@ -482,14 +482,15 @@ func (n *Node) collectPruneLocked(now time.Time) pruneLists {
 // applyPruneLists drops mesh-only peers from every topic mesh and closes the
 // sessions of disconnect peers.
 func (n *Node) applyPruneLists(lists pruneLists) {
-	for _, id := range lists.meshOnly {
-		n.prunePeerFromAllMeshes(id, meshBlockHealth)
+	for _, peer := range lists.meshOnly {
+		n.prunePeerFromAllMeshesCurrent(peer.id, peer, meshBlockHealth)
 	}
-	for _, id := range lists.disconnect {
-		n.mu.RLock()
-		peer := n.peers[id]
-		n.mu.RUnlock()
-		peer.closeSession()
+	for _, peer := range lists.disconnect {
+		if peer.relayed {
+			n.retireUnresponsiveRelayPeer(peer)
+		} else {
+			peer.closeSession()
+		}
 	}
 }
 
@@ -693,9 +694,19 @@ const (
 )
 
 func (n *Node) prunePeerFromAllMeshes(peerID string, reason meshBlockReason) {
+	n.prunePeerFromAllMeshesCurrent(peerID, nil, reason)
+}
+
+// A captured health scan must not prune a replacement admitted under the same ID.
+func (n *Node) prunePeerFromAllMeshesCurrent(peerID string, expected *peerConn, reason meshBlockReason) {
 	until := time.Now().Add(n.peerPruneBackoff())
 	n.mu.Lock()
-	if peer := n.peers[peerID]; peer != nil {
+	peer := n.peers[peerID]
+	if expected != nil && (peer != expected || (peer.relayed && n.waitingRequested())) {
+		n.mu.Unlock()
+		return
+	}
+	if peer != nil {
 		blocked := &peer.meshBlocked
 		if reason == meshBlockScore {
 			blocked = &peer.meshScoreBlocked
@@ -704,15 +715,15 @@ func (n *Node) prunePeerFromAllMeshes(peerID string, reason meshBlockReason) {
 			*blocked = until
 		}
 	}
-	n.mu.Unlock()
+	var pruned []string
 	for _, channel := range n.pubsub.SnapshotLocal() {
-		if !n.pubsub.InMesh(channel, peerID) {
-			continue
+		if n.pubsub.InMesh(channel, peerID) {
+			n.pubsub.SetMeshPeer(channel, peerID, false)
+			pruned = append(pruned, channel)
 		}
-		n.pubsub.SetMeshPeer(channel, peerID, false)
-		n.mu.RLock()
-		peer := n.peers[peerID]
-		n.mu.RUnlock()
+	}
+	n.mu.Unlock()
+	for _, channel := range pruned {
 		if peer != nil {
 			n.sendEnvelope(peer, gossip.Envelope{Type: gossip.TypePrune, Channel: channel})
 		}
