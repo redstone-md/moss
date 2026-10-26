@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	mcrypto "github.com/redstone-md/moss/internal/crypto"
 	"github.com/redstone-md/moss/internal/mesh"
 	"github.com/redstone-md/moss/internal/tun"
 )
@@ -59,7 +60,30 @@ func joinHostPort(port int) string {
 // TestLanNodePresenceRoundTrip: two LanNodes over two real mesh nodes in
 // one PSK room — the full product path: heartbeat publish → sealed room
 // delivery → message callback → NickTable → ResolveNick.
-func TestLanNodePresenceRoundTrip(t *testing.T) {
+func TestLanNodePresenceRoundTrip(t *testing.T) { testLanNodePresenceRoundTrip(t, false) }
+
+func TestLanNodePresenceRoundTripConvergesAfterAnAddressCollision(t *testing.T) {
+	testLanNodePresenceRoundTrip(t, true)
+}
+
+func collidingIdentity(t *testing.T, peerID string) *mcrypto.Identity {
+	t.Helper()
+	want := mustDerive(t, peerID)
+	for range 10000 {
+		identity, err := mcrypto.NewIdentity()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if mustDerive(t, hex.EncodeToString(identity.PublicKeyBytes())) == want {
+			return identity
+		}
+	}
+	t.Fatal("no colliding identity found in 10,000 attempts")
+	return nil
+}
+
+func testLanNodePresenceRoundTrip(t *testing.T, forceCollision bool) {
+	t.Helper()
 	const room = "lan-room"
 
 	nodeA, err := mesh.NewNode(room, []byte("lan-psk"), lanTestConfig("rt"))
@@ -73,7 +97,11 @@ func TestLanNodePresenceRoundTrip(t *testing.T) {
 
 	cfgB := lanTestConfig("rt")
 	cfgB.StaticPeers = []string{joinHostPort(nodeA.ListenPort())}
-	nodeB, err := mesh.NewNode(room, []byte("lan-psk"), cfgB)
+	var identityB *mcrypto.Identity
+	if forceCollision {
+		identityB = collidingIdentity(t, peerIDHex(nodeA))
+	}
+	nodeB, err := mesh.NewNodeWithIdentity(room, []byte("lan-psk"), cfgB, identityB)
 	if err != nil {
 		t.Fatalf("NewNode b: %v", err)
 	}
@@ -112,7 +140,9 @@ func TestLanNodePresenceRoundTrip(t *testing.T) {
 		if ip, err := lanA.ResolveNick("bob"); err == nil {
 			b2a = ip
 		}
-		if a2b != nil && b2a != nil {
+		// A hash collision can relocate one self address after the first
+		// heartbeat. Wait for advertised addresses to converge, not just exist.
+		if a2b != nil && b2a != nil && a2b.Equal(lanA.SelfIP()) && b2a.Equal(lanB.SelfIP()) && !a2b.Equal(b2a) {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -123,10 +153,9 @@ func TestLanNodePresenceRoundTrip(t *testing.T) {
 	if b2a == nil {
 		t.Fatal("alice never resolved bob within 20s")
 	}
-	// Deterministic placement: each node derives its own address from its
-	// peer ID, so the two are distinct and the address a node advertises is
-	// the address its peers route to. (Arrival-order assignment handed both
-	// independent nodes 10.66.0.1 — the collision that broke a two-node LAN.)
+	// Deterministic placement and collision resolution must agree with the
+	// latest self address advertised by each peer. Arrival-order assignment
+	// handed both independent nodes 10.66.0.1 and broke the two-node LAN.
 	if want := lanA.SelfIP(); !a2b.Equal(want) {
 		t.Errorf("alice as seen by bob = %v, want her self IP %v", a2b, want)
 	}
