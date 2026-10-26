@@ -128,7 +128,7 @@ func (n *Node) removePeerWithPolicy(peerID string, session *transport.Session, w
 	var fallback *peerConn
 	for sessionID, relaySession := range n.relayLocals {
 		if relaySession.viaPeerID == peerID || relaySession.remotePeerID == peerID {
-			if waitingAttachmentLost && relaySession.viaPeerID == peerID {
+			if n.waitingRequested() && relaySession.viaPeerID == peerID {
 				n.retainWaitingApplicationPathLocked(relaySession)
 			}
 			// The old direct path may close before the carrier's accept arrives.

@@ -135,6 +135,10 @@ virtual peers have already left the live directory. Unrelated saved offline
 targets do not become migration barriers. Verified replacement consumes the
 captured loss; a newer carrier loss survives an older completion. Returning
 active or stopping clears this Waiting-only intent.
+Restored local application interest remains significant before a replacement
+peer's fresh subscription claim arrives; the removed remote claim itself is
+never fabricated. Loss of a useful partially migrated carrier uses the same
+preservation rule, even before that candidate becomes the committed attachment.
 Failed handovers discard an unused candidate under the same policy-generation
 guard. A carrier already carrying a partially migrated application path is
 retained; failure never discards that working path just to reduce the socket

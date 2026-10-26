@@ -57,9 +57,9 @@ func (n *Node) completeWaitingRecovery(peerID, via string, lost *peerConn) bool 
 		return false
 	}
 	if lost != nil {
-		if lost.applicationUsed.Load() {
-			peer.applicationUsed.Store(true)
-		}
+		// The captured path carried application interest (possibly only a
+		// subscription); teardown already removed that incarnation's claims.
+		peer.applicationUsed.Store(true)
 		if n.activity.recovering[peerID] == lost {
 			delete(n.activity.recovering, peerID)
 		}
