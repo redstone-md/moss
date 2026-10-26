@@ -164,6 +164,12 @@ must not become invisible merely because unrelated unconnected contacts are
 closer in the keyspace. An ordinary explicit target recovering a lost relay
 also reuses a live carrier's authenticated listen-address hint; this does not
 change healthy ordinary direct startup or admit unsigned address aliases.
+Identity-first recovery also collects alternate records: a previous carrier's
+valid 90s record must not hide the new one. Three RPC slots refill independently
+within the existing 24-query budget; returning cancels outstanding RPCs.
+Collection reserves half the caller's remaining deadline for route attempts,
+whose unique attachment hints share the remaining budget. The existing 5s
+explicit worker limit is not extended, and no extra sockets are retained.
 
 Waiting maintenance uses the existing carrier probe interval, ping timeout and
 miss limit. It stops the ordinary gossip heartbeat. A small resource sweep still
