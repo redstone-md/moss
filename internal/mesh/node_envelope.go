@@ -128,6 +128,8 @@ func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 		n.handleRelayData(peer, env)
 	case gossip.TypeRelayClose:
 		n.handleRelayClose(peer, env)
+	case gossip.TypeCarrierRetire:
+		n.handleCarrierRetire(peer)
 	case gossip.TypePublish:
 		if peer == nil {
 			return

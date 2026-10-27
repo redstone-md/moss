@@ -1,6 +1,10 @@
 package mesh
 
-import "time"
+import (
+	"time"
+
+	"github.com/redstone-md/moss/internal/gossip"
+)
 
 // Caller holds Node.mu. Track retirement before relay admission wakes its
 // waiter, so Waiting is not reported settled while old physical paths drain.
@@ -24,6 +28,7 @@ func (n *Node) deferDirectMigrationLocked(peer *peerConn) {
 	n.wg.Add(1)
 	go func() {
 		defer n.wg.Done()
+		n.sendDirectEnvelope(peer, gossip.Envelope{Type: gossip.TypeCarrierRetire})
 		timer := time.NewTimer(relayMigrationGracePeriod)
 		defer timer.Stop()
 		if ctx == nil {
@@ -54,4 +59,14 @@ func (n *Node) awaitWaitingDrains() {
 	for _, done := range drains {
 		<-done
 	}
+}
+
+// The sender is draining this exact direct session. Leave it the same way an
+// EOF would, falling back to an established relay. The sender owns the close,
+// so writes that already chose this session still reach its reader.
+func (n *Node) handleCarrierRetire(peer *peerConn) {
+	if peer == nil || peer.relayed || peer.session == nil {
+		return
+	}
+	n.removePeerForPolicy(peer.id, peer.session, nil)
 }

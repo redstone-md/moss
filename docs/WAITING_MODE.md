@@ -341,7 +341,13 @@ Waiting transitions revalidate captured trim work against the current policy
 generation. Suspended virtual-peer probes cannot evict room membership, and
 application use survives both sending and receiving over relay. A direct path
 being replaced by relay drains for the existing one-second migration grace;
-settled waiting is reported after that physical path has closed.
+settled waiting is reported after that physical path has closed. The draining
+side first sends `carrier_retire` on that exact session. The peer leaves it as
+it would on EOF, falling back to its established relay, while the waiting side
+still reads, so a payload that already chose the direct path is not written
+into a closed connection. The signal acts only on the receiver's current
+session for that identity, unlike the retracted v0.8.3 goodbye; older nodes
+ignore it and observe the close as before.
 
 ## Host responsibilities and limitations
 
