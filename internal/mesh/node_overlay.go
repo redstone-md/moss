@@ -744,8 +744,8 @@ func (n *Node) resolveRouteContext(ctx context.Context, peerID string) (Route, e
 	defer cancel()
 	if n.activityIdentityFirst(peerID) {
 		providers := n.collectIdentityProviders(lookupCtx, id)
-		n.reachIdentityHints(lookupCtx, peerID, providers)
-		if n.peerByID(peerID) == nil && lookupCtx.Err() == nil {
+		previousTried := n.reachIdentityHints(lookupCtx, peerID, providers)
+		if !previousTried && n.peerByID(peerID) == nil && lookupCtx.Err() == nil {
 			n.reachPreviousRelayCarrier(lookupCtx, peerID)
 		}
 	} else {

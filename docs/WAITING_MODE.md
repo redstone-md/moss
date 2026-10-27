@@ -91,10 +91,13 @@ routing order. This does not opt the host into lifecycle or change discovery.
 
 When that target's exact current established relay loses its physical carrier,
 the explicit registration also remembers the authenticated former carrier ID.
-Fresh provider hints still take priority. If they yield no route, unused time
-inside the same lookup deadline can reauthenticate that currently eligible
-carrier and request a new signed relay session. This recovers a waiting
-recipient whose sole provider record remains on that disconnected common core.
+Fresh provider hints still take priority. The route phase gives unique hints
+and that currently eligible carrier fair shares of the same remaining deadline,
+so a stale advertised hint cannot exhaust the whole phase before the former
+carrier is tried. A matching advertised/remembered address has one slot and
+uses the expected authenticated carrier identity. A fresh signed relay session
+is required. This recovers a waiting recipient whose sole provider record
+remains on that disconnected common core.
 Current trust, key, address and allowlist policy apply again; old local relay
 sessions are never revived. A speculative admission or failed retry does not
 consume this intent. Fresh authenticated replacement or confirmed direct health
@@ -237,7 +240,8 @@ Identity-first recovery also collects alternate records: a previous carrier's
 valid 90s record must not hide the new one. Three RPC slots refill independently
 within the existing 24-query budget; returning cancels outstanding RPCs.
 Collection reserves half the caller's remaining deadline for route attempts,
-whose unique attachment hints share the remaining budget. The existing 5s
+whose unique attachment hints and eligible previous carrier share the remaining
+budget. The existing 5s
 explicit worker limit is not extended, and no extra sockets are retained.
 
 Waiting maintenance uses the existing carrier probe interval, ping timeout and

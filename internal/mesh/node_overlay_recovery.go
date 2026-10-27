@@ -21,23 +21,45 @@ func (n *Node) collectIdentityProviders(ctx context.Context, key overlay.NodeID)
 }
 
 // Core records can retain old attachment hints for their normal TTL. Give each
-// unique hint a fair share of the parent's remaining budget so a silent stale
-// carrier cannot hide a reachable later one. No deadline or retry is extended.
-func (n *Node) reachIdentityHints(ctx context.Context, peerID string, providers []gossip.OverlayProvider) {
+// unique hint and the eligible previous carrier a fair share of the parent's
+// remaining route budget. A matching fresh hint reuses that carrier's expected
+// identity once. No deadline, discovery or retry is extended.
+func (n *Node) reachIdentityHints(ctx context.Context, peerID string, providers []gossip.OverlayProvider) (previousTried bool) {
 	hints := identityAttachmentHints(peerID, providers)
-	deadline, _ := ctx.Deadline()
-	for i, addr := range hints {
-		if ctx.Err() != nil {
-			return
-		}
-		budget := time.Until(deadline) / time.Duration(len(hints)-i)
-		attempt, cancel := context.WithTimeout(ctx, budget)
-		reached := n.reachPeerViaHint(attempt, peerID, reachabilityHint{Attachments: []string{addr}})
-		cancel()
-		if reached {
-			return
+	n.mu.RLock()
+	_, previousAddr := n.previousRelayCarrierLocked(peerID)
+	n.mu.RUnlock()
+	remaining := len(hints)
+	if previousAddr != "" {
+		remaining++
+		for _, addr := range hints {
+			if addr == previousAddr {
+				remaining--
+				break
+			}
 		}
 	}
+	deadline, _ := ctx.Deadline()
+	for _, addr := range hints {
+		if ctx.Err() != nil {
+			return previousTried
+		}
+		budget := time.Until(deadline) / time.Duration(remaining)
+		remaining--
+		attempt, cancel := context.WithTimeout(ctx, budget)
+		var reached bool
+		if addr == previousAddr {
+			previousTried = true
+			reached = n.reachPreviousRelayCarrier(attempt, peerID)
+		} else {
+			reached = n.reachPeerViaHint(attempt, peerID, reachabilityHint{Attachments: []string{addr}})
+		}
+		cancel()
+		if reached {
+			return previousTried
+		}
+	}
+	return previousTried
 }
 
 func identityAttachmentHints(peerID string, providers []gossip.OverlayProvider) []string {
