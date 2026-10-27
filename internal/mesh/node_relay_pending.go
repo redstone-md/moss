@@ -32,10 +32,11 @@ func (n *Node) transmitPendingRelayRequest(sessionID string) (bool, *peerConn) {
 			n.mu.Unlock()
 			return false, failed
 		}
+		// Strict mode gates new remotes only. The carrier is a live admitted
+		// peer, and an already admitted target keeps its existing exemption.
 		if n.allowlist != nil {
-			_, viaAllowed := n.allowlist[session.viaPeerID]
-			_, targetAllowed := n.allowlist[session.remotePeerID]
-			if !viaAllowed || !targetAllowed {
+			_, listed := n.allowlist[session.remotePeerID]
+			if !listed && n.peers[session.remotePeerID] == nil {
 				n.mu.Unlock()
 				return false, failed
 			}
