@@ -53,9 +53,13 @@ func (n *Node) connectWaitingAlternatives(parent context.Context, candidates []w
 		}
 		deadline, _ := parent.Deadline()
 		budget := time.Until(deadline)
-		// A retained authenticated carrier keeps its original migration budget.
-		// Cold alternatives share the remainder so one refusal cannot own it all.
-		if !n.directPeerConnected(candidate.id) {
+		// Preserve the full migration budget for a carrier already owning work.
+		// Merely connected alternatives share time with the rest of this batch.
+		n.mu.RLock()
+		peer := n.peers[candidate.id]
+		retained := peer != nil && !peer.relayed && (candidate.id == n.activity.attachment || n.waitingCandidateCarriesApplicationLocked(peer))
+		n.mu.RUnlock()
+		if !retained {
 			budget /= time.Duration(len(candidates) - index)
 		}
 		ctx, cancel := context.WithTimeout(parent, budget)

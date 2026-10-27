@@ -112,8 +112,10 @@ active callers without opting them into Waiting, retransmitting queued data or
 turning queue acceptance into a delivery acknowledgement.
 
 One Waiting repair can try at most three already-known candidates sequentially
-inside its existing handshake deadline. Cold candidates share the remaining
-budget; a retained authenticated carrier keeps its full migration budget.
+inside its existing handshake deadline. Candidates without an established
+application path share the remaining budget, even if already connected. Only
+the selected attachment or a carrier already owning application work retains
+its full migration budget.
 No parallel fanout, new discovery or shorter global retry floor is introduced.
 Every candidate owns its admission generation. A partially completed migration
 retains that ownership across later refusal, even before the first completed
