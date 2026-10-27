@@ -22,8 +22,16 @@ func TestOrdinaryRecoveryReservesPreviousCarrierPastStaleHint(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	key := mustOverlayID(t, receiver.localPeerID())
+
+	// Keep the old provider genuinely stale. The Waiting recipient can now
+	// repair through a known old core; that healthy readmission would invalidate
+	// this fixture's intended stale-hint/live-previous-carrier comparison.
+	receiver.DisallowPeer(old.localPeerID())
 	if len(old.overlayStore.Get(key, time.Now())) == 0 {
 		t.Fatal("old authenticated provider did not retain its stale attachment")
+	}
+	if old.peerByID(origin.localPeerID()) == nil {
+		t.Fatal("old provider lost the origin connection")
 	}
 	lost := origin.peerByID(fresh.localPeerID())
 	if lost == nil || lost.relayed {

@@ -37,6 +37,18 @@ func TestOrdinaryLostRelayDoesNotAdmitNoiseOnlyColdTarget(t *testing.T) {
 	openUpgradeFixtureRelay(t, carrier, origin, receiver)
 	assertWaitingBidirectionalPackets(t, origin, receiver)
 	origin.ConnectToPeer(receiver.localPeerID())
+	// Hold the real recipient's dispatch while testing the origin's lost-route
+	// admission. Otherwise its immediate signed repair can legitimately consume
+	// identityRetry before the deliberate Noise-only attempt is observed.
+	addr, negotiated, release := heldWaitingPolicyEndpoint(t, receiver)
+	defer release()
+	receiver.mu.Lock()
+	held := true
+	defer func() {
+		if held {
+			receiver.mu.Unlock()
+		}
+	}()
 	old := origin.peerByID(receiver.localPeerID())
 	carrier.closeRelayRouteWithClose(old.relaySessionID, origin.localPeerID(), receiver.localPeerID())
 	deadline := time.Now().Add(time.Second)
@@ -47,14 +59,13 @@ func TestOrdinaryLostRelayDoesNotAdmitNoiseOnlyColdTarget(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	origin.mu.RLock()
+	_, oldPresent := origin.relayLocals[old.relaySessionID]
 	retrying := origin.explicitTargets[receiver.localPeerID()].identityRetry
 	opted := origin.activity.optedIn
 	origin.mu.RUnlock()
-	if !retrying || opted {
+	if oldPresent || !retrying || opted {
 		t.Fatal("fixture requires ordinary explicit recovery after a real established relay loss")
 	}
-	addr, negotiated, release := heldWaitingPolicyEndpoint(t, receiver)
-	defer release()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	done := make(chan error, 1)
@@ -75,6 +86,8 @@ func TestOrdinaryLostRelayDoesNotAdmitNoiseOnlyColdTarget(t *testing.T) {
 		t.Fatal("Noise-only recovery exposed a false direct application path")
 	}
 	release()
+	receiver.mu.Unlock()
+	held = false
 	var refusal error
 	select {
 	case err := <-done:
