@@ -260,24 +260,29 @@ func (s *Stream) enqueue(payload []byte) {
 		return
 	default:
 	}
-	var accepted, evicted bool
+	var accepted bool
+	var evicted int
 	if s.latestWins.Load() {
 		accepted, evicted = s.queue.pushLatestWins(payload)
 	} else {
 		accepted = s.queue.push(payload)
 	}
-	if accepted && !evicted {
+	if accepted && evicted == 0 {
 		return
 	}
 	if !accepted && s.queue.isClosed() {
 		return
 	}
-	s.drops.Add(1)
-	streamDrops.Add(1)
+	lost := uint64(evicted)
+	if !accepted {
+		lost++
+	}
+	s.drops.Add(lost)
+	streamDrops.Add(lost)
 	if s.id == DefaultStream {
-		streamDropsDefault.Add(1)
+		streamDropsDefault.Add(lost)
 	} else {
-		streamDropsOther.Add(1)
+		streamDropsOther.Add(lost)
 	}
 	streamOverflowMu.RLock()
 	hook := streamBufferOnOverflow
