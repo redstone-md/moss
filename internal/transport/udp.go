@@ -150,7 +150,7 @@ type udpDialResult struct {
 type udpCarrier struct {
 	listener *UDPListener
 	remote   *net.UDPAddr
-	incoming chan []byte
+	queue    *packetQueue
 	closed   chan struct{}
 	once     sync.Once
 }

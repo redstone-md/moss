@@ -149,13 +149,13 @@ func TestInboundStreamCreationIsCapped(t *testing.T) {
 
 func TestStreamBufferSizeIsSessionScoped(t *testing.T) {
 	_, tuned, _, _ := newStubSessionPairWithBuffers(t, BufferConfig{StreamBufferSize: 3})
-	if cap(tuned.mux.Default().buffer) != 3 {
-		t.Fatalf("expected tuned default stream capacity 3, got %d", cap(tuned.mux.Default().buffer))
+	if got := tuned.mux.Default().queue.maxItems; got != 3 {
+		t.Fatalf("expected tuned default stream capacity 3, got %d", got)
 	}
 
 	_, defaulted, _, _ := newStubSessionPair(t)
-	if cap(defaulted.mux.Default().buffer) != defaultStreamBufferSize {
-		t.Fatalf("expected default stream capacity %d, got %d", defaultStreamBufferSize, cap(defaulted.mux.Default().buffer))
+	if got := defaulted.mux.Default().queue.maxItems; got != defaultStreamBufferSize {
+		t.Fatalf("expected default stream capacity %d, got %d", defaultStreamBufferSize, got)
 	}
 }
 
