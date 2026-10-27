@@ -19,8 +19,9 @@ const sliceHeaderBytes = int(unsafe.Sizeof([]byte(nil)))
 
 func payloadCost(n int) int { return n + sliceHeaderBytes }
 
-// packetQueue is a bounded FIFO of inbound payloads that allocates nothing
-// until the first payload arrives.
+// packetQueue is a bounded FIFO of inbound payloads that reserves no payload
+// storage until the first payload arrives. (The queue and its condition
+// variable are allocated; the ring is not.)
 //
 // The queue used to be a buffered channel of slices — `make(chan []byte, n)`.
 // A channel is not free: Go allocates its full ring at creation and every
@@ -36,7 +37,11 @@ type packetQueue struct {
 	mu   sync.Mutex
 	cond *sync.Cond
 
+	// items is a deque: entries before head are spent slots retained only so
+	// the backing array can be reused. head advances on every pop and is
+	// reclaimed before an append has to grow the array.
 	items [][]byte
+	head  int
 	bytes int
 
 	maxItems int
@@ -57,8 +62,53 @@ func newPacketQueue(maxItems, maxBytes int) *packetQueue {
 	return q
 }
 
+func (q *packetQueue) size() int { return len(q.items) - q.head }
+
 func (q *packetQueue) full(payloadLen int) bool {
-	return len(q.items) >= q.maxItems || q.bytes+payloadCost(payloadLen) > q.maxBytes
+	return q.size() >= q.maxItems || q.bytes+payloadCost(payloadLen) > q.maxBytes
+}
+
+// reclaim moves the live payloads to the front of the array. Called only when
+// the alternative is allocating a bigger array, so the copy replaces a copy.
+func (q *packetQueue) reclaim() {
+	if q.head == 0 {
+		return
+	}
+	live := q.items[q.head:]
+	n := copy(q.items[:len(live)], live)
+	for i := n; i < len(q.items); i++ {
+		q.items[i] = nil
+	}
+	q.items = q.items[:n]
+	q.head = 0
+}
+
+// drained resets an empty queue. The backing array is kept for the next burst
+// unless a previous burst left it oversized, in which case an idle queue must
+// not keep paying for a peak it is no longer using.
+func (q *packetQueue) drained() {
+	q.head = 0
+	if cap(q.items) > 256 {
+		q.items = nil
+	} else {
+		q.items = q.items[:0]
+	}
+	q.bytes = 0
+}
+
+// dropOldest discards the front payload and returns its length.
+func (q *packetQueue) dropOldest() int {
+	p := q.items[q.head]
+	q.items[q.head] = nil
+	q.head++
+	q.bytes -= payloadCost(len(p))
+	return len(p)
+}
+
+func (q *packetQueue) beforeAppend() {
+	if q.head > 0 && len(q.items) == cap(q.items) {
+		q.reclaim()
+	}
 }
 
 // push appends p without blocking. It reports false when the queue is closed
@@ -69,38 +119,36 @@ func (q *packetQueue) push(p []byte) bool {
 	if q.closed || q.full(len(p)) {
 		return false
 	}
+	q.beforeAppend()
 	q.items = append(q.items, p)
 	q.bytes += payloadCost(len(p))
 	q.cond.Signal()
 	return true
 }
 
-// pushLatestWins drops the oldest payloads until p fits, then enqueues it. The
-// second result reports whether anything was evicted: the packet was accepted,
-// but the stream still lost payloads, which the overflow counters record
-// exactly as before.
-func (q *packetQueue) pushLatestWins(p []byte) (accepted, evicted bool) {
+// pushLatestWins drops the oldest payloads until p fits, then enqueues it. It
+// returns how many payloads were evicted: the packet was accepted, but the
+// stream still lost that many, and the overflow counters report them all.
+func (q *packetQueue) pushLatestWins(p []byte) (accepted bool, evicted int) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if q.closed {
-		return false, false
+		return false, 0
 	}
 	cost := payloadCost(len(p))
 	if cost > q.maxBytes {
 		// A payload that can never fit must not evict the queue it cannot
 		// join.
-		return false, false
+		return false, 0
 	}
 	for q.full(len(p)) {
-		if len(q.items) == 0 {
+		if q.size() == 0 {
 			return false, evicted
 		}
-		old := q.items[0]
-		q.items[0] = nil
-		q.items = q.items[1:]
-		q.bytes -= payloadCost(len(old))
-		evicted = true
+		q.dropOldest()
+		evicted++
 	}
+	q.beforeAppend()
 	q.items = append(q.items, p)
 	q.bytes += cost
 	q.cond.Signal()
@@ -112,21 +160,23 @@ func (q *packetQueue) pushLatestWins(p []byte) (accepted, evicted bool) {
 func (q *packetQueue) pop() ([]byte, bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	for len(q.items) == 0 && !q.closed {
+	for q.size() == 0 && !q.closed {
 		q.cond.Wait()
 	}
-	if len(q.items) == 0 {
+	if q.size() == 0 {
 		return nil, false
 	}
-	p := q.items[0]
-	q.items[0] = nil
-	q.items = q.items[1:]
+	p := q.items[q.head]
+	q.items[q.head] = nil
+	q.head++
 	q.bytes -= payloadCost(len(p))
-	if len(q.items) == 0 {
-		// Release the backing array a burst grew: an idle queue must not keep
-		// paying for the peak it once saw.
-		q.items = nil
-		q.bytes = 0
+	switch {
+	case q.head == len(q.items):
+		q.drained()
+	case q.head >= 64 && q.head*2 >= len(q.items):
+		// The spent prefix has outgrown the live payloads: copy once here
+		// instead of walking the slice forward until the next reallocation.
+		q.reclaim()
 	}
 	return p, true
 }
@@ -151,5 +201,5 @@ func (q *packetQueue) isClosed() bool {
 func (q *packetQueue) len() int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	return len(q.items)
+	return q.size()
 }

@@ -219,7 +219,10 @@ func (c *udpCarrier) enqueue(packet []byte) {
 		return
 	default:
 	}
-	if c.queue.push(append([]byte(nil), packet...)) {
+	// handleData hands over a payload the codec's Open allocated fresh, so the
+	// queue may retain it as-is; copying here would duplicate every datagram,
+	// including the ones the queue immediately drops.
+	if c.queue.push(packet) {
 		return
 	}
 	if c.queue.isClosed() {
