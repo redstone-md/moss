@@ -853,16 +853,20 @@ media tunnels), set `high_throughput: true`. This applies the following
 preset to the node, taking effect on the next `Moss_Start`:
 
 - per-stream and per-UDP-session inbound queues grow from 256 to 65536
-  packets, eliminating silent drops during bursts
+  slots, raising burst tolerance. Every queue is independently capped at
+  4 MiB of payloads (each queued packet also charges its slice header),
+  and a queue allocates nothing until its first packet arrives, so a high
+  slot count no longer multiplies idle memory
 - `IHAVE` and `IDONTWANT` gossip control broadcasts are skipped on
   publish, since they exist to amortize duplicate delivery in large
   meshes and add pure overhead in dense point-to-point topologies
 
 `stream_buffer_size` and `udp_buffer_size` allow per-axis overrides when
-the preset is too coarse — set them explicitly to choose the queue
-capacity without enabling the full preset, or alongside
+the preset is too coarse — set them explicitly to choose the queue slot
+count without enabling the full preset, or alongside
 `high_throughput` to keep the gossip-overhead reduction while picking
-custom queue sizes. Values <= 0 fall back to defaults / the preset.
+custom queue sizes. Values <= 0 fall back to defaults / the preset. The
+4 MiB byte ceiling applies whatever the slot count is.
 
 Default is `high_throughput: false` so existing integrations keep
 their original memory footprint.

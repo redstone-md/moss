@@ -155,9 +155,13 @@ webrtc_js.go       WebRTC transport surface (js builds)
 `transport` must not know about pubsub topics, peer scoring, relay policy, or host callbacks.
 
 Inbound queue sizing is a runtime tuning knob. Per-stream
-(`multiplexer.go`) and per-UDP-session (`udp_session.go`) channels
-default to 256 packets and silently drop on overflow to keep memory
-predictable. `mesh.transportBufferConfig` maps application-driven
+(`multiplexer.go`) and per-UDP-session (`udp_session.go`) packet queues
+(`packet_queue.go`) default to 256 slots and silently drop on overflow to
+keep memory predictable. Each queue allocates its backing array lazily, on
+the first payload, and is independently capped at 4 MiB of payloads plus
+slice headers — so a high slot count raises burst tolerance without
+reserving memory up front, which is what a buffered channel of slices used
+to do. `mesh.transportBufferConfig` maps application-driven
 configuration (e.g. the `transport.high_throughput` JSON option) into
 `transport.BufferConfig`, which is attached to listeners and sessions so
 tuned nodes do not mutate process-wide transport defaults.

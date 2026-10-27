@@ -28,7 +28,7 @@ func TestLatestWinsDropsOldestWhenFull(t *testing.T) {
 	if err != nil || string(second) != "p4" {
 		t.Fatalf("latest-wins lost the newest packet: second read is %q, %v", second, err)
 	}
-	if queued := len(stream.buffer); queued != 0 {
+	if queued := stream.queue.len(); queued != 0 {
 		t.Fatalf("expected an empty buffer after draining both packets, %d left", queued)
 	}
 }
