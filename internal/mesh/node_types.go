@@ -170,6 +170,8 @@ type Node struct {
 	rootCtx          context.Context
 
 	directProbes     map[string]time.Time
+	tcpDialMu        sync.Mutex
+	tcpDials         map[string]*tcpDialFlight
 	peerDials        map[string]time.Time
 	peerDialFailures map[string]int
 	// hostDials/hostDialFailures carry the dial budget per HOST: one dead

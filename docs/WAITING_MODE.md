@@ -80,6 +80,14 @@ expiry, cancellation, Stop, authenticated Close and current admission policy
 still terminate them. Established sessions and application payloads are not
 replayed.
 
+Independent maintenance and route workers coalesce overlapping TCP dials for
+the same known identity. Opposite local completion orders must not select two
+different halves of simultaneous same-direction connections. Each waiter keeps
+its own context; a cancelled owner or failed stale address does not consume a
+live waiter's fresh opportunity. Unknown identities and distinct peer dials
+keep their existing behavior, and the ordinary direction/transport preference
+and legacy wire handshake are unchanged.
+
 Each physical stream incarnation has one reader. Waiting's two-carrier bound
 and attachment count include this overlap; ordinary MaxPeers and peer metrics
 continue counting admitted identities. No nested replacement or extra timer

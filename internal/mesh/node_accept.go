@@ -581,7 +581,7 @@ func (n *Node) connectPeerWithHint(ctx context.Context, addr, peerID string) err
 	return n.connectPeerTCPWithHint(ctx, addr, peerID)
 }
 
-func (n *Node) connectPeerTCPWithHint(ctx context.Context, addr, peerID string) error {
+func (n *Node) dialPeerTCPWithHint(ctx context.Context, addr, peerID string) error {
 	remoteStatic := n.cachedRemoteStatic(peerID, addr)
 	if err := n.connectPeerOnce(ctx, addr, remoteStatic); err != nil {
 		if len(remoteStatic) == 32 && ctx.Err() == nil {
