@@ -97,7 +97,10 @@ cannot prune or retire a newer peer incarnation. Waiting virtual peers still
 rely on carrier liveness and do not start per-conversation probes.
 
 A relay's ordering belongs to its first authenticated Request/Accept, not a
-later directory promotion or repeated control. Direct teardown cannot replace
+later directory promotion or repeated control. Its session ID retains its
+authenticated remote/carrier binding; a Request replay through another carrier
+cannot mutate or retire that canonical pending/established session. Direct
+teardown cannot replace
 a newer admitted relay with an older one. Closing the current route never
 resurrects historical relay state: a live local carrier alone does not prove
 its remote leg still works. Local retirement keeps the last1024 closed-session

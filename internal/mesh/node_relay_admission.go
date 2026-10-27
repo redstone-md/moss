@@ -11,8 +11,10 @@ func (n *Node) admitRelaySessionLocked(session relayLocalSession) (relayLocalSes
 		return session, false
 	}
 	previous, exists := n.relayLocals[session.sessionID]
-	if exists && previous.established && previous.admission != 0 &&
-		previous.remotePeerID == session.remotePeerID && previous.viaPeerID == session.viaPeerID {
+	if exists && (previous.remotePeerID != session.remotePeerID || previous.viaPeerID != session.viaPeerID) {
+		return session, false
+	}
+	if exists && previous.established && previous.admission != 0 {
 		return previous, true
 	}
 	n.relayAdmission++

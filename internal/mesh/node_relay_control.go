@@ -44,14 +44,14 @@ func (n *Node) handleRelayRequest(peer *peerConn, env gossip.Envelope) {
 		n.mu.Lock()
 		previousAdmission := n.relayLocals[session.sessionID].admission
 		session, admitted := n.admitRelaySessionLocked(session)
-		var relayPeer *peerConn
-		capped := !admitted
-		if admitted {
-			n.relayLocals[env.RelaySession] = session
-			relayPeer, capped = n.registerRelayedPeerLocked(session)
-			if !capped && session.admission != previousAdmission {
-				n.confirmExplicitRelayRecoveryLocked(session.remotePeerID)
-			}
+		if !admitted {
+			n.mu.Unlock()
+			return
+		}
+		n.relayLocals[env.RelaySession] = session
+		relayPeer, capped := n.registerRelayedPeerLocked(session)
+		if !capped && session.admission != previousAdmission {
+			n.confirmExplicitRelayRecoveryLocked(session.remotePeerID)
 		}
 		if capped {
 			n.retireRelayLocalLocked(env.RelaySession)

@@ -84,3 +84,26 @@ func TestRetiredRelaySessionHistoryIsBounded(t *testing.T) {
 		}
 	}
 }
+
+func TestRelaySessionAdmissionKeepsCanonicalBinding(t *testing.T) {
+	for _, established := range []bool{false, true} {
+		for _, changed := range []string{"carrier", "remote"} {
+			t.Run(fmt.Sprintf("established=%t/%s", established, changed), func(t *testing.T) {
+				canonical := relayLocalSession{sessionID: "same-id", viaPeerID: "original-core", remotePeerID: "original-peer", established: established, admission: 1}
+				n := &Node{relayLocals: map[string]relayLocalSession{canonical.sessionID: canonical}, relayAdmission: 1}
+				replayed := canonical
+				if changed == "carrier" {
+					replayed.viaPeerID = "other-core"
+				} else {
+					replayed.remotePeerID = "other-peer"
+				}
+				if _, admitted := n.admitRelaySessionLocked(replayed); admitted {
+					t.Fatal("same-session replay changed its authenticated binding")
+				}
+				if n.relayAdmission != 1 || n.relayLocals[canonical.sessionID] != canonical {
+					t.Fatal("rejected replay mutated the canonical pending or established admission")
+				}
+			})
+		}
+	}
+}

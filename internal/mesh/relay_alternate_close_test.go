@@ -8,7 +8,7 @@ import (
 )
 
 func TestRelayAdmissionOrderSurvivesOldControlsAndPromotion(t *testing.T) {
-	for _, replay := range []string{"accept", "request", "promotion", "retired-request"} {
+	for _, replay := range []string{"accept", "request", "promotion", "retired-request", "other-carrier"} {
 		t.Run(replay, func(t *testing.T) {
 			old, origin, phone, oldSession, freshSession := admittedRelayPair(t, false)
 			origin.ConnectToPeer(phone.localPeerID())
@@ -25,6 +25,20 @@ func TestRelayAdmissionOrderSurvivesOldControlsAndPromotion(t *testing.T) {
 				old.sendEnvelope(old.peerByID(phone.localPeerID()), origin.signRelayRequestEnvelope(gossip.Envelope{
 					Type: gossip.TypeRelayRequest, RelaySession: oldSession, RelaySource: origin.localPeerID(), RelayTarget: phone.localPeerID(),
 				}))
+			case "other-carrier":
+				phone.mu.RLock()
+				freshVia := phone.relayLocals[freshSession].viaPeerID
+				canonical := phone.relayLocals[oldSession]
+				phone.mu.RUnlock()
+				phone.handleRelayRequest(phone.peerByID(freshVia), origin.signRelayRequestEnvelope(gossip.Envelope{
+					Type: gossip.TypeRelayRequest, RelaySession: oldSession, RelaySource: origin.localPeerID(), RelayTarget: phone.localPeerID(),
+				}))
+				phone.mu.RLock()
+				unchanged := phone.relayLocals[oldSession]
+				phone.mu.RUnlock()
+				if unchanged.viaPeerID != canonical.viaPeerID || unchanged.admission != canonical.admission {
+					t.Fatal("mismatched replay mutated or retired the canonical session binding")
+				}
 			case "promotion":
 				origin.mu.Lock()
 				origin.registerRelayedPeerLocked(origin.relayLocals[oldSession])
