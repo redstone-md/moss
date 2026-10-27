@@ -93,6 +93,26 @@ refresh its identity route, while retaining its healthy carrier. A stale probe
 cannot prune or retire a newer peer incarnation. Waiting virtual peers still
 rely on carrier liveness and do not start per-conversation probes.
 
+Closing a current relay incarnation restores another already-established
+session to that peer if its authenticated physical carrier remains admitted.
+The closing session is excluded; current allowlist policy is checked again,
+and application interest, subscriptions and scoring survive replacement.
+Stale closes cannot replace a newer incarnation. This also corrects ordinary
+active callers, without opting them into Waiting. It does not retransmit data
+already sent into a concurrently closing route or make queue acceptance a
+delivery acknowledgement.
+
+One Waiting repair can try at most three already-known candidates sequentially
+inside its existing handshake deadline. Cold candidates share the remaining
+budget; a retained authenticated carrier keeps its full migration budget.
+No parallel fanout, new discovery or shorter global retry floor is introduced.
+Every candidate owns its admission generation. A partially completed migration
+retains that ownership across later refusal, even before the first completed
+Waiting transition. It preserves useful paths, retires an unused former
+attachment before another dial, and refuses a third physical admission when
+both retained paths are still needed. Active and node restart clear this
+private lifecycle ownership; initial ordinary mesh draining remains distinct.
+
 This recovery does not change the probe interval, miss limit, retention grace
 or host authentication timeout. A carrier that silently loses a route can
 therefore cause a transient application-offline interval before the existing

@@ -14,11 +14,21 @@ type waitingCandidate struct {
 // Caller holds n.mu. A refused UDP peer must not receive a confirm probe
 // before this same policy is revalidated at final physical admission.
 func (n *Node) waitingAdmissionAllowedLocked(peerID string, outbound bool, attempt uint64) bool {
+	peer := n.peers[peerID]
+	if n.waitingRequested() && n.waitingRecoveryBoundedLocked() && (peer == nil || peer.relayed) && n.directPeerCountLocked() >= 2 {
+		return false
+	}
 	if !n.waitingRequested() || peerID == n.activity.attachment || peerID == n.activity.candidate {
 		return true
 	}
 	return outbound && attempt != 0 && attempt == n.activity.attempt &&
 		n.activity.candidateAddr != "" && n.activity.candidate == ""
+}
+
+// Initial ordinary mesh may still be draining; subsequent handovers retain at
+// most the current carrier plus one candidate, including partial migrations.
+func (n *Node) waitingRecoveryBoundedLocked() bool {
+	return n.activity.migrationOwned || n.activity.actual == ActivityWaiting || n.activity.attachment != "" || len(n.activity.recovering) != 0
 }
 
 // Cache/config addresses are candidates, never evidence of relay capability.

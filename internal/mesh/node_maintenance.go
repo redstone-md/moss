@@ -34,13 +34,16 @@ func (n *Node) removePeerWithPolicy(peerID string, session *transport.Session, w
 		n.mu.Unlock()
 		return false
 	}
-	if waitingAttempt != nil && (!n.started || !n.waitingRequested() || n.activity.attempt != *waitingAttempt || peerID == n.activity.attachment || peerID == n.activity.candidate) {
+	if waitingAttempt != nil && (!n.started || !n.waitingRequested() || n.activity.attempt != *waitingAttempt || (peerID == n.activity.attachment && !unusedCandidate) || peerID == n.activity.candidate) {
 		n.mu.Unlock()
 		return false
 	}
-	if unusedCandidate && n.waitingCandidateCarriesApplicationLocked(peer) {
+	if unusedCandidate && (n.waitingCandidateCarriesApplicationLocked(peer) || (peerID == n.activity.attachment && n.activity.reachability == "ready")) {
 		n.mu.Unlock()
 		return false
+	}
+	if unusedCandidate && peerID == n.activity.attachment {
+		n.activity.attachment = ""
 	}
 	// Capture before the entry goes: how long the session held, and whether it
 	// died on missed pings, is what tells a NAT mapping timing out apart from an

@@ -16,6 +16,7 @@ func (n *Node) reconcileWaiting(root context.Context) {
 	}
 	n.cancelActiveWorkLocked()
 	selected, addr := n.waitingCandidateLocked()
+	candidates := n.waitingAttemptCandidatesLocked(selected, addr)
 	n.activity.candidate = selected
 	n.activity.candidateAddr = addr
 	n.activity.candidateReady = make(chan struct{}, 1)
@@ -23,7 +24,6 @@ func (n *Node) reconcileWaiting(root context.Context) {
 	attempt := n.activity.attempt
 	n.activity.reachability = "attaching"
 	ctx, cancel := context.WithTimeout(root, n.config.HandshakeTimeout())
-	ctx = context.WithValue(ctx, waitingAttemptKey{}, attempt)
 	n.activity.attemptCancel = cancel
 	mapper := n.portMapper
 	n.portMapper = nil
@@ -42,11 +42,8 @@ func (n *Node) reconcileWaiting(root context.Context) {
 			return
 		}
 	}
-	if addr != "" {
-		_ = n.connectWaitingCandidate(ctx, addr, selected)
-		selected = n.awaitWaitingCandidate(ctx)
-	}
-	if !n.migrateWaitingPeers(ctx, selected) {
+	selected, addr, migrated := n.connectWaitingAlternatives(ctx, candidates, attempt)
+	if !migrated {
 		n.refuseWaitingAttempt(addr, cancel)
 		n.setLastError("waiting transition could not migrate all application paths through one relay")
 		return
@@ -90,22 +87,12 @@ func (n *Node) reconcileWaiting(root context.Context) {
 
 func (n *Node) refuseWaitingAttempt(addr string, cancel context.CancelFunc) {
 	cancel()
+	n.discardWaitingCandidate(addr)
 	n.mu.Lock()
-	unused := n.peers[n.activity.candidate]
-	retiringAttempt := n.activity.attempt
-	if len(n.activity.recovering) == 0 || unused == nil || unused.relayed || unused.id == n.activity.attachment {
-		unused = nil
-	}
 	n.activity.attemptCancel = nil
-	n.activity.candidate = ""
-	n.activity.candidateAddr = ""
 	n.activity.reachability = "unavailable"
 	n.activity.actual = ActivityActive
-	n.activity.lastCandidate = addr
 	n.mu.Unlock()
-	if unused != nil && n.removePeerWithPolicy(unused.id, unused.session, &retiringAttempt, true) {
-		unused.closeSession()
-	}
 	n.emitActivityMode()
 }
 

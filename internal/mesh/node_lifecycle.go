@@ -258,6 +258,7 @@ func (n *Node) Start() int32 {
 	n.activity.lastReport = activityReport{}
 	n.activity.presenceAt = time.Time{}
 	n.activity.recovering = nil
+	n.activity.migrationOwned = false
 	// Per-channel local delivery queues hold no state worth carrying across a
 	// restart: each is bound to a worker goroutine from the PREVIOUS run,
 	// whose rootCtx is cancelled. Reusing them would enqueue messages into a
@@ -347,6 +348,7 @@ func (n *Node) Stop() int32 {
 	n.activity.candidate = ""
 	n.activity.candidateAddr = ""
 	n.activity.recovering = nil
+	n.activity.migrationOwned = false
 	cancel := n.cancel
 	listener := n.listener
 	udpListener := n.udpListener.Load()

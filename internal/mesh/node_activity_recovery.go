@@ -56,6 +56,10 @@ func (n *Node) completeWaitingRecovery(peerID, via string, lost *peerConn) bool 
 	if peer == nil || (peer.relayed && peer.viaPeerID != via) || (!peer.relayed && peerID != via) {
 		return false
 	}
+	if n.waitingRequested() && via == n.activity.candidate {
+		// Unlike drain timers, ownership survives a later target's refusal.
+		n.activity.migrationOwned = true
+	}
 	if lost != nil {
 		// The captured path carried application interest (possibly only a
 		// subscription); teardown already removed that incarnation's claims.
