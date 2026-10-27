@@ -59,5 +59,5 @@ func (n *Node) settledWaitingRendezvousLocked() string {
 func (n *Node) waitingSettledRecoveryLocked(peerID string) bool {
 	return n.activity.actual == ActivityWaiting && n.activity.reachability == "ready" &&
 		n.activity.attachment == peerID && len(n.activity.recovering) != 0 &&
-		n.directPeerCountLocked() == 1 && n.waitingCarrierCanSettleLocked(peerID)
+		n.physicalPeerCountLocked() == 1 && n.waitingCarrierCanSettleLocked(peerID)
 }

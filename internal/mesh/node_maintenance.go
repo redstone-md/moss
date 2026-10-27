@@ -42,6 +42,10 @@ func (n *Node) removePeerWithPolicy(peerID string, session *transport.Session, w
 		n.mu.Unlock()
 		return false
 	}
+	if n.restoreCarrierReplacementLocked(peer) {
+		n.mu.Unlock()
+		return true
+	}
 	if unusedCandidate && peerID == n.activity.attachment {
 		n.activity.attachment = ""
 	}
@@ -176,6 +180,9 @@ func (n *Node) removePeerWithPolicy(peerID string, session *transport.Session, w
 	}
 	n.cleanupDepartedPeersLocked(append(removedRelayed, peerID))
 	n.mu.Unlock()
+	if state := peer.replacement.Load(); state != nil && !state.committed.Load() && !state.restored.Load() {
+		state.old.closeSession()
+	}
 	if waitingAttachmentLost {
 		n.wakeActivity()
 	}
@@ -281,6 +288,9 @@ func (n *Node) evaluateMeshDeliveryDeficits(now time.Time) {
 // timestamp cannot manufacture an expired-ping miss.
 func (n *Node) handlePong(peer *peerConn, env gossip.Envelope) {
 	if peer == nil || env.RequestID == "" {
+		return
+	}
+	if n.confirmCarrierReplacement(peer, env.RequestID) {
 		return
 	}
 	n.mu.Lock()
@@ -549,7 +559,11 @@ func (n *Node) connTickProbeAndPrune(now time.Time) {
 // receiver — this guards it.
 func (p *peerConn) closeSession() {
 	if p != nil && p.session != nil {
+		p.readClosed.Store(true)
 		_ = p.session.Close()
+		if state := p.replacement.Load(); state != nil && !state.committed.Load() && !state.restored.Load() {
+			state.old.closeSession()
+		}
 	}
 }
 

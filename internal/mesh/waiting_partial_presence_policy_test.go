@@ -44,9 +44,21 @@ func TestPartialPresenceCoalescesRetriesAndSkipsKnownPeerRooms(t *testing.T) {
 
 func TestPartialPresenceReplacesSameIdentityCarrierIncarnation(t *testing.T) {
 	f := waitingPartialPresenceFixture(t)
+	t.Cleanup(func() {
+		if t.Failed() {
+			logActivityRoomPaths(t, f.phone, f.live, f.room, f.channel)
+			logActivityRoomPaths(t, f.fresh, f.live, f.room, f.channel)
+			f.fresh.mu.RLock()
+			for id, route := range f.fresh.relayRoutes {
+				t.Logf("[rendezvous-core-route] session=%s source=%.8s target=%.8s", id, route.initiator, route.target)
+			}
+			f.fresh.mu.RUnlock()
+		}
+	})
 	awaitActivity(t, f.phone, "waiting", "ready")
 	before := ownPartialPresenceExpiry(t, f.fresh, f.phone)
 	old := f.phone.peerByID(f.fresh.localPeerID())
+	oldSID := f.phone.peerByID(f.live.localPeerID()).relaySessionID
 	old.closeSession()
 	deadline := time.Now().Add(12 * time.Second)
 	for {
@@ -66,6 +78,18 @@ func TestPartialPresenceReplacesSameIdentityCarrierIncarnation(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	awaitRendezvousRelayPair(t, f.phone, f.live)
+	pair := f.phone.peerByID(f.live.localPeerID())
+	f.fresh.mu.RLock()
+	_, coreRoute := f.fresh.relayRoutes[pair.relaySessionID]
+	_, coreRetired := f.fresh.relayRouteExpiry[pair.relaySessionID]
+	f.fresh.mu.RUnlock()
+	f.phone.mu.RLock()
+	phoneKeyMatch := equalBytes(f.phone.knownPeers[f.live.localPeerID()].noiseStatic, f.live.identity.NoiseStaticPublic())
+	f.phone.mu.RUnlock()
+	f.live.mu.RLock()
+	liveKeyMatch := equalBytes(f.live.knownPeers[f.phone.localPeerID()].noiseStatic, f.phone.identity.NoiseStaticPublic())
+	f.live.mu.RUnlock()
+	t.Logf("[rendezvous-pair] same_old_sid=%t core_route=%t core_retired=%t phone_key_match=%t live_key_match=%t sid=%s", pair.relaySessionID == oldSID, coreRoute, coreRetired, phoneKeyMatch, liveKeyMatch, pair.relaySessionID)
 	assertWaitingAlternativePackets(t, f.live, f.phone)
 	currentExpiry := ownPartialPresenceExpiry(t, f.fresh, f.phone)
 	key := mustOverlayID(t, f.phone.localPeerID())

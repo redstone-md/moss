@@ -111,7 +111,7 @@ func (n *Node) handleInbound(ctx context.Context, conn net.Conn) {
 		_ = conn.Close()
 		return
 	}
-	n.registerPeerFrom(session, false, originInboundTCP)
+	n.registerPeerFromContext(hsCtx, session, false, originInboundTCP, 0)
 }
 
 // masqAcceptLoop drains the uTLS-masquerade listener: each accepted conn is
@@ -169,7 +169,7 @@ func (n *Node) handleMasqInbound(ctx context.Context, conn net.Conn) {
 		_ = conn.Close()
 		return
 	}
-	n.registerPeerFrom(session, false, originInboundMasq)
+	n.registerPeerFromContext(hsCtx, session, false, originInboundMasq, 0)
 }
 
 func (n *Node) bootstrapLoop(ctx context.Context) {
@@ -339,6 +339,7 @@ func (n *Node) readPeer(peer *peerConn) {
 	for {
 		packet, err := peer.session.ReadPacket()
 		if err != nil {
+			peer.readClosed.Store(true)
 			return
 		}
 		peer.inboundPackets.Add(1)
@@ -545,7 +546,7 @@ func (n *Node) connectPeerWithHint(ctx context.Context, addr, peerID string) err
 		n.mu.RUnlock()
 		return errors.New("direct dialing suspended in waiting mode")
 	}
-	if n.directPeerCountLocked() >= n.config.MaxPeers && !(waitingDial && n.directPeerCountLocked() < 2) {
+	if n.directPeerCountLocked() >= n.config.MaxPeers && !(waitingDial && n.physicalPeerCountLocked() < 2) {
 		n.mu.RUnlock()
 		return errors.New("max peers reached")
 	}
@@ -705,6 +706,10 @@ func (n *Node) registerPeerFromAttempt(session *transport.Session, outbound bool
 }
 
 func (n *Node) registerPeerFromContext(ctx context.Context, session *transport.Session, outbound bool, origin string, attempt uint64) bool {
+	return n.registerPeerFromPacket(ctx, session, outbound, origin, attempt, nil)
+}
+
+func (n *Node) registerPeerFromPacket(ctx context.Context, session *transport.Session, outbound bool, origin string, attempt uint64, packet []byte) bool {
 	remoteID := session.RemoteID()
 	peerID := hex.EncodeToString(remoteID[:])
 	addr := session.RemoteAddr().String()
@@ -800,7 +805,7 @@ func (n *Node) registerPeerFromContext(ctx context.Context, session *transport.S
 	// different connection). The scores themselves are knowingly a
 	// microsecond stale; re-scoring under the lock would re-break the
 	// invariant the scan just fixed.
-	waitingSlot := n.waitingRequested() && peerID == n.activity.candidate && n.directPeerCountLocked() < 2
+	waitingSlot := n.waitingRequested() && peerID == n.activity.candidate && n.physicalPeerCountLocked() < 2
 	if replacedPeer == nil && n.directPeerCountLocked() >= n.config.MaxPeers && !waitingSlot {
 		n.mu.Unlock()
 		victim := n.selectOverflowPrunePeerLocked()
@@ -822,11 +827,21 @@ func (n *Node) registerPeerFromContext(ctx context.Context, session *transport.S
 		// Capacity freed while the lock was down (a peer left): the
 		// newcomer is admitted without evicting anyone.
 	}
+	replacement, accepted := n.prepareCarrierReplacementLocked(replacedPeer)
+	if !accepted {
+		n.mu.Unlock()
+		_ = session.Close()
+		return false
+	}
 	bootstrapSeed := !n.trackerSeeds[addr].IsZero()
 	peer := &peerConn{
 		id: peerID, addr: addr, session: session, origin: origin,
 		outbound: outbound, bootstrap: bootstrapSeed, connectedAt: time.Now(),
 		announceBudget: nat.NewTokenBucket(announceBurst, announceRatePerSecond),
+	}
+	peer.replacement.Store(replacement)
+	if n.activity.rendezvous == replacedPeer && replacement != nil {
+		n.activity.rendezvous = peer
 	}
 	if replacedPeer != nil {
 		peer.applicationUsed.Store(replacedPeer.applicationUsed.Load())
@@ -872,7 +887,7 @@ func (n *Node) registerPeerFromContext(ctx context.Context, session *transport.S
 	// here, outside n.mu: enqueueEvent is non-blocking (a full dispatch
 	// queue drops, counted), so the accept path never waits on dispatch
 	// backpressure — and events stay out of the node lock regardless.
-	if replacedPeer != nil && replacedPeer.session != nil {
+	if replacedPeer != nil && replacedPeer.session != nil && replacement == nil {
 		replacedPeer.closeSession()
 	}
 	if overflowPeer != nil {
@@ -927,7 +942,10 @@ func (n *Node) registerPeerFromContext(ctx context.Context, session *transport.S
 	if replacedPeer == nil {
 		n.enqueueEvent(EventPeerJoined, map[string]string{"peer": peerID, "addr": addr})
 	}
-	return true
+	if packet != nil {
+		n.dispatchConfirmedPacket(session, packet)
+	}
+	return n.awaitCarrierReplacement(ctx, peer, replacement)
 }
 
 // pruneCandidate is one peer's snapshot for overflow eviction ranking: the

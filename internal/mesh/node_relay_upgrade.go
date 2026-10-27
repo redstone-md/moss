@@ -34,10 +34,9 @@ func (n *Node) relayUpgradeNeedsConfirmation(session *transport.Session, attempt
 // Ordinary cold direct startup remains unchanged.
 func (n *Node) confirmAndRegisterRelayUpgrade(ctx context.Context, session *transport.Session, attempt uint64) error {
 	packet, ok := n.awaitMeshConfirm(ctx, session)
-	if !ok || !n.registerPeerFromContext(ctx, session, true, originDialTCP, attempt) {
+	if !ok || !n.registerPeerFromPacket(ctx, session, true, originDialTCP, attempt, packet) {
 		_ = session.Close()
 		return errors.New("mesh: relay TCP upgrade unconfirmed")
 	}
-	n.dispatchConfirmedPacket(session, packet)
 	return nil
 }

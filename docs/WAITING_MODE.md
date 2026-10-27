@@ -61,6 +61,22 @@ recipient can otherwise refuse the speculative direct session after Noise.
 Ordinary cold/direct-only startup is unchanged. Cancellation, Stop and current
 admission policy are rechecked before replacement.
 
+A direct carrier already serving relay paths also retains its exact old
+physical session while a same-identity replacement registers its normal reader.
+Only that new reader's matching Pong commits retirement; crossed pre-registration
+Pings do not. Application envelopes and stream writes keep using the old
+carrier until this confirmation. Captured first packets are replayed before
+waiting, so neither endpoint withholds the other's Ping. Refusal, cancellation
+or the original handshake deadline restores only the still-live predecessor
+under current admission policy. Stop and revocation close both owned sessions.
+Each physical stream incarnation has one reader. Waiting's two-carrier bound
+and attachment count include this overlap; ordinary MaxPeers and peer metrics
+continue counting admitted identities. No nested replacement or extra timer
+is introduced. A legacy peer still controls when it closes its own old socket;
+a genuine remote route loss uses authenticated RelayClose/expiry feedback and
+fresh signed recovery, retaining Waiting application intent rather than
+resurrecting old sessions. A carrier Pong does not prove an end-to-end relay.
+
 Waiting is a policy for the embedding application to select automatically when
 it has no interactive work, accepted call or user-started transfer. It is not a
 new end-user setting. Every node starts active; Bastion, games and other hosts

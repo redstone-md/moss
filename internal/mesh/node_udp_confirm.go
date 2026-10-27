@@ -67,7 +67,7 @@ func (n *Node) confirmAndRegisterUDPPeer(ctx context.Context, session *transport
 		return errUDPUnconfirmed
 	}
 	packet, ok := n.awaitMeshConfirm(ctx, session)
-	if !ok || !n.registerPeerFromContext(ctx, session, outbound, origin, attempt) {
+	if !ok || !n.registerPeerFromPacket(ctx, session, outbound, origin, attempt, packet) {
 		// Either the window expired with the far side silent, or the node
 		// refused its half of the session (capacity, duplicate, stopped) —
 		// registerPeerFrom has already closed the session in that case. For
@@ -80,7 +80,6 @@ func (n *Node) confirmAndRegisterUDPPeer(ctx context.Context, session *transport
 		}
 		return errUDPUnconfirmed
 	}
-	n.dispatchConfirmedPacket(session, packet)
 	return nil
 }
 

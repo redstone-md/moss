@@ -22,7 +22,7 @@ func (n *Node) reconcileWaiting(root context.Context) {
 	n.activity.candidateReady = make(chan struct{}, 1)
 	n.activity.attempt++
 	attempt := n.activity.attempt
-	if n.activity.actual != ActivityWaiting || n.activity.reachability != "ready" || n.directPeerCountLocked() != 1 || selected != n.activity.attachment || !n.waitingCarrierCanSettleLocked(selected) {
+	if n.activity.actual != ActivityWaiting || n.activity.reachability != "ready" || n.physicalPeerCountLocked() != 1 || selected != n.activity.attachment || !n.waitingCarrierCanSettleLocked(selected) {
 		n.activity.reachability = "attaching"
 	}
 	ctx, cancel := context.WithTimeout(root, n.config.HandshakeTimeout())
@@ -76,7 +76,7 @@ func (n *Node) reconcileWaiting(root context.Context) {
 	}
 	n.activity.actual = ActivityWaiting
 	n.activity.reachability = "unavailable"
-	if n.activity.attachment != "" && n.directPeerCountLocked() == 1 && n.waitingCarrierCanSettleLocked(n.activity.attachment) {
+	if n.activity.attachment != "" && n.physicalPeerCountLocked() == 1 && n.waitingCarrierCanSettleLocked(n.activity.attachment) {
 		n.activity.reachability = "ready"
 	}
 	n.mu.Unlock()

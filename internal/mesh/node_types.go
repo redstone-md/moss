@@ -227,13 +227,13 @@ type Node struct {
 
 	// Stream-layer state for the mesh API on top of the transport mux:
 	// per-stream handlers and unreliable-stream flags are keyed by
-	// StreamID; streamReaders tracks which (peer, stream) pairs already
+	// StreamID; streamReaders tracks which (session, stream) pairs already
 	// have a reader goroutine so re-registering a handler or resending
 	// never double-spawns. streamMu guards all three maps; it is never
 	// held while taking n.mu (snapshot peers first, then lock streamMu).
 	streamMu         sync.RWMutex
 	streamHandlers   map[transport.StreamID]StreamHandler
-	streamReaders    map[string]map[transport.StreamID]*transport.Session
+	streamReaders    map[streamReaderKey]struct{}
 	streamUnreliable map[transport.StreamID]bool
 
 	// Outbound per-peer envelope queues, drained by dedicated workers so no
@@ -330,7 +330,16 @@ type Node struct {
 	directedQueues map[[32]byte]chan any
 }
 
+// A retained handover may have two sessions for one peer identity. Each
+// stream still has exactly one reader on each physical incarnation.
+type streamReaderKey struct {
+	session *transport.Session
+	stream  transport.StreamID
+}
+
 type peerConn struct {
+	readClosed      atomic.Bool
+	replacement     atomic.Pointer[carrierReplacement]
 	streamUpgradeMu sync.Mutex
 	streamUpgradeAt time.Time // guarded by streamUpgradeMu; bounds failed carrier probes
 
@@ -596,7 +605,7 @@ func (n *Node) OnStream(streamID transport.StreamID, handler StreamHandler) int3
 	n.streamMu.Lock()
 	if n.streamHandlers == nil {
 		n.streamHandlers = make(map[transport.StreamID]StreamHandler)
-		n.streamReaders = make(map[string]map[transport.StreamID]*transport.Session)
+		n.streamReaders = make(map[streamReaderKey]struct{})
 		n.streamUnreliable = make(map[transport.StreamID]bool)
 	}
 	n.streamHandlers[streamID] = handler
@@ -638,6 +647,9 @@ func (n *Node) snapshotPeersWithSession() []*peerConn {
 	for _, peer := range n.peers {
 		if peer.session != nil {
 			peers = append(peers, peer)
+			if state := peer.replacement.Load(); state != nil && !state.committed.Load() && !state.old.readClosed.Load() {
+				peers = append(peers, state.old)
+			}
 		}
 	}
 	n.mu.RUnlock()
@@ -682,21 +694,19 @@ func (n *Node) ensureRegisteredStreamReaders(peer *peerConn) {
 func (n *Node) ensureStreamReader(peer *peerConn, streamID transport.StreamID) {
 	n.streamMu.Lock()
 	if n.streamReaders == nil {
-		n.streamReaders = make(map[string]map[transport.StreamID]*transport.Session)
+		n.streamReaders = make(map[streamReaderKey]struct{})
 	}
 	handler, ok := n.streamHandlers[streamID]
 	if !ok || handler == nil {
 		n.streamMu.Unlock()
 		return
 	}
-	if n.streamReaders[peer.id] == nil {
-		n.streamReaders[peer.id] = make(map[transport.StreamID]*transport.Session)
-	}
-	if n.streamReaders[peer.id][streamID] == peer.session {
+	key := streamReaderKey{peer.session, streamID}
+	if _, reading := n.streamReaders[key]; reading {
 		n.streamMu.Unlock()
 		return
 	}
-	n.streamReaders[peer.id][streamID] = peer.session
+	n.streamReaders[key] = struct{}{}
 	unreliable := n.streamUnreliable[streamID]
 	n.streamMu.Unlock()
 
@@ -732,13 +742,7 @@ func (n *Node) ensureStreamReader(peer *peerConn, streamID transport.StreamID) {
 func (n *Node) forgetStreamReader(peer *peerConn, id transport.StreamID) {
 	n.streamMu.Lock()
 	defer n.streamMu.Unlock()
-	if n.streamReaders[peer.id][id] != peer.session {
-		return
-	}
-	delete(n.streamReaders[peer.id], id)
-	if len(n.streamReaders[peer.id]) == 0 {
-		delete(n.streamReaders, peer.id)
-	}
+	delete(n.streamReaders, streamReaderKey{peer.session, id})
 }
 
 // OpenStream resolves peerID (overlay lookup + hint dial if unknown — see
@@ -790,6 +794,7 @@ func (n *Node) SendStream(peerID string, streamID transport.StreamID, data []byt
 		return MOSS_ERR_NO_PEERS
 	}
 	peer.applicationUsed.Store(true)
+	peer = carrierWritePeer(peer, "")
 	if err := peer.session.Stream(streamID).WritePacket(data); err != nil {
 		return MOSS_ERR_CONNECT_FAILED
 	}

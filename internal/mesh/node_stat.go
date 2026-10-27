@@ -74,6 +74,10 @@ func (n *Node) sessionByteTotals() (in uint64, out uint64) {
 		}
 		in += peer.session.BytesIn()
 		out += peer.session.BytesOut()
+		if state := peer.replacement.Load(); state != nil && !state.committed.Load() {
+			in += state.old.session.BytesIn()
+			out += state.old.session.BytesOut()
+		}
 	}
 	return in, out
 }

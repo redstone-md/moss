@@ -194,6 +194,9 @@ func (n *Node) waitingAttachmentCountLocked() int {
 		}
 		if peer := n.peers[id]; !duplicate && peer != nil && !peer.relayed {
 			count++
+			if state := peer.replacement.Load(); state != nil && !state.committed.Load() && !state.old.readClosed.Load() {
+				count++
+			}
 		}
 	}
 	return count

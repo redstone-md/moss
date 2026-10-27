@@ -43,6 +43,7 @@ func (n *Node) sendDirectEnvelope(peer *peerConn, env gossip.Envelope) bool {
 }
 
 func (n *Node) sendDirectEnvelopeWire(peer *peerConn, env gossip.Envelope, wire []byte) bool {
+	peer = carrierWritePeer(peer, env.Type)
 	if peer == nil || peer.session == nil {
 		return false
 	}

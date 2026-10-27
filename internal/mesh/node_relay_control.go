@@ -402,8 +402,13 @@ func (n *Node) handleRelayClose(peer *peerConn, env gossip.Envelope) {
 	if env.RelaySession == "" {
 		return
 	}
+	recovering := false
 	n.mu.Lock()
 	if session, ok := n.relayLocals[env.RelaySession]; ok && peer != nil && session.viaPeerID == peer.id {
+		if n.waitingRequested() {
+			n.retainWaitingApplicationPathLocked(session)
+			recovering = n.activity.recovering[session.remotePeerID] != nil
+		}
 		if n.removeRelayedPeerLocked(session) {
 			n.pubsub.RemovePeer(session.remotePeerID)
 		}
@@ -413,6 +418,9 @@ func (n *Node) handleRelayClose(peer *peerConn, env gossip.Envelope) {
 	// The session was torn down explicitly — no expiry reply is owed.
 	delete(n.relayRouteExpiry, env.RelaySession)
 	n.mu.Unlock()
+	if recovering {
+		n.wakeActivity()
+	}
 	n.relaySessions.Release(env.RelaySession)
 	n.refreshSupernodeStatus()
 	if env.RelayTarget == "" || env.RelayTarget == n.localPeerID() {

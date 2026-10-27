@@ -126,7 +126,7 @@ func (n *Node) connectWaitingAlternatives(parent context.Context, candidates []w
 func (n *Node) retireUnusedWaitingCarriers(selected string, attempt uint64) bool {
 	n.mu.RLock()
 	var unused []*peerConn
-	if n.waitingRecoveryBoundedLocked() && n.directPeerCountLocked() >= 2 {
+	if n.waitingRecoveryBoundedLocked() && n.physicalPeerCountLocked() >= 2 {
 		for id, peer := range n.peers {
 			if id != selected && !peer.relayed && !n.waitingCandidateCarriesApplicationLocked(peer) {
 				unused = append(unused, peer)
@@ -142,7 +142,7 @@ func (n *Node) retireUnusedWaitingCarriers(selected string, attempt uint64) bool
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 	peer := n.peers[selected]
-	return !n.waitingRecoveryBoundedLocked() || n.directPeerCountLocked() < 2 || (peer != nil && !peer.relayed)
+	return !n.waitingRecoveryBoundedLocked() || n.physicalPeerCountLocked() < 2 || (peer != nil && !peer.relayed)
 }
 
 // Failed candidates may already carry a partially migrated application path.

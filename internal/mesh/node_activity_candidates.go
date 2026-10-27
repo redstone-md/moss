@@ -16,7 +16,7 @@ type waitingCandidate struct {
 // before this same policy is revalidated at final physical admission.
 func (n *Node) waitingAdmissionAllowedLocked(peerID string, outbound bool, attempt uint64) bool {
 	peer := n.peers[peerID]
-	if n.waitingRequested() && n.waitingRecoveryBoundedLocked() && (peer == nil || peer.relayed) && n.directPeerCountLocked() >= 2 {
+	if n.waitingRequested() && n.waitingRecoveryBoundedLocked() && (peer == nil || peer.relayed) && n.physicalPeerCountLocked() >= 2 {
 		return false
 	}
 	owner := n.activity.rendezvous
