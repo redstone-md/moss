@@ -53,6 +53,9 @@ func (n *Node) removePeerWithPolicy(peerID string, session *transport.Session, w
 	endedInbound := peer.inboundPackets.Load()
 	if !peer.relayed {
 		if target := n.explicitTargets[peerID]; target != nil {
+			if endedInbound > 0 {
+				target.recoveryVia = ""
+			}
 			if n.activity.optedIn {
 				target.identityRetry = true
 			} else if endedInbound > 0 {

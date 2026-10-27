@@ -89,6 +89,18 @@ coalescing, deadlines and backoff still apply. Unregistered peers, pending or
 replaced relay sessions and ordinary direct-only targets retain their original
 routing order. This does not opt the host into lifecycle or change discovery.
 
+When that target's exact current established relay loses its physical carrier,
+the explicit registration also remembers the authenticated former carrier ID.
+Fresh provider hints still take priority. If they yield no route, unused time
+inside the same lookup deadline can reauthenticate that currently eligible
+carrier and request a new signed relay session. This recovers a waiting
+recipient whose sole provider record remains on that disconnected common core.
+Current trust, key, address and allowlist policy apply again; old local relay
+sessions are never revived. A speculative admission or failed retry does not
+consume this intent. Fresh authenticated replacement or confirmed direct health
+does. Healthy/direct-only startup, retry spacing and other consumers' discovery
+remain unchanged.
+
 Active virtual peers also retire at the existing unanswered end-to-end probe
 limit. They have no physical socket to close: retirement removes only the
 matching failed relay-session incarnation and lets an ordinary explicit target

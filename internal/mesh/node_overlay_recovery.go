@@ -60,3 +60,51 @@ func identityAttachmentHints(peerID string, providers []gossip.OverlayProvider) 
 	}
 	return hints
 }
+
+// A carrier loss can isolate a live Waiting recipient's only provider record.
+// Reuse the exact former carrier only after fresh identity hints failed, within
+// the same lookup deadline; an authenticated replacement is the only success.
+func (n *Node) reachPreviousRelayCarrier(ctx context.Context, peerID string) bool {
+	n.mu.RLock()
+	via, addr := n.previousRelayCarrierLocked(peerID)
+	n.mu.RUnlock()
+	if via == "" {
+		return false
+	}
+	if !n.directPeerConnected(via) {
+		if err := n.connectPeerWithHint(ctx, addr, via); err != nil {
+			return false
+		}
+	}
+	n.mu.RLock()
+	current, _ := n.previousRelayCarrierLocked(peerID)
+	n.mu.RUnlock()
+	if current != via {
+		return n.peerByID(peerID) != nil
+	}
+	_, err := n.openRelaySession(ctx, via, peerID, n.config.HandshakeTimeout())
+	return err == nil
+}
+
+// The remembered ID owns no admission; current signed policy and the actual
+// Noise identity must permit every new attempt. Caller holds n.mu.
+func (n *Node) previousRelayCarrierLocked(peerID string) (string, string) {
+	target := n.explicitTargets[peerID]
+	if !n.started || n.waitingRequested() || target == nil || !target.identityRetry || target.recoveryVia == "" {
+		return "", ""
+	}
+	via := target.recoveryVia
+	info := n.knownPeers[via]
+	if via == peerID || !info.verified || len(info.noiseStatic) != 32 || info.addr == "" || !n.isTrustedRelayCandidateLocked(via) {
+		return "", ""
+	}
+	if n.allowlist != nil {
+		if _, ok := n.allowlist[via]; !ok {
+			return "", ""
+		}
+		if _, ok := n.allowlist[peerID]; !ok {
+			return "", ""
+		}
+	}
+	return via, info.addr
+}

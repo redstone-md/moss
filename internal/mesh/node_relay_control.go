@@ -682,6 +682,9 @@ func (n *Node) removeRelayedPeerLocked(session relayLocalSession) bool {
 	if session.established {
 		if target := n.explicitTargets[session.remotePeerID]; target != nil {
 			target.identityRetry = true
+			if n.peers[session.viaPeerID] == nil {
+				target.recoveryVia = session.viaPeerID
+			}
 		}
 	}
 	delete(n.peers, session.remotePeerID)
@@ -767,11 +770,12 @@ func (n *Node) closeRelayRouteForPolicy(sessionID, source, target string, waitin
 	}
 }
 
-// Only fresh authenticated relay control consumes ordinary identity recovery;
-// restoring an old local fallback is not proof of current remote admission.
+// Fresh authenticated relay control consumes the remembered carrier and
+// ordinary identity recovery; old local state is not current remote admission.
 func (n *Node) confirmExplicitRelayRecoveryLocked(peerID string) {
-	if !n.activity.optedIn {
-		if target := n.explicitTargets[peerID]; target != nil {
+	if target := n.explicitTargets[peerID]; target != nil {
+		target.recoveryVia = ""
+		if !n.activity.optedIn {
 			target.identityRetry = false
 		}
 	}

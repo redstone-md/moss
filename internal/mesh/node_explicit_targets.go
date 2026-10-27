@@ -14,6 +14,7 @@ type explicitTarget struct {
 	cancel        context.CancelFunc
 	failures      int
 	identityRetry bool
+	recoveryVia   string
 }
 
 // ConnectToPeer registers peerID as an explicit priority target: the node
