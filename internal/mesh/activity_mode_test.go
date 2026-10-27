@@ -131,8 +131,12 @@ func logActivityRoomPaths(t *testing.T, a, b *Node, room, channel string) {
 		node.mu.RLock()
 		for id, peer := range node.peers {
 			t.Logf("[activity-path] %s peer=%.8s relay=%t incoming=%d subscribed=%t mesh=%t pending=%t misses=%d", label, id, peer.relayed, peer.inboundPackets.Load(), node.pubsub.HasPeerSubscription(id, topic), node.pubsub.InMesh(topic, id), peer.pingPending != "", peer.pingMisses)
+			if peer.relayed {
+				session, exists := node.relayLocals[peer.relaySessionID]
+				t.Logf("[activity-relay] %s peer=%.8s via=%.8s session=%s exists=%t established=%t admission=%d keybytes=%d score=%.2f", label, id, peer.viaPeerID, peer.relaySessionID, exists, session.established, session.admission, len(node.knownPeers[id].noiseStatic), node.scoring.Score(id))
+			}
 		}
-		t.Logf("[activity-path] %s routes=%d sessions=%d", label, len(node.relayRoutes), len(node.relayLocals))
+		t.Logf("[activity-path] %s routes=%d sessions=%d outbounddrops=%d dispatchdrops=%d relayunopenable=%d", label, len(node.relayRoutes), len(node.relayLocals), node.outboundDropped.Load(), inboundCount(node, "__dispatch_dropped__"), inboundCount(node, "__relay_payload_unopenable__"))
 		node.mu.RUnlock()
 	}
 }
