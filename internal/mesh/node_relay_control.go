@@ -42,13 +42,19 @@ func (n *Node) handleRelayRequest(peer *peerConn, env gossip.Envelope) {
 			established:  true,
 		}
 		n.mu.Lock()
-		n.relayLocals[env.RelaySession] = session
-		relayPeer, capped := n.registerRelayedPeerLocked(session)
-		if !capped {
-			n.confirmExplicitRelayRecoveryLocked(session.remotePeerID)
+		previousAdmission := n.relayLocals[session.sessionID].admission
+		session, admitted := n.admitRelaySessionLocked(session)
+		var relayPeer *peerConn
+		capped := !admitted
+		if admitted {
+			n.relayLocals[env.RelaySession] = session
+			relayPeer, capped = n.registerRelayedPeerLocked(session)
+			if !capped && session.admission != previousAdmission {
+				n.confirmExplicitRelayRecoveryLocked(session.remotePeerID)
+			}
 		}
 		if capped {
-			delete(n.relayLocals, env.RelaySession)
+			n.retireRelayLocalLocked(env.RelaySession)
 		}
 		n.mu.Unlock()
 		if capped {
@@ -113,10 +119,19 @@ func (n *Node) handleRelayAccept(peer *peerConn, env gossip.Envelope) {
 		n.mu.Lock()
 		session, ok := n.relayLocals[env.RelaySession]
 		if ok && session.viaPeerID == peer.id && session.remotePeerID == env.RelaySource {
+			previousAdmission := session.admission
+			var admitted bool
+			session, admitted = n.admitRelaySessionLocked(session)
+			if !admitted {
+				n.mu.Unlock()
+				return
+			}
 			session.established = true
 			relayPeer, capped = n.registerRelayedPeerLocked(session)
 			if !capped {
-				n.confirmExplicitRelayRecoveryLocked(session.remotePeerID)
+				if session.admission != previousAdmission {
+					n.confirmExplicitRelayRecoveryLocked(session.remotePeerID)
+				}
 				n.relayLocals[env.RelaySession] = session
 				if session.wait != nil {
 					close(session.wait)
@@ -393,7 +408,7 @@ func (n *Node) handleRelayClose(peer *peerConn, env gossip.Envelope) {
 			n.pubsub.RemovePeer(session.remotePeerID)
 		}
 	}
-	delete(n.relayLocals, env.RelaySession)
+	n.retireRelayLocalLocked(env.RelaySession)
 	delete(n.relayRoutes, env.RelaySession)
 	// The session was torn down explicitly — no expiry reply is owed.
 	delete(n.relayRouteExpiry, env.RelaySession)
@@ -465,7 +480,7 @@ func (n *Node) closeRelaySession(session relayLocalSession) {
 	}
 	n.mu.Lock()
 	removedPeer := n.removeRelayedPeerLocked(session)
-	delete(n.relayLocals, session.sessionID)
+	n.retireRelayLocalLocked(session.sessionID)
 	delete(n.directProbes, session.remotePeerID)
 	if removedPeer {
 		n.pubsub.RemovePeer(session.remotePeerID)
@@ -576,6 +591,12 @@ func (n *Node) registerRelayedPeerLocked(session relayLocalSession) (*peerConn, 
 		return nil, false
 	}
 	existing := n.peers[session.remotePeerID]
+	if existing != nil && existing.relayed {
+		current := n.relayLocals[existing.relaySessionID]
+		if current.admission > session.admission {
+			return existing, false
+		}
+	}
 	if existing != nil && !existing.relayed && (!n.waitingRequested() || session.remotePeerID == n.activity.attachment || session.remotePeerID == n.activity.candidate) {
 		return nil, false
 	}
@@ -648,8 +669,8 @@ func (n *Node) relayPeerForSession(session relayLocalSession) *peerConn {
 	return &peerConn{id: session.remotePeerID, addr: "relay:" + session.viaPeerID, relayed: true, viaPeerID: session.viaPeerID, relaySessionID: session.sessionID}
 }
 
-// Return true only when this current incarnation leaves without an admitted
-// alternative. Callers must keep subscription/scoring state for a replacement.
+// Return true only when the matching current incarnation leaves. Historical
+// sessions are not evidence that their remote endpoint is still reachable.
 func (n *Node) removeRelayedPeerLocked(session relayLocalSession) bool {
 	peer := n.peers[session.remotePeerID]
 	if peer == nil || !peer.relayed || peer.relaySessionID != session.sessionID {
@@ -664,7 +685,7 @@ func (n *Node) removeRelayedPeerLocked(session relayLocalSession) bool {
 		}
 	}
 	delete(n.peers, session.remotePeerID)
-	return !n.restoreAlternateRelayLocked(session, peer)
+	return true
 }
 
 // relayConsumerCapped charges bytes to the source peer's rolling per-minute

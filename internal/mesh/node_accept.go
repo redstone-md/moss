@@ -1018,7 +1018,7 @@ func (n *Node) evictPeerLocked(victim *peerConn) {
 	for sessionID, relaySession := range n.relayLocals {
 		if relaySession.viaPeerID == victim.id || relaySession.remotePeerID == victim.id {
 			n.removeRelayedPeerLocked(relaySession)
-			delete(n.relayLocals, sessionID)
+			n.retireRelayLocalLocked(sessionID)
 			delete(n.directProbes, relaySession.remotePeerID)
 		}
 	}

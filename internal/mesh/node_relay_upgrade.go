@@ -16,6 +16,9 @@ func (n *Node) relayUpgradeNeedsConfirmation(session *transport.Session, attempt
 	if n.waitingRequested() && attempt != 0 && attempt == n.activity.attempt && n.waitingAdmissionAllowedLocked(peerID, true, attempt) {
 		return true
 	}
+	if target := n.explicitTargets[peerID]; target != nil && target.identityRetry {
+		return true
+	}
 	peer := n.peers[peerID]
 	return peer != nil && (peer.relayed ||
 		(peer.session != nil && !isStreamNetwork(peer.session.RemoteAddr())))
@@ -26,7 +29,9 @@ func (n *Node) relayUpgradeNeedsConfirmation(session *transport.Session, attempt
 // replacing a carrier would otherwise also strand all its virtual sessions.
 // A permitted Waiting candidate also needs fresh admission: cached signed
 // capability plus a cold Noise handshake must not announce Ready for a peer
-// that refuses mesh traffic. Ordinary cold direct startup remains unchanged.
+// that refuses mesh traffic. An explicit target recovering from an established
+// relay also needs confirmation after its virtual entry leaves the directory.
+// Ordinary cold direct startup remains unchanged.
 func (n *Node) confirmAndRegisterRelayUpgrade(ctx context.Context, session *transport.Session, attempt uint64) error {
 	packet, ok := n.awaitMeshConfirm(ctx, session)
 	if !ok || !n.registerPeerFromContext(ctx, session, true, originDialTCP, attempt) {

@@ -153,7 +153,7 @@ func (n *Node) removePeerWithPolicy(peerID string, session *transport.Session, w
 			if n.removeRelayedPeerLocked(relaySession) {
 				removedRelayed = append(removedRelayed, relaySession.remotePeerID)
 			}
-			delete(n.relayLocals, sessionID)
+			n.retireRelayLocalLocked(sessionID)
 			delete(n.directProbes, relaySession.remotePeerID)
 		}
 	}

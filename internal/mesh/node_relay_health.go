@@ -17,7 +17,7 @@ func (n *Node) retireUnresponsiveRelayPeer(peer *peerConn) {
 	}
 	via := n.peers[session.viaPeerID]
 	removed := n.removeRelayedPeerLocked(session)
-	delete(n.relayLocals, session.sessionID)
+	n.retireRelayLocalLocked(session.sessionID)
 	delete(n.directProbes, peer.id)
 	n.cleanupDepartedPeersLocked([]string{peer.id})
 	n.mu.Unlock()

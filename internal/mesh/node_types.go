@@ -125,11 +125,13 @@ type Node struct {
 	// admission control for future registrations only; DisallowPeer revokes
 	// and tears down live direct and relayed sessions. Guarded by mu;
 	// populated by AllowPeer/DisallowPeer before or during Start.
-	allowlist    map[string]struct{}
-	suppress     map[string]map[string]time.Time
-	relayRoutes  map[string]relayRoute
-	relayLocals  map[string]relayLocalSession
-	relayBuckets map[string]*nat.TokenBucket
+	allowlist      map[string]struct{}
+	suppress       map[string]map[string]time.Time
+	relayRoutes    map[string]relayRoute
+	relayLocals    map[string]relayLocalSession
+	relayAdmission uint64              // ordered first admissions and retirements, guarded by mu
+	relayRetired   map[[32]byte]uint64 // bounded closed-session replay rejection, guarded by mu
+	relayBuckets   map[string]*nat.TokenBucket
 	// relayConsumers tracks each source peer's rolling per-minute byte total
 	// against NAT.RelayConsumerCapBytes — a volunteer's quota guard distinct
 	// from the instantaneous bucket. Keyed by the source peer id (same key as
@@ -462,6 +464,7 @@ type relayLocalSession struct {
 	wait            chan struct{}
 	lastSendAt      time.Time
 	applicationUsed bool
+	admission       uint64
 }
 
 const (

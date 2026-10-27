@@ -49,7 +49,7 @@ func (n *Node) openRelaySession(ctx context.Context, viaPeerID, targetPeerID str
 		RelayTarget:  targetPeerID,
 	})) {
 		n.mu.Lock()
-		delete(n.relayLocals, sessionID)
+		n.retireRelayLocalLocked(sessionID)
 		n.mu.Unlock()
 		return "", errors.New("relay request send failed")
 	}
@@ -76,7 +76,7 @@ func (n *Node) waitRelaySession(ctx context.Context, sessionID string, wait <-ch
 		n.mu.Unlock()
 		return sessionID, nil
 	}
-	delete(n.relayLocals, sessionID)
+	n.retireRelayLocalLocked(sessionID)
 	n.mu.Unlock()
 	if waitErr == nil {
 		waitErr = errors.New("relay session closed before establishment")

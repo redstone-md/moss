@@ -377,6 +377,8 @@ func (n *Node) Stop() int32 {
 	}
 	n.relayRoutes = make(map[string]relayRoute)
 	n.relayLocals = make(map[string]relayLocalSession)
+	n.relayRetired = nil
+	n.relayAdmission = 0
 	n.relayBuckets = make(map[string]*nat.TokenBucket)
 	n.relayConsumers = make(map[string]*relayConsumer)
 	n.suppress = make(map[string]map[string]time.Time)

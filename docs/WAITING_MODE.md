@@ -55,7 +55,10 @@ and handshake deadlines supply this confirmation; the first packet is replayed
 to its normal handler. A permitted cold Waiting candidate also requires this
 fresh mesh admission; cached signed capability and Noise alone can otherwise
 report ready immediately before a remote refusal closes the connection.
-Ordinary cold direct startup is unchanged. Cancellation, Stop and current
+An ordinary explicit target recovering an established lost relay also requires
+mesh confirmation when its old virtual entry is already absent; a Waiting
+recipient can otherwise refuse the speculative direct session after Noise.
+Ordinary cold/direct-only startup is unchanged. Cancellation, Stop and current
 admission policy are rechecked before replacement.
 
 Waiting is a policy for the embedding application to select automatically when
@@ -93,14 +96,17 @@ refresh its identity route, while retaining its healthy carrier. A stale probe
 cannot prune or retire a newer peer incarnation. Waiting virtual peers still
 rely on carrier liveness and do not start per-conversation probes.
 
-Closing a current relay incarnation restores another already-established
-session to that peer if its authenticated physical carrier remains admitted.
-The closing session is excluded; current allowlist policy is checked again,
-and application interest, subscriptions and scoring survive replacement.
-Stale closes cannot replace a newer incarnation. This also corrects ordinary
-active callers, without opting them into Waiting. It does not retransmit data
-already sent into a concurrently closing route or make queue acceptance a
-delivery acknowledgement.
+A relay's ordering belongs to its first authenticated Request/Accept, not a
+later directory promotion or repeated control. Direct teardown cannot replace
+a newer admitted relay with an older one. Closing the current route never
+resurrects historical relay state: a live local carrier alone does not prove
+its remote leg still works. Local retirement keeps the last1024 closed-session
+hashes so a delayed signed Request arriving through another carrier cannot
+become a new admission. That bounded replay history is distinct from a core's
+one-shot expired-route reply and clears on node restart. Stale closes cannot
+remove a newer current incarnation. These corrections also cover ordinary
+active callers without opting them into Waiting, retransmitting queued data or
+turning queue acceptance into a delivery acknowledgement.
 
 One Waiting repair can try at most three already-known candidates sequentially
 inside its existing handshake deadline. Cold candidates share the remaining
