@@ -81,10 +81,10 @@ still terminate them. Established sessions and application payloads are not
 replayed.
 
 Independent maintenance and route workers coalesce overlapping TCP dials for
-the same known identity. Opposite local completion orders must not select two
+the same known identity at the same address. Opposite local completion orders must not select two
 different halves of simultaneous same-direction connections. Each waiter keeps
-its own context; a cancelled owner or failed stale address does not consume a
-live waiter's fresh opportunity. Unknown identities and distinct peer dials
+its own context; a cancelled owner or a stale address does not consume a live
+waiter's fresh opportunity. Unknown identities and distinct peer dials
 keep their existing behavior, and the ordinary direction/transport preference
 and legacy wire handshake are unchanged.
 
