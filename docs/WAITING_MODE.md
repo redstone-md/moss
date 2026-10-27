@@ -71,6 +71,15 @@ or the original handshake deadline restores only the still-live predecessor
 under current admission policy. Stop and revocation close both owned sessions.
 A queued Pong cannot commit a new session already known closed, and an unfinished
 owner still blocks nested replacement while its EOF dispatch tail rolls back.
+A pending relay Request belongs to its original caller, signed session ID and
+unchanged deadline. If its authenticated physical carrier changes before the
+Accept, only that pending control and its preceding identity announcement can
+be sent on the new exact carrier. A failed old write cannot erase a successor's
+claim. Actual carrier EOF retains only live, unestablished waiters; normal
+expiry, cancellation, Stop, authenticated Close and current admission policy
+still terminate them. Established sessions and application payloads are not
+replayed.
+
 Each physical stream incarnation has one reader. Waiting's two-carrier bound
 and attachment count include this overlap; ordinary MaxPeers and peer metrics
 continue counting admitted identities. No nested replacement or extra timer

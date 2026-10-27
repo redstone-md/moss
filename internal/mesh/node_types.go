@@ -466,6 +466,7 @@ func (c *relayConsumer) charge(now time.Time, n int64) int64 {
 }
 
 type relayLocalSession struct {
+	pending         *pendingRelayControl
 	sessionID       string
 	viaPeerID       string
 	remotePeerID    string

@@ -127,6 +127,7 @@ func (n *Node) handleRelayAccept(peer *peerConn, env gossip.Envelope) {
 				return
 			}
 			session.established = true
+			session.pending = nil
 			relayPeer, capped = n.registerRelayedPeerLocked(session)
 			if !capped {
 				if session.admission != previousAdmission {

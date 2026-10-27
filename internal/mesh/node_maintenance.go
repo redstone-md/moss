@@ -141,6 +141,11 @@ func (n *Node) removePeerWithPolicy(peerID string, session *transport.Session, w
 	var fallback *peerConn
 	for sessionID, relaySession := range n.relayLocals {
 		if relaySession.viaPeerID == peerID || relaySession.remotePeerID == peerID {
+			// Only the original live waiter may reuse this signed Request after
+			// an authenticated replacement. Established dependencies still retire.
+			if relaySession.viaPeerID == peerID && !relaySession.established && relaySession.pending != nil && relaySession.pending.context.Err() == nil && n.started {
+				continue
+			}
 			if n.waitingRequested() && relaySession.viaPeerID == peerID {
 				n.retainWaitingApplicationPathLocked(relaySession)
 			}

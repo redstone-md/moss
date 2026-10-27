@@ -945,7 +945,11 @@ func (n *Node) registerPeerFromPacket(ctx context.Context, session *transport.Se
 	if packet != nil {
 		n.dispatchConfirmedPacket(session, packet)
 	}
-	return n.awaitCarrierReplacement(ctx, peer, replacement)
+	if !n.awaitCarrierReplacement(ctx, peer, replacement) {
+		return false
+	}
+	n.replayPendingRelayRequests(peer)
+	return true
 }
 
 // pruneCandidate is one peer's snapshot for overflow eviction ranking: the

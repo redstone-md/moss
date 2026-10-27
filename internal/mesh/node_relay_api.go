@@ -32,6 +32,16 @@ func (n *Node) openRelaySession(ctx context.Context, viaPeerID, targetPeerID str
 	if err != nil {
 		return "", err
 	}
+	ctx, cancel := context.WithTimeoutCause(ctx, timeout, errors.New("relay session open timed out"))
+	defer cancel()
+	n.mu.RLock()
+	root := n.rootCtx
+	n.mu.RUnlock()
+	if root != nil {
+		stop := context.AfterFunc(root, cancel)
+		defer stop()
+	}
+	owner := &pendingRelayControl{context: ctx}
 	wait := make(chan struct{})
 	n.mu.Lock()
 	n.relayLocals[sessionID] = relayLocalSession{
@@ -40,33 +50,36 @@ func (n *Node) openRelaySession(ctx context.Context, viaPeerID, targetPeerID str
 		remotePeerID:    targetPeerID,
 		wait:            wait,
 		applicationUsed: applicationUsed,
+		pending:         owner,
 	}
 	n.mu.Unlock()
-	if !n.sendRelayControlWithIdentity(peer, n.signRelayRequestEnvelope(gossip.Envelope{
-		Type:         gossip.TypeRelayRequest,
-		RelaySession: sessionID,
-		RelaySource:  n.localPeerID(),
-		RelayTarget:  targetPeerID,
-	})) {
+	if owned, failed := n.transmitPendingRelayRequest(sessionID); !owned {
 		n.mu.Lock()
-		n.retireRelayLocalLocked(sessionID)
+		current := n.relayLocals[sessionID]
+		if current.established {
+			n.mu.Unlock()
+			return sessionID, nil
+		}
+		if current.pending == owner && owner.context.Err() == nil && owner.carrier != failed {
+			n.mu.Unlock()
+			return n.waitRelaySession(ctx, sessionID, wait)
+		}
+		if current.pending == owner {
+			n.retireRelayLocalLocked(sessionID)
+		}
 		n.mu.Unlock()
 		return "", errors.New("relay request send failed")
 	}
-	return n.waitRelaySession(ctx, sessionID, wait, timeout)
+	return n.waitRelaySession(ctx, sessionID, wait)
 }
 
 // A successful admission owns the session even if cancellation wakes its waiter.
-func (n *Node) waitRelaySession(ctx context.Context, sessionID string, wait <-chan struct{}, timeout time.Duration) (string, error) {
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
+func (n *Node) waitRelaySession(ctx context.Context, sessionID string, wait <-chan struct{}) (string, error) {
 	var waitErr error
 	select {
 	case <-wait:
 	case <-ctx.Done():
-		waitErr = ctx.Err()
-	case <-timer.C:
-		waitErr = errors.New("relay session open timed out")
+		waitErr = context.Cause(ctx)
 	}
 	n.mu.Lock()
 	// Admission can win the race with cancellation or a timeout. Its session
