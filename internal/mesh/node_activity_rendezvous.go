@@ -52,3 +52,12 @@ func (n *Node) settledWaitingRendezvousLocked() string {
 	}
 	return ""
 }
+
+// A settled holder keeps working traffic while pending peers share the same
+// bounded alternative frontier. Incomplete useful handovers keep full budget.
+// Caller holds Node.mu.
+func (n *Node) waitingSettledRecoveryLocked(peerID string) bool {
+	return n.activity.actual == ActivityWaiting && n.activity.reachability == "ready" &&
+		n.activity.attachment == peerID && len(n.activity.recovering) != 0 &&
+		n.directPeerCountLocked() == 1 && n.waitingCarrierCanSettleLocked(peerID)
+}

@@ -13,6 +13,7 @@ func TestRendezvousRetainsUnusedOwnerUntilAuthenticatedApplicationProgress(t *te
 	waitingRelayFixture(t, n, fresh)
 	waitingRelayFixture(t, app, fresh)
 	attachLeaf(t, app, n)
+	waitFor(t, func() bool { return n.peerByID(app.localPeerID()) != nil && app.peerByID(n.localPeerID()) != nil }, "initial direct application admission did not complete")
 	assertWaitingAlternativePackets(t, app, n)
 	n.mu.Lock()
 	n.activity.requested.Store(int32(ActivityWaiting))

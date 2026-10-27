@@ -38,7 +38,7 @@ func (n *Node) removePeerWithPolicy(peerID string, session *transport.Session, w
 		n.mu.Unlock()
 		return false
 	}
-	if unusedCandidate && (n.waitingCandidateCarriesApplicationLocked(peer) || (peerID == n.activity.attachment && n.activity.reachability == "ready")) {
+	if unusedCandidate && (n.waitingCandidateCarriesApplicationLocked(peer) || (peerID == n.activity.attachment && n.activity.reachability == "ready") || (peer == n.activity.rendezvous && n.waitingCarrierAuthenticatedLocked(peer))) {
 		n.mu.Unlock()
 		return false
 	}

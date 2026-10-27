@@ -23,7 +23,7 @@ func (n *Node) waitingAttemptCandidatesLocked(id, addr string) []waitingCandidat
 		for offset := 0; offset < min(waitingCandidatesPerAttempt, len(all)); offset++ {
 			batch = append(batch, all[(start+offset)%len(all)])
 		}
-		if n.activity.actual == ActivityWaiting && n.activity.reachability == "ready" && len(n.activity.recovering) != 0 && n.activity.attachment == id {
+		if n.waitingSettledRecoveryLocked(id) {
 			return n.waitingAnchoredCandidatesLocked(all, candidate)
 		}
 		return n.retainPreviousWaitingCandidateLocked(batch, all)
@@ -86,7 +86,7 @@ func (n *Node) connectWaitingAlternatives(parent context.Context, candidates []w
 		// Merely connected alternatives share time with the rest of this batch.
 		n.mu.RLock()
 		peer := n.peers[candidate.id]
-		retained := peer != nil && !peer.relayed && (n.waitingCandidateCarriesApplicationLocked(peer) || (candidate.id == n.activity.attachment && len(n.activity.recovering) == 0))
+		retained := peer != nil && !peer.relayed && !n.waitingSettledRecoveryLocked(candidate.id) && (n.waitingCandidateCarriesApplicationLocked(peer) || (candidate.id == n.activity.attachment && len(n.activity.recovering) == 0))
 		n.mu.RUnlock()
 		if !retained {
 			budget /= time.Duration(len(candidates) - index)

@@ -129,8 +129,10 @@ turning queue acceptance into a delivery acknowledgement.
 One Waiting repair can try at most three already-known candidates sequentially
 inside its existing handshake deadline. Candidates without an established
 application path share the remaining budget, even if already connected. Only
-a carrier already owning application work, or the selected attachment without
-lost application intents, retains its full migration budget. A settled carrier
+an incomplete handover carrier already owning application work, or the selected
+attachment without lost application intents, retains its full migration budget.
+A settled healthy holder with pending peers shares the attempt with alternative
+slots even while it serves other live conversations. A settled carrier
 with offline intents stays first while the other two bounded slots advance
 through known alternatives; unrelated offline work cannot pin one frontier.
 No parallel fanout, new discovery or shorter global retry floor is introduced.
@@ -243,7 +245,9 @@ carrier snapshots coalesce repeated failed-contact retries; a replacement
 physical session publishes promptly even when its peer ID is unchanged. Every
 enqueue rechecks current admission, signed capability, address, allowlist and
 exact session ownership. Active, Stop and carrier removal invalidate ownership;
-capability revocation wakes bounded recovery. This keeps the record beyond its
+capability revocation wakes bounded recovery. All unused-candidate retirement
+paths protect the exact currently eligible rendezvous until its replacement
+is admitted; invalid or revoked holders do not keep an unused slot. This keeps the record beyond its
 90s TTL at the selected carrier; a foreground origin still needs a working
 discovery or application route to that carrier.
 
