@@ -20,7 +20,7 @@ func TestUDPDroppedDatagramsAreCounted(t *testing.T) {
 	carrier := &udpCarrier{
 		listener: &UDPListener{sessions: make(map[string]*udpCarrier)},
 		remote:   &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 40001},
-		incoming: make(chan []byte, 2),
+		queue:    newPacketQueue(2, maxInboundQueueBytes),
 		closed:   make(chan struct{}),
 	}
 
@@ -42,7 +42,7 @@ func TestUDPDatagramsThatFitAreNotCountedAsDrops(t *testing.T) {
 	carrier := &udpCarrier{
 		listener: &UDPListener{sessions: make(map[string]*udpCarrier)},
 		remote:   &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 40002},
-		incoming: make(chan []byte, 4),
+		queue:    newPacketQueue(4, maxInboundQueueBytes),
 		closed:   make(chan struct{}),
 	}
 
@@ -62,7 +62,7 @@ func TestUDPDatagramsAfterCloseAreNotCountedAsDrops(t *testing.T) {
 	carrier := &udpCarrier{
 		listener: &UDPListener{sessions: make(map[string]*udpCarrier)},
 		remote:   &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 40003},
-		incoming: make(chan []byte, 2),
+		queue:    newPacketQueue(2, maxInboundQueueBytes),
 		closed:   make(chan struct{}),
 	}
 	close(carrier.closed)

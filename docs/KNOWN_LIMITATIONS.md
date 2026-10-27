@@ -118,11 +118,13 @@ This document exists to keep repository claims aligned with current runtime beha
   CI-runner-specific: allocator behavior varies by platform, so the
   baseline may need re-anchoring (MOSS_HEAP_BASELINE_MB) when the runner
   image changes — never widen the growth margin to make a regression pass.
-- Default per-session inbound buffers (256 packets) target low-rate
+- Default per-session inbound buffers (256 slots) target low-rate
   chat/discovery workloads. Sustained bursts above ~1k packets/sec per
   peer can hit the silent-drop threshold of the receive queues; opt
-  into `transport.high_throughput` (see [API.md](API.md)) to raise
-  buffers and skip gossip control overhead for streaming use cases.
+  into `transport.high_throughput` (see [API.md](API.md)) to raise the
+  slot count and skip gossip control overhead for streaming use cases.
+  Every queue stays capped at 4 MiB of payloads, so a burst larger than
+  that still drops rather than growing with the slot count.
 
 ## Client applications
 
