@@ -56,8 +56,8 @@ func TestPacketQueueLatestWinsEvictsUntilThePayloadFits(t *testing.T) {
 	if !accepted {
 		t.Fatal("latest-wins refused a payload it could have made room for")
 	}
-	if !evicted {
-		t.Fatal("latest-wins accepted a full queue without evicting anything")
+	if evicted != 2 {
+		t.Fatalf("latest-wins evicted %d payloads, want 2", evicted)
 	}
 	if got := q.len(); got != 3 {
 		t.Fatalf("queue holds %d payloads, want 2 survivors plus the new one", got)
@@ -83,8 +83,8 @@ func TestPacketQueueLatestWinsRefusesOversizeWithoutDraining(t *testing.T) {
 		t.Fatal("setup push was refused")
 	}
 	accepted, evicted := q.pushLatestWins(make([]byte, 4096))
-	if accepted || evicted {
-		t.Fatalf("oversize push reported accepted=%v evicted=%v", accepted, evicted)
+	if accepted || evicted != 0 {
+		t.Fatalf("oversize push reported accepted=%v evicted=%d", accepted, evicted)
 	}
 	if got := q.len(); got != 1 {
 		t.Fatalf("oversize push drained the queue to %d payloads", got)
@@ -129,5 +129,22 @@ func TestPacketQueuePopWakesOnPush(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("pop did not wake after a push")
+	}
+}
+
+// A queue that stays busy must reuse its backing array rather than walking the
+// slice forward and reallocating on every append.
+func TestPacketQueueReusesCapacityUnderSteadyLoad(t *testing.T) {
+	q := newPacketQueue(1024, maxInboundQueueBytes)
+	for i := 0; i < 20000; i++ {
+		if !q.push([]byte("x")) {
+			t.Fatalf("push %d refused", i)
+		}
+		if _, ok := q.pop(); !ok {
+			t.Fatalf("pop %d failed", i)
+		}
+	}
+	if got := cap(q.items); got > 64 {
+		t.Fatalf("steady push/pop grew the backing array to %d slots", got)
 	}
 }
