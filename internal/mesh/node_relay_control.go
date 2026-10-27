@@ -467,10 +467,10 @@ func (n *Node) closeRelaySession(session relayLocalSession) {
 	removedPeer := n.removeRelayedPeerLocked(session)
 	delete(n.relayLocals, session.sessionID)
 	delete(n.directProbes, session.remotePeerID)
-	n.mu.Unlock()
 	if removedPeer {
 		n.pubsub.RemovePeer(session.remotePeerID)
 	}
+	n.mu.Unlock()
 	n.enqueueEvent(EventRelayMigrated, map[string]string{
 		"peer":    session.remotePeerID,
 		"session": session.sessionID,
@@ -648,6 +648,8 @@ func (n *Node) relayPeerForSession(session relayLocalSession) *peerConn {
 	return &peerConn{id: session.remotePeerID, addr: "relay:" + session.viaPeerID, relayed: true, viaPeerID: session.viaPeerID, relaySessionID: session.sessionID}
 }
 
+// Return true only when this current incarnation leaves without an admitted
+// alternative. Callers must keep subscription/scoring state for a replacement.
 func (n *Node) removeRelayedPeerLocked(session relayLocalSession) bool {
 	peer := n.peers[session.remotePeerID]
 	if peer == nil || !peer.relayed || peer.relaySessionID != session.sessionID {
@@ -662,7 +664,7 @@ func (n *Node) removeRelayedPeerLocked(session relayLocalSession) bool {
 		}
 	}
 	delete(n.peers, session.remotePeerID)
-	return true
+	return !n.restoreAlternateRelayLocked(session, peer)
 }
 
 // relayConsumerCapped charges bytes to the source peer's rolling per-minute

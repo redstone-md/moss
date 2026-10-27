@@ -16,7 +16,7 @@ func (n *Node) retireUnresponsiveRelayPeer(peer *peerConn) {
 		return
 	}
 	via := n.peers[session.viaPeerID]
-	n.removeRelayedPeerLocked(session)
+	removed := n.removeRelayedPeerLocked(session)
 	delete(n.relayLocals, session.sessionID)
 	delete(n.directProbes, peer.id)
 	n.cleanupDepartedPeersLocked([]string{peer.id})
@@ -24,5 +24,7 @@ func (n *Node) retireUnresponsiveRelayPeer(peer *peerConn) {
 	if via != nil {
 		n.sendEnvelope(via, gossip.Envelope{Type: gossip.TypeRelayClose, RelaySession: session.sessionID, RelaySource: n.localPeerID(), RelayTarget: session.remotePeerID})
 	}
-	n.enqueueEvent(EventPeerLeft, map[string]string{"peer": peer.id, "addr": peer.addr})
+	if removed {
+		n.enqueueEvent(EventPeerLeft, map[string]string{"peer": peer.id, "addr": peer.addr})
+	}
 }
