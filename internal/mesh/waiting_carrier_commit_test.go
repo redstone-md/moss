@@ -46,14 +46,22 @@ func startHeldCarrierCommit(t *testing.T, configure ...func(*Node, *Node)) heldC
 }
 
 func startHeldCarrierCommitMode(t *testing.T, waiting bool, configure ...func(*Node, *Node)) heldCarrierCommit {
+	return startHeldCarrierTransport(t, waiting, false, configure...)
+}
+
+func startHeldCarrierTransport(t *testing.T, waiting, datagram bool, configure ...func(*Node, *Node)) heldCarrierCommit {
 	t.Helper()
 	core, phone := startCappedOverlayNode(t, "carrier-commit-core"), startCappedOverlayNode(t, "carrier-commit-phone")
-	if core.localPeerID() > phone.localPeerID() {
+	if (core.localPeerID() > phone.localPeerID()) != datagram {
 		core, phone = phone, core
 	}
 	origin := startCappedOverlayNode(t, "carrier-commit-origin")
 	waitingRelayFixture(t, origin, core)
-	waitingRelayFixture(t, phone, core)
+	if datagram {
+		waitingUDPRelayFixture(t, phone, core)
+	} else {
+		waitingRelayFixture(t, phone, core)
+	}
 	if waiting {
 		phone.SetActivityMode(ActivityWaiting)
 		awaitActivity(t, phone, "waiting", "ready")

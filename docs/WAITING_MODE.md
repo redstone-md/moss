@@ -69,6 +69,8 @@ carrier until this confirmation. Captured first packets are replayed before
 waiting, so neither endpoint withholds the other's Ping. Refusal, cancellation
 or the original handshake deadline restores only the still-live predecessor
 under current admission policy. Stop and revocation close both owned sessions.
+A queued Pong cannot commit a new session already known closed, and an unfinished
+owner still blocks nested replacement while its EOF dispatch tail rolls back.
 Each physical stream incarnation has one reader. Waiting's two-carrier bound
 and attachment count include this overlap; ordinary MaxPeers and peer metrics
 continue counting admitted identities. No nested replacement or extra timer

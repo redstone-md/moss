@@ -22,11 +22,15 @@ type carrierReplacement struct {
 }
 
 func (n *Node) prepareCarrierReplacementLocked(old *peerConn) (*carrierReplacement, bool) {
-	if old == nil || old.relayed || old.session == nil || old.readClosed.Load() || !n.carrierHasRoutesLocked(old) {
+	if old == nil || old.relayed || old.session == nil {
 		return nil, true
 	}
+	// EOF may precede the existing owner's dispatch tail and rollback.
 	if previous := old.replacement.Load(); previous != nil && !previous.committed.Load() {
 		return nil, false
+	}
+	if old.readClosed.Load() || !n.carrierHasRoutesLocked(old) {
+		return nil, true
 	}
 	if n.waitingRequested() && n.physicalPeerCountLocked() >= 2 {
 		return nil, false
@@ -96,7 +100,7 @@ func (n *Node) awaitCarrierReplacement(ctx context.Context, peer *peerConn, stat
 func (n *Node) confirmCarrierReplacement(peer *peerConn, request string) bool {
 	n.mu.Lock()
 	state := peer.replacement.Load()
-	if !n.started || n.peers[peer.id] != peer || state == nil || state.finished || state.request != request || (state.context != nil && state.context.Err() != nil) {
+	if !n.started || peer.readClosed.Load() || n.peers[peer.id] != peer || state == nil || state.finished || state.request != request || (state.context != nil && state.context.Err() != nil) {
 		n.mu.Unlock()
 		return false
 	}
