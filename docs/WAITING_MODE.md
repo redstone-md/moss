@@ -117,6 +117,13 @@ application path share the remaining budget, even if already connected. Only
 the selected attachment or a carrier already owning application work retains
 its full migration budget.
 No parallel fanout, new discovery or shorter global retry floor is introduced.
+After an established attachment is lost, the same bounded batch reserves its
+last slot for that verified former carrier when application recovery is still
+pending and current trust/address/admission policy permits it. The former
+carrier may still know the other endpoint even when unrelated alternatives do
+not. A failed retry keeps the ordinary rotation cursor moving. A readmitted
+former carrier that cannot migrate any application path is retired under the
+same current-incarnation guards; a ready or useful partial path remains owned.
 Every candidate owns its admission generation. A partially completed migration
 retains that ownership across later refusal, even before the first completed
 Waiting transition. It preserves useful paths, retires an unused former

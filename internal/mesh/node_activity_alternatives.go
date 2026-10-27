@@ -23,9 +23,33 @@ func (n *Node) waitingAttemptCandidatesLocked(id, addr string) []waitingCandidat
 		for offset := 0; offset < min(waitingCandidatesPerAttempt, len(all)); offset++ {
 			batch = append(batch, all[(start+offset)%len(all)])
 		}
-		return batch
+		return n.retainPreviousWaitingCandidateLocked(batch, all)
 	}
 	return []waitingCandidate{first}
+}
+
+// A lost verified carrier may still serve the application origin. Keep one
+// retry after ordinary alternatives within the same three-slot batch; otherwise
+// unrelated candidates can strand both endpoints behind migration/presence.
+// The caller holds n.mu and supplied candidates already passed current policy.
+func (n *Node) retainPreviousWaitingCandidateLocked(batch, all []waitingCandidate) []waitingCandidate {
+	previous := n.activity.attachment
+	if len(batch) < 2 || !n.started || !n.waitingRequested() || previous == "" || n.peers[previous] != nil || len(n.activity.recovering) == 0 {
+		return batch
+	}
+	for _, candidate := range batch {
+		if candidate.id == previous {
+			return batch
+		}
+	}
+	for _, candidate := range all {
+		if candidate.id == previous {
+			candidate.previous = true
+			batch[len(batch)-1] = candidate
+			break
+		}
+	}
+	return batch
 }
 
 func (n *Node) connectWaitingAlternatives(parent context.Context, candidates []waitingCandidate, attempt uint64) (string, string, bool) {
@@ -46,8 +70,10 @@ func (n *Node) connectWaitingAlternatives(parent context.Context, candidates []w
 			n.activity.candidateReady = make(chan struct{}, 1)
 		}
 		n.mu.Unlock()
-		if !n.retireUnusedWaitingCarriers(candidate.id, attempt) {
+		if !candidate.previous {
 			last = candidate.addr
+		}
+		if !n.retireUnusedWaitingCarriers(candidate.id, attempt) {
 			n.discardWaitingCandidate(last)
 			continue
 		}
@@ -71,7 +97,6 @@ func (n *Node) connectWaitingAlternatives(parent context.Context, candidates []w
 		}
 		migrated := n.migrateWaitingPeers(ctx, selected)
 		cancel()
-		last = candidate.addr
 		if migrated && (selected != "" || candidate.addr == "") {
 			return selected, last, true
 		}
@@ -113,7 +138,7 @@ func (n *Node) discardWaitingCandidate(addr string) {
 	n.mu.Lock()
 	unused := n.peers[n.activity.candidate]
 	attempt := n.activity.attempt
-	if unused == nil || unused.relayed || unused.id == n.activity.attachment {
+	if unused == nil || unused.relayed {
 		unused = nil
 	}
 	n.activity.candidate, n.activity.candidateAddr = "", ""

@@ -9,6 +9,7 @@ type waitingCandidate struct {
 	id, addr  string
 	connected bool
 	stream    bool
+	previous  bool // a bounded retry of the last verified carrier, not rotation
 }
 
 // Caller holds n.mu. A refused UDP peer must not receive a confirm probe
