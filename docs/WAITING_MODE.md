@@ -129,16 +129,19 @@ turning queue acceptance into a delivery acknowledgement.
 One Waiting repair can try at most three already-known candidates sequentially
 inside its existing handshake deadline. Candidates without an established
 application path share the remaining budget, even if already connected. Only
-the selected attachment or a carrier already owning application work retains
-its full migration budget.
+a carrier already owning application work, or the selected attachment without
+lost application intents, retains its full migration budget. A settled carrier
+with offline intents stays first while the other two bounded slots advance
+through known alternatives; unrelated offline work cannot pin one frontier.
 No parallel fanout, new discovery or shorter global retry floor is introduced.
 After an established attachment is lost, the same bounded batch reserves its
 last slot for that verified former carrier when application recovery is still
 pending and current trust/address/admission policy permits it. The former
 carrier may still know the other endpoint even when unrelated alternatives do
-not. A failed retry keeps the ordinary rotation cursor moving. A readmitted
-former carrier that cannot migrate any application path is retired under the
-same current-incarnation guards; a ready or useful partial path remains owned.
+not. A failed retry keeps the ordinary rotation cursor moving. Failed unused alternatives retire under the same current-incarnation guards.
+A verified installation holder can stay available while offline contacts remain
+pending; other bounded candidate slots still rotate until an alternative makes
+authenticated application progress. Ready and useful partial paths stay owned.
 Every candidate owns its admission generation. A partially completed migration
 retains that ownership across later refusal, even before the first completed
 Waiting transition. It preserves useful paths, retires an unused former
@@ -183,9 +186,12 @@ peer. A prepared fallback prevents a direct carrier closing from erasing a new
 relay path or reporting a false peer departure.
 An attachment loss also retains the exact previously established application,
 explicit-target and subscribed paths removed with that carrier. The next
-attempt must migrate those paths before reporting ready, even though their
-virtual peers have already left the live directory. Unrelated saved offline
-targets do not become migration barriers. Verified replacement consumes the
+attempt keeps those identities pending until a newly authenticated route
+replaces them, even though their virtual peers have left the live directory.
+Each remaining target shares the same attempt deadline, so an offline contact
+cannot starve a later live target. Historical offline intents do not block a
+settled installation carrier or fabricate peer availability. Unrelated saved
+offline targets do not become migration barriers. Verified replacement consumes the
 captured loss; a newer carrier loss survives an older completion. Returning
 active or stopping clears this Waiting-only intent.
 Restored local application interest remains significant before a replacement
@@ -200,11 +206,17 @@ Directory retirement, outbound-queue closure and subscription/score cleanup
 share the admission lock. A late direct teardown cannot erase a newly admitted
 relay's GRAFT; the orphan-queue sweep uses the same lock order and live check.
 
-If an application path cannot migrate, the node reports actual `active`, desired
-`waiting`, reachability `unavailable`. It retains the required paths and retries;
-it does not advertise a full ordinary mesh as economical waiting. The LastError
-text distinguishes a failed path migration. Hosts must inspect actual state,
-not interpret setter success as a completed transition.
+If an existing useful path still needs a second physical carrier or ordinary
+transport, handover remains actual `active`, desired `waiting`, reachability
+`unavailable`. It retains that path and retries rather than sacrificing working
+traffic. A settled single authenticated carrier can report actual `waiting`
+and `ready` while offline historical intents remain pending. Ordinary scopes
+and drains must already be stopped, third-party forwarding must be disabled,
+and every current useful path must fit through that carrier. The existing
+backoff owner keeps retrying pending conversations without discarding intent
+or flipping a healthy carrier to Connecting on each peer retry. No additional
+timer is created. Hosts must inspect actual state rather than interpreting
+setter success as a completed transition.
 
 Moss does not own a host's MLS state or application persistence. Its callbacks,
 room keys/subscriptions, node identity and listeners survive the transition.
@@ -222,12 +234,18 @@ Returning active starts one new discovery scope after the old scope drains.
 In-flight discovery is cancelled/bounded; if it cannot drain within an attempt,
 the transition remains visibly incomplete and retries.
 
-The waiting node refreshes its own identity and necessary automatic room
-provider records only through its selected carrier, using the existing 30s
-record cadence and bounded outbound queue. This performs no lookup or fanout
-and creates no additional attachment. This retains the record beyond its
-existing 90s TTL at the selected carrier; a foreground origin still needs a
-working discovery or application route to that carrier.
+The installation owns one verified rendezvous carrier independently of offline
+conversation migration. It refreshes only its own identity and automatic room
+records over that carrier and any necessary useful partial carrier, at most two
+physical incarnations, using the existing 30s cadence and bounded outbound
+queue. No lookup, discovery fanout or extra attachment is added. Identical
+carrier snapshots coalesce repeated failed-contact retries; a replacement
+physical session publishes promptly even when its peer ID is unchanged. Every
+enqueue rechecks current admission, signed capability, address, allowlist and
+exact session ownership. Active, Stop and carrier removal invalidate ownership;
+capability revocation wakes bounded recovery. This keeps the record beyond its
+90s TTL at the selected carrier; a foreground origin still needs a working
+discovery or application route to that carrier.
 
 Identity and room lookups keep the existing no-dial rule and query budget.
 When the globally nearest K contacts are exhausted or unconnected, they ask

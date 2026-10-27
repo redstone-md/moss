@@ -45,6 +45,8 @@ type activityState struct {
 	lastCandidate   string
 	lastReport      activityReport
 	presenceAt      time.Time
+	presencePeers   [2]*peerConn
+	rendezvous      *peerConn
 	draining        map[*peerConn]<-chan struct{}
 	recovering      map[string]*peerConn
 	migrationOwned  bool
@@ -79,6 +81,9 @@ func (n *Node) SetActivityMode(mode ActivityMode) int32 {
 		n.activity.networkPending = false
 		n.activity.recovering = nil
 		n.activity.migrationOwned = false
+		n.activity.presencePeers = [2]*peerConn{}
+		n.activity.rendezvous = nil
+		n.activity.presenceAt = time.Time{}
 	}
 	if n.activity.attemptCancel != nil {
 		n.activity.attemptCancel()
@@ -131,7 +136,7 @@ func (n *Node) activityLoop(ctx context.Context) {
 				n.activity.retry = min(5*time.Minute, n.activity.retry*2)
 			}
 			wait := n.activity.retry
-			if n.activity.reachability == "ready" {
+			if n.activity.reachability == "ready" && len(n.activity.recovering) == 0 {
 				n.activity.retry = 0
 				wait = time.Hour
 			}
@@ -177,12 +182,17 @@ func (n *Node) wakeActivity() {
 }
 
 func (n *Node) waitingAttachmentCountLocked() int {
+	ids := [3]string{n.activity.attachment, n.activity.candidate}
+	if owner := n.activity.rendezvous; owner != nil && n.peers[owner.id] == owner {
+		ids[2] = owner.id
+	}
 	count := 0
-	for i, id := range []string{n.activity.attachment, n.activity.candidate} {
-		if i == 1 && id == n.activity.attachment {
-			continue
+	for i, id := range ids {
+		duplicate := id == ""
+		for _, previous := range ids[:i] {
+			duplicate = duplicate || previous == id
 		}
-		if peer := n.peers[id]; peer != nil && !peer.relayed {
+		if peer := n.peers[id]; !duplicate && peer != nil && !peer.relayed {
 			count++
 		}
 	}

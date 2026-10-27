@@ -69,7 +69,10 @@ func (n *Node) removePeerWithPolicy(peerID string, session *transport.Session, w
 	// the node down on an ordinary disconnect, which is a poor trade for a
 	// telemetry field.
 	endedTransport := ""
-	waitingAttachmentLost := n.waitingRequested() && peerID == n.activity.attachment
+	waitingAttachmentLost := n.waitingRequested() && (peerID == n.activity.attachment || n.activity.rendezvous == peer)
+	if n.activity.rendezvous == peer {
+		n.activity.rendezvous = nil
+	}
 	if waitingAttachmentLost {
 		n.activity.lastCandidate = n.knownPeers[peerID].addr
 		if n.activity.lastCandidate == "" {

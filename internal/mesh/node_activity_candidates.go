@@ -19,7 +19,9 @@ func (n *Node) waitingAdmissionAllowedLocked(peerID string, outbound bool, attem
 	if n.waitingRequested() && n.waitingRecoveryBoundedLocked() && (peer == nil || peer.relayed) && n.directPeerCountLocked() >= 2 {
 		return false
 	}
-	if !n.waitingRequested() || peerID == n.activity.attachment || peerID == n.activity.candidate {
+	owner := n.activity.rendezvous
+	owned := owner != nil && owner.id == peerID && n.peers[peerID] == owner && n.waitingCarrierAuthenticatedLocked(owner)
+	if !n.waitingRequested() || peerID == n.activity.attachment || peerID == n.activity.candidate || owned {
 		return true
 	}
 	return outbound && attempt != 0 && attempt == n.activity.attempt &&
@@ -29,7 +31,7 @@ func (n *Node) waitingAdmissionAllowedLocked(peerID string, outbound bool, attem
 // Initial ordinary mesh may still be draining; subsequent handovers retain at
 // most the current carrier plus one candidate, including partial migrations.
 func (n *Node) waitingRecoveryBoundedLocked() bool {
-	return n.activity.migrationOwned || n.activity.actual == ActivityWaiting || n.activity.attachment != "" || len(n.activity.recovering) != 0
+	return n.activity.rendezvous != nil || n.activity.migrationOwned || n.activity.actual == ActivityWaiting || n.activity.attachment != "" || len(n.activity.recovering) != 0
 }
 
 // Cache/config addresses are candidates, never evidence of relay capability.
@@ -135,7 +137,9 @@ func (n *Node) signalWaitingCandidate(advertisedID string, previouslyTrusted boo
 	if !n.waitingRequested() {
 		return
 	}
-	if previouslyTrusted && n.activity.attachment == advertisedID && !n.isTrustedRelayCandidateLocked(advertisedID) {
+	owner := n.activity.rendezvous
+	retained := n.activity.attachment == advertisedID || (owner != nil && owner.id == advertisedID && n.peers[advertisedID] == owner)
+	if previouslyTrusted && retained && !n.isTrustedRelayCandidateLocked(advertisedID) {
 		select {
 		case n.activity.wake <- struct{}{}:
 		default:

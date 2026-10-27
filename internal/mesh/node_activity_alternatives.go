@@ -23,6 +23,9 @@ func (n *Node) waitingAttemptCandidatesLocked(id, addr string) []waitingCandidat
 		for offset := 0; offset < min(waitingCandidatesPerAttempt, len(all)); offset++ {
 			batch = append(batch, all[(start+offset)%len(all)])
 		}
+		if n.activity.actual == ActivityWaiting && n.activity.reachability == "ready" && len(n.activity.recovering) != 0 && n.activity.attachment == id {
+			return n.waitingAnchoredCandidatesLocked(all, candidate)
+		}
 		return n.retainPreviousWaitingCandidateLocked(batch, all)
 	}
 	return []waitingCandidate{first}
@@ -83,7 +86,7 @@ func (n *Node) connectWaitingAlternatives(parent context.Context, candidates []w
 		// Merely connected alternatives share time with the rest of this batch.
 		n.mu.RLock()
 		peer := n.peers[candidate.id]
-		retained := peer != nil && !peer.relayed && (candidate.id == n.activity.attachment || n.waitingCandidateCarriesApplicationLocked(peer))
+		retained := peer != nil && !peer.relayed && (n.waitingCandidateCarriesApplicationLocked(peer) || (candidate.id == n.activity.attachment && len(n.activity.recovering) == 0))
 		n.mu.RUnlock()
 		if !retained {
 			budget /= time.Duration(len(candidates) - index)
@@ -95,12 +98,22 @@ func (n *Node) connectWaitingAlternatives(parent context.Context, candidates []w
 			_ = n.connectWaitingCandidate(ctx, candidate.addr, candidate.id)
 			selected = n.awaitWaitingCandidate(ctx)
 		}
+		n.retainWaitingRendezvous(ctx, selected, attempt)
+		n.refreshWaitingPresence(time.Now())
 		migrated := n.migrateWaitingPeers(ctx, selected)
+		n.retainWaitingRendezvous(ctx, selected, attempt)
+		n.refreshWaitingPresence(time.Now())
 		cancel()
 		if migrated && (selected != "" || candidate.addr == "") {
 			return selected, last, true
 		}
 		n.discardWaitingCandidate(last)
+	}
+	n.mu.RLock()
+	owner := n.settledWaitingRendezvousLocked()
+	n.mu.RUnlock()
+	if owner != "" {
+		return owner, last, true
 	}
 	// No application path to preserve: retain the original settled-but-
 	// unavailable Waiting state, rather than reporting a failed migration.
@@ -138,7 +151,7 @@ func (n *Node) discardWaitingCandidate(addr string) {
 	n.mu.Lock()
 	unused := n.peers[n.activity.candidate]
 	attempt := n.activity.attempt
-	if unused == nil || unused.relayed {
+	if unused == nil || unused.relayed || (unused == n.activity.rendezvous && n.waitingCarrierAuthenticatedLocked(unused)) {
 		unused = nil
 	}
 	n.activity.candidate, n.activity.candidateAddr = "", ""
@@ -147,4 +160,28 @@ func (n *Node) discardWaitingCandidate(addr string) {
 	if unused != nil && n.removePeerWithPolicy(unused.id, unused.session, &attempt, true) {
 		unused.closeSession()
 	}
+}
+
+// Keep a healthy owner stable while the same bounded batch advances through
+// other known carriers; historical offline targets must not pin one frontier.
+// Caller holds Node.mu.
+func (n *Node) waitingAnchoredCandidatesLocked(all []waitingCandidate, anchor waitingCandidate) []waitingCandidate {
+	others := make([]waitingCandidate, 0, len(all)-1)
+	for _, candidate := range all {
+		if candidate.id != anchor.id {
+			others = append(others, candidate)
+		}
+	}
+	start := 0
+	for index, candidate := range others {
+		if candidate.addr == n.activity.lastCandidate {
+			start = (index + 1) % len(others)
+			break
+		}
+	}
+	batch := []waitingCandidate{anchor}
+	for offset := 0; offset < min(waitingCandidatesPerAttempt-1, len(others)); offset++ {
+		batch = append(batch, others[(start+offset)%len(others)])
+	}
+	return batch
 }

@@ -257,6 +257,8 @@ func (n *Node) Start() int32 {
 	n.activity.lastCandidate = ""
 	n.activity.lastReport = activityReport{}
 	n.activity.presenceAt = time.Time{}
+	n.activity.presencePeers = [2]*peerConn{}
+	n.activity.rendezvous = nil
 	n.activity.recovering = nil
 	n.activity.migrationOwned = false
 	// Per-channel local delivery queues hold no state worth carrying across a
@@ -340,6 +342,9 @@ func (n *Node) Stop() int32 {
 		return MOSS_ERR_NOT_STARTED
 	}
 	n.started = false
+	n.activity.rendezvous = nil
+	n.activity.presencePeers = [2]*peerConn{}
+	n.activity.presenceAt = time.Time{}
 	n.activity.requested.Store(int32(ActivityActive))
 	n.activity.actual = ActivityActive
 	n.activity.activeCancel = nil

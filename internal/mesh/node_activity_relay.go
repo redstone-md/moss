@@ -22,7 +22,9 @@ func (n *Node) reconcileWaiting(root context.Context) {
 	n.activity.candidateReady = make(chan struct{}, 1)
 	n.activity.attempt++
 	attempt := n.activity.attempt
-	n.activity.reachability = "attaching"
+	if n.activity.actual != ActivityWaiting || n.activity.reachability != "ready" || n.directPeerCountLocked() != 1 || selected != n.activity.attachment || !n.waitingCarrierCanSettleLocked(selected) {
+		n.activity.reachability = "attaching"
+	}
 	ctx, cancel := context.WithTimeout(root, n.config.HandshakeTimeout())
 	n.activity.attemptCancel = cancel
 	mapper := n.portMapper
@@ -58,9 +60,6 @@ func (n *Node) reconcileWaiting(root context.Context) {
 	}
 	peer := n.peers[selected]
 	if selected != "" && peer != nil && !peer.relayed && n.isTrustedRelayCandidateLocked(selected) {
-		if n.activity.attachment != selected {
-			n.activity.presenceAt = time.Time{}
-		}
 		n.activity.attachment = selected
 	} else {
 		n.activity.attachment = ""
@@ -77,7 +76,7 @@ func (n *Node) reconcileWaiting(root context.Context) {
 	}
 	n.activity.actual = ActivityWaiting
 	n.activity.reachability = "unavailable"
-	if n.activity.attachment != "" && n.peers[n.activity.attachment] != nil && len(n.activity.recovering) == 0 {
+	if n.activity.attachment != "" && n.directPeerCountLocked() == 1 && n.waitingCarrierCanSettleLocked(n.activity.attachment) {
 		n.activity.reachability = "ready"
 	}
 	n.mu.Unlock()
@@ -103,23 +102,27 @@ func (n *Node) migrateWaitingPeers(ctx context.Context, via string) bool {
 		targets = append(targets, id)
 	}
 	sort.Strings(targets)
-	for _, id := range targets {
+	for index, id := range targets {
 		if via == "" || ctx.Err() != nil || !n.waitingRequested() {
-			return false
+			break
 		}
 		if n.completeWaitingRecovery(id, via, pending[id]) {
 			continue
 		}
-		_, _ = n.openRelaySession(ctx, via, id, n.config.HandshakeTimeout())
+		budget := n.config.HandshakeTimeout()
+		if deadline, bounded := ctx.Deadline(); bounded {
+			budget = time.Until(deadline)
+		}
+		attempt, cancel := context.WithTimeout(ctx, budget/time.Duration(len(targets)-index))
+		_, _ = n.openRelaySession(attempt, via, id, n.config.HandshakeTimeout())
+		cancel()
 		// A simultaneous incoming request may win even if our own waiter
 		// was cancelled. Verified admission is the completion boundary.
-		if !n.completeWaitingRecovery(id, via, pending[id]) {
-			return false
-		}
+		n.completeWaitingRecovery(id, via, pending[id])
 	}
 	n.mu.RLock()
 	defer n.mu.RUnlock()
-	return len(n.activity.recovering) == 0
+	return n.started && n.waitingRequested() && len(n.activity.recovering) == 0 && n.waitingCarrierCanSettleLocked(via)
 }
 
 func (n *Node) trimWaitingMesh() {
