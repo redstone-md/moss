@@ -713,14 +713,14 @@ func (n *Node) pruneLowScoringPeers() {
 	// discovery.go:76 invariant): a blocking callback holding RLock stalls
 	// every writer on the hot envelope path.
 	n.mu.RLock()
-	ids := make([]string, 0, len(n.peers))
-	for id := range n.peers {
-		ids = append(ids, id)
+	peers := make([]*peerConn, 0, len(n.peers))
+	for _, peer := range n.peers {
+		peers = append(peers, peer)
 	}
 	n.mu.RUnlock()
-	for _, id := range ids {
-		if n.peerScore(id) < 0 {
-			n.prunePeerFromAllMeshes(id, meshBlockScore)
+	for _, peer := range peers {
+		if n.peerScore(peer.id) < 0 {
+			n.prunePeerFromAllMeshesCurrent(peer.id, peer, meshBlockScore)
 		}
 	}
 }
@@ -741,7 +741,7 @@ func (n *Node) prunePeerFromAllMeshesCurrent(peerID string, expected *peerConn, 
 	until := time.Now().Add(n.peerPruneBackoff())
 	n.mu.Lock()
 	peer := n.peers[peerID]
-	if expected != nil && (peer != expected || (peer.relayed && n.waitingRequested())) {
+	if expected != nil && (peer != expected || (reason == meshBlockHealth && peer.relayed && n.waitingRequested())) {
 		n.mu.Unlock()
 		return
 	}
