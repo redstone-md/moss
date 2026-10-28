@@ -231,11 +231,13 @@ type Node struct {
 	// per-stream handlers and unreliable-stream flags are keyed by
 	// StreamID; streamReaders tracks which (session, stream) pairs already
 	// have a reader goroutine so re-registering a handler or resending
-	// never double-spawns. streamMu guards all three maps; it is never
+	// never double-spawns; streamTails orders one identity's incarnations.
+	// streamMu guards all four maps; it is never
 	// held while taking n.mu (snapshot peers first, then lock streamMu).
 	streamMu         sync.RWMutex
 	streamHandlers   map[transport.StreamID]StreamHandler
 	streamReaders    map[streamReaderKey]struct{}
+	streamTails      map[streamTailKey]chan struct{}
 	streamUnreliable map[transport.StreamID]bool
 
 	// Outbound per-peer envelope queues, drained by dedicated workers so no
@@ -337,6 +339,11 @@ type Node struct {
 type streamReaderKey struct {
 	session *transport.Session
 	stream  transport.StreamID
+}
+
+type streamTailKey struct {
+	peer   string
+	stream transport.StreamID
 }
 
 type peerConn struct {
@@ -649,10 +656,11 @@ func (n *Node) snapshotPeersWithSession() []*peerConn {
 	peers := make([]*peerConn, 0, len(n.peers))
 	for _, peer := range n.peers {
 		if peer.session != nil {
-			peers = append(peers, peer)
+			// The predecessor first: its reader must own the older tail.
 			if state := peer.replacement.Load(); state != nil && !state.committed.Load() && !state.old.readClosed.Load() {
 				peers = append(peers, state.old)
 			}
+			peers = append(peers, peer)
 		}
 	}
 	n.mu.RUnlock()
@@ -723,10 +731,15 @@ func (n *Node) ensureStreamReader(peer *peerConn, streamID transport.StreamID) {
 	if unreliable {
 		stream.SetLatestWins()
 	}
+	previous, done := n.claimStreamTail(peer.id, streamID)
 	n.wg.Add(1)
 	go func() {
 		defer n.wg.Done()
 		defer n.forgetStreamReader(peer, streamID)
+		defer n.releaseStreamTail(peer.id, streamID, done)
+		if previous != nil {
+			<-previous
+		}
 		for {
 			data, err := stream.ReadPacket()
 			if err != nil {
@@ -740,6 +753,29 @@ func (n *Node) ensureStreamReader(peer *peerConn, streamID transport.StreamID) {
 			handler(peer.id, data)
 		}
 	}()
+}
+
+// Same-identity incarnations hand one stream to its handler in admission
+// order: a reader delivers only after its predecessor drained and exited.
+func (n *Node) claimStreamTail(peerID string, id transport.StreamID) (previous, done chan struct{}) {
+	n.streamMu.Lock()
+	defer n.streamMu.Unlock()
+	if n.streamTails == nil {
+		n.streamTails = make(map[streamTailKey]chan struct{})
+	}
+	key := streamTailKey{peerID, id}
+	previous, done = n.streamTails[key], make(chan struct{})
+	n.streamTails[key] = done
+	return previous, done
+}
+
+func (n *Node) releaseStreamTail(peerID string, id transport.StreamID, done chan struct{}) {
+	n.streamMu.Lock()
+	if key := (streamTailKey{peerID, id}); n.streamTails[key] == done {
+		delete(n.streamTails, key)
+	}
+	n.streamMu.Unlock()
+	close(done)
 }
 
 func (n *Node) forgetStreamReader(peer *peerConn, id transport.StreamID) {
