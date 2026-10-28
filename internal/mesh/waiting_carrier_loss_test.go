@@ -15,6 +15,14 @@ func TestCarrierReplacementRecoversRemoteRetiredRelayIncarnation(t *testing.T) {
 	}
 	f.old.closeSession()
 	waitFor(t, func() bool { return state.old.readClosed.Load() }, "old carrier did not report genuine loss")
+	// The core retires the route when its own reader removes the lost peer,
+	// which can trail the phone's view of the same loss.
+	waitFor(t, func() bool {
+		f.core.mu.RLock()
+		defer f.core.mu.RUnlock()
+		_, routed := f.core.relayRoutes[f.sid]
+		return !routed
+	}, "core did not retire the lost forwarding route")
 	if !f.core.registerPeerFromPacket(f.ctx, f.session, true, originDialTCP, 0, f.captured) {
 		t.Fatal("authenticated new physical carrier was discarded after old loss")
 	}
