@@ -230,8 +230,15 @@ func (n *Node) veilDial(ctx context.Context, addr, coverSNI string, remoteStatic
 	remoteID := session.RemoteID()
 	peerID := hex.EncodeToString(remoteID[:])
 	attempt, _ := ctx.Value(waitingAttemptKey{}).(uint64)
-	if !n.registerPeerFromContext(hsCtx, session, true, originVeilDial, attempt) && hsCtx.Err() != nil {
-		return "", hsCtx.Err()
+	if !n.registerPeerFromContext(hsCtx, session, true, originVeilDial, attempt) {
+		if err := hsCtx.Err(); err != nil {
+			return "", err
+		}
+		// A duplicate yield keeps the peer through its existing session; any
+		// other refusal must back off instead of redialing at once.
+		if !n.peerConnected(peerID) {
+			return "", fmt.Errorf("veil: relay %s refused at registration", peerID)
+		}
 	}
 	return peerID, nil
 }
