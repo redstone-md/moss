@@ -810,7 +810,7 @@ func (n *Node) registerPeerFromPacket(ctx context.Context, session *transport.Se
 		n.mu.Unlock()
 		victim := n.selectOverflowPrunePeerLocked()
 		n.mu.Lock()
-		if !n.started || n.peers[peerID] != replacedPeer {
+		if !n.started || n.peers[peerID] != replacedPeer || !n.waitingAdmissionAllowedLocked(peerID, outbound, attempt) {
 			n.mu.Unlock()
 			_ = session.Close()
 			return false
