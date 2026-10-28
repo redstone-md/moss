@@ -5,9 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"net"
 	"sort"
-	"strconv"
 	"time"
 
 	"github.com/redstone-md/moss/internal/bootstrap"
@@ -179,50 +177,25 @@ func (n *Node) Start() int32 {
 	var ln *transport.Listener
 	var udpListener *transport.UDPListener
 	var port int
+	handshake := transport.HandshakeConfig{
+		MeshID:      n.networkID,
+		PSK:         n.transportHandshakePSK(),
+		Identity:    n.identity,
+		Buffers:     transportBufferConfig(n.config.Transport),
+		BindIfIndex: n.bindIfIndex,
+		ObfsPadMax:  n.config.obfsPadMax(),
+		ObfsPadData: !n.config.Transport.HighThroughput,
+	}
+	var listenErr error
 	if masqEnabled {
-		listenAddr := net.JoinHostPort("", strconv.Itoa(n.config.ListenPort))
-		l, err := transport.MasqListen(listenAddr, n.config.MasqConfig.CoverSNI)
-		if err != nil {
-			n.setLastError(err.Error())
-			n.reportErrorToAxiom("listen_failed", err.Error(), nil)
-			return MOSS_ERR_LISTEN_FAILED
-		}
-		masqLn = l
-		// Port 0 asked the OS to choose; the masquerade's port is now THE
-		// node port, and the UDP half must share it so discovery and NAT
-		// mapping stay consistent.
-		masqPort := l.Addr().(*net.TCPAddr).Port
-		udpListener, port, err = transport.ListenUDP(masqPort, transport.HandshakeConfig{
-			MeshID:      n.networkID,
-			PSK:         n.transportHandshakePSK(),
-			Identity:    n.identity,
-			Buffers:     transportBufferConfig(n.config.Transport),
-			BindIfIndex: n.bindIfIndex,
-			ObfsPadMax:  n.config.obfsPadMax(),
-			ObfsPadData: !n.config.Transport.HighThroughput,
-		})
-		if err != nil {
-			_ = l.Close()
-			n.setLastError(err.Error())
-			n.reportErrorToAxiom("listen_failed", err.Error(), nil)
-			return MOSS_ERR_LISTEN_FAILED
-		}
+		masqLn, udpListener, port, listenErr = transport.ListenMasqPair(n.config.ListenPort, n.config.MasqConfig.CoverSNI, handshake)
 	} else {
-		var err error
-		ln, udpListener, port, err = transport.ListenPair(n.config.ListenPort, transport.HandshakeConfig{
-			MeshID:      n.networkID,
-			PSK:         n.transportHandshakePSK(),
-			Identity:    n.identity,
-			Buffers:     transportBufferConfig(n.config.Transport),
-			BindIfIndex: n.bindIfIndex,
-			ObfsPadMax:  n.config.obfsPadMax(),
-			ObfsPadData: !n.config.Transport.HighThroughput,
-		})
-		if err != nil {
-			n.setLastError(err.Error())
-			n.reportErrorToAxiom("listen_failed", err.Error(), nil)
-			return MOSS_ERR_LISTEN_FAILED
-		}
+		ln, udpListener, port, listenErr = transport.ListenPair(n.config.ListenPort, handshake)
+	}
+	if listenErr != nil {
+		n.setLastError(listenErr.Error())
+		n.reportErrorToAxiom("listen_failed", listenErr.Error(), nil)
+		return MOSS_ERR_LISTEN_FAILED
 	}
 	if masqLn != nil {
 		n.masqListener = masqLn
