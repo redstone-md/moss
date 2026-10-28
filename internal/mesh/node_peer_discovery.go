@@ -405,6 +405,11 @@ func (n *Node) dialKnownPeer(peerID, addr string) {
 		// record on that machine is immediately worth a dial again.
 		n.noteHostDialOutcome(dialAddr, true)
 	} else {
+		// Waiting began while this discovery dial was in flight: that is
+		// neither a host failure nor a reason to grow through the carrier.
+		if n.waitingRequested() {
+			return
+		}
 		// The direct leg burned and produced nothing, so the host gets the
 		// failure — charged here and not after the relay attempts, because a
 		// relayed session proves the PEER is reachable, never that the host's
