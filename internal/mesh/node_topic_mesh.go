@@ -10,7 +10,7 @@ func (n *Node) graftTopicPeer(peer *peerConn, channel string, now time.Time) {
 	// Selection can race refusal, unsubscribe or connection teardown.
 	n.mu.RLock()
 	current := n.topicPeerLocked(peer)
-	admitted := current != nil && !time.Now().Before(current.meshBlocked) &&
+	admitted := current != nil && n.topicAllowsPeerLocked(channel, peer.id) && !time.Now().Before(current.meshBlocked) &&
 		n.pubsub.IsLocalSubscriber(channel) && n.pubsub.SetMeshPeer(channel, peer.id, true)
 	n.mu.RUnlock()
 	if !admitted {

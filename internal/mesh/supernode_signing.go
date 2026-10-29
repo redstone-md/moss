@@ -75,7 +75,7 @@ func (n *Node) signSupernodeEnvelope(env gossip.Envelope) gossip.Envelope {
 	return env
 }
 
-func verifyAdvertisedPeerEnvelope(env gossip.Envelope, payload func(gossip.Envelope) []byte) bool {
+func verifyAdvertisedPeerEnvelope(env gossip.Envelope, payload func(gossip.Envelope) []byte, check signatureCheck) bool {
 	if env.AdvertisedPeerID == "" || len(env.AdvertisedSignature) == 0 {
 		return false
 	}
@@ -83,28 +83,32 @@ func verifyAdvertisedPeerEnvelope(env gossip.Envelope, payload func(gossip.Envel
 	if err != nil {
 		return false
 	}
-	return mcrypto.Verify(publicKey, payload(env), env.AdvertisedSignature)
+	return check(publicKey, payload(env), env.AdvertisedSignature)
 }
 
 func verifyPeerAnnouncementEnvelope(env gossip.Envelope) bool {
+	return verifyPeerAnnouncementSignature(env, mcrypto.Verify)
+}
+
+func verifyPeerAnnouncementSignature(env gossip.Envelope, check signatureCheck) bool {
 	if len(env.AdvertisedNoiseStatic) > 0 && len(env.AdvertisedNoiseStatic) != 32 {
 		return false
 	}
 	if len(env.AdvertisedNoiseStatic) == 32 {
-		return verifyAdvertisedPeerEnvelope(env, peerAnnouncementSignaturePayload)
+		return verifyAdvertisedPeerEnvelope(env, peerAnnouncementSignaturePayload, check)
 	}
-	return verifyAdvertisedPeerEnvelope(env, peerAnnouncementSignaturePayloadV1)
+	return verifyAdvertisedPeerEnvelope(env, peerAnnouncementSignaturePayloadV1, check)
 }
 
 func verifySupernodeEnvelope(env gossip.Envelope) bool {
-	return verifyAdvertisedPeerEnvelope(env, supernodeSignaturePayload)
+	return verifyAdvertisedPeerEnvelope(env, supernodeSignaturePayload, mcrypto.Verify)
 }
 
-func verifySupernodeStatusEnvelope(env gossip.Envelope) bool {
+func verifySupernodeStatusEnvelope(env gossip.Envelope, check signatureCheck) bool {
 	if env.Type != gossip.TypeSupernodeAnnounce && env.Type != gossip.TypeSupernodeRevoke {
 		return false
 	}
-	return verifySupernodeEnvelope(env)
+	return verifyAdvertisedPeerEnvelope(env, supernodeSignaturePayload, check)
 }
 
 // signHolePunchCoordEnvelope signs a coordination offer or reply so the far
@@ -124,5 +128,5 @@ func verifyHolePunchCoordEnvelope(env gossip.Envelope) bool {
 	if env.Type != gossip.TypeHolePunchCoord {
 		return false
 	}
-	return verifyAdvertisedPeerEnvelope(env, holePunchCoordSignaturePayload)
+	return verifyAdvertisedPeerEnvelope(env, holePunchCoordSignaturePayload, mcrypto.Verify)
 }

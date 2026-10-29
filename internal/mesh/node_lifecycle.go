@@ -92,6 +92,7 @@ func NewNodeWithIdentity(meshID string, psk []byte, cfg Config, identity *mcrypt
 		psk:              append([]byte(nil), psk...),
 		roomKey:          deriveRoomKey(meshID, psk),
 		subChannels:      make(map[string]subscription),
+		overlayRepublish: make(chan struct{}, 1),
 		rooms:            make(map[string][]byte),
 		config:           cfg,
 		infoHash:         infoHash,
@@ -123,7 +124,7 @@ func NewNodeWithIdentity(meshID string, psk []byte, cfg Config, identity *mcrypt
 		hostDialInFlight:      make(map[string]int),
 		hostDialFailures:      make(map[string]int),
 		announceForwards:      make(map[string]time.Time),
-		explicitTargets:       make(map[string]time.Time),
+		explicitTargets:       make(map[string]*explicitTarget),
 		bootstrapDials:        make(map[string]time.Time),
 		bootstrapDialFailures: make(map[string]int),
 		lanBeaconBuckets:      make(map[string]*lanBeaconRateBucket),
@@ -375,7 +376,7 @@ func (n *Node) Stop() int32 {
 		peers = append(peers, peer)
 	}
 	n.peers = make(map[string]*peerConn)
-	n.explicitTargets = make(map[string]time.Time)
+	n.explicitTargets = make(map[string]*explicitTarget)
 	// Relay session state is tied to the cancelled rootCtx: workers and
 	// transports that could ever use it are gone. Stale relayLocals made
 	// establishedRelaySession() != "" after a restart, so dialExplicitTarget

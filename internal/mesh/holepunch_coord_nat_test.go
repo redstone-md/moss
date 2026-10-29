@@ -57,6 +57,10 @@ func TestHolePunchCoordOfferTeachesTrustedNAT(t *testing.T) {
 		AdvertisedRelayCapable: true,
 	})
 
+	// This test observes profile authentication, not network dialing. An
+	// already-connected target prevents an unrelated asynchronous punch from
+	// outliving the test and reading another test's temporary route probe.
+	nodeA.peers[initiatorID] = &peerConn{id: initiatorID}
 	nodeA.handleHolePunchCoord(&peerConn{id: "relay-peer"}, offer)
 
 	info := knownPeerInfo(nodeA, initiatorID)
@@ -131,6 +135,8 @@ func TestHolePunchCoordUnsignedEnvelopeTeachesOnlyAddress(t *testing.T) {
 		AdvertisedRelayCapable: true,
 	}
 
+	// Keep this profile-only fixture free of asynchronous network attempts.
+	nodeA.peers[strangerID] = &peerConn{id: strangerID}
 	nodeA.handleHolePunchCoord(&peerConn{id: "relay-peer"}, offer)
 
 	info := knownPeerInfo(nodeA, strangerID)

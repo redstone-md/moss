@@ -56,6 +56,13 @@ func (n *Node) tryDirectUpgrade(targetPeerID string, timeout time.Duration) bool
 }
 
 func (n *Node) tryDirect(targetPeerID string, timeout time.Duration, force bool) bool {
+	return n.tryDirectContext(context.Background(), targetPeerID, timeout, force)
+}
+
+func (n *Node) tryDirectContext(ctx context.Context, targetPeerID string, timeout time.Duration, force bool) bool {
+	if ctx.Err() != nil {
+		return false
+	}
 	deadline := time.Now().Add(timeout)
 	n.mu.RLock()
 	targetInfo, ok := n.knownPeers[targetPeerID]
@@ -64,7 +71,7 @@ func (n *Node) tryDirect(targetPeerID string, timeout time.Duration, force bool)
 		refreshBudget := initialDirectRefreshBudget(remaining)
 		if refreshBudget > 0 {
 			n.refreshExternalAddress(time.Now().Add(refreshBudget))
-			if n.waitForDirectPeer(targetPeerID, minDuration(100*time.Millisecond, time.Until(deadline))) {
+			if n.waitForDirectPeerContext(ctx, targetPeerID, minDuration(100*time.Millisecond, time.Until(deadline))) {
 				return true
 			}
 		}
@@ -72,15 +79,15 @@ func (n *Node) tryDirect(targetPeerID string, timeout time.Duration, force bool)
 	if ok && targetInfo.addr != "" {
 		dialBudget := initialDirectDialBudget(targetInfo, time.Until(deadline))
 		if dialBudget > 0 {
-			ctx, cancel := context.WithTimeout(context.Background(), dialBudget)
-			n.connectPeerWithHint(ctx, targetInfo.addr, targetPeerID)
+			dialCtx, cancel := context.WithTimeout(ctx, dialBudget)
+			n.connectPeerWithHint(dialCtx, targetInfo.addr, targetPeerID)
 			cancel()
-			if n.waitForDirectPeer(targetPeerID, minDuration(250*time.Millisecond, time.Until(deadline))) {
+			if n.waitForDirectPeerContext(ctx, targetPeerID, minDuration(250*time.Millisecond, time.Until(deadline))) {
 				return true
 			}
 		}
 	}
-	if time.Until(deadline) <= 0 {
+	if ctx.Err() != nil || time.Until(deadline) <= 0 {
 		return n.directPeerConnected(targetPeerID)
 	}
 	if !ok || targetInfo.addr == "" {
@@ -95,24 +102,24 @@ func (n *Node) tryDirect(targetPeerID string, timeout time.Duration, force bool)
 		if force {
 			return n.directPeerConnected(targetPeerID)
 		}
-		return n.waitForDirectPeer(targetPeerID, time.Until(deadline))
+		return n.waitForDirectPeerContext(ctx, targetPeerID, time.Until(deadline))
 	}
 	if !force && n.shouldPreferRelayForTarget(targetPeerID) {
-		return n.waitForDirectPeer(targetPeerID, time.Until(deadline))
+		return n.waitForDirectPeerContext(ctx, targetPeerID, time.Until(deadline))
 	}
-	if n.attemptHolePunchPolicy(targetPeerID, time.Until(deadline), force) {
+	if n.attemptHolePunchContext(ctx, targetPeerID, time.Until(deadline), force) {
 		return true
 	}
 	finalBudget := finalDirectDialBudget(targetInfo, time.Until(deadline))
 	if finalBudget > 0 {
-		ctx, cancel := context.WithTimeout(context.Background(), finalBudget)
-		n.connectPeerWithHint(ctx, targetInfo.addr, targetPeerID)
+		dialCtx, cancel := context.WithTimeout(ctx, finalBudget)
+		n.connectPeerWithHint(dialCtx, targetInfo.addr, targetPeerID)
 		cancel()
-		if n.waitForDirectPeer(targetPeerID, minDuration(250*time.Millisecond, time.Until(deadline))) {
+		if n.waitForDirectPeerContext(ctx, targetPeerID, minDuration(250*time.Millisecond, time.Until(deadline))) {
 			return true
 		}
 	}
-	return n.waitForDirectPeer(targetPeerID, time.Until(deadline))
+	return n.waitForDirectPeerContext(ctx, targetPeerID, time.Until(deadline))
 }
 
 func initialDirectRefreshBudget(total time.Duration) time.Duration {

@@ -1,6 +1,7 @@
 package mesh
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -9,6 +10,13 @@ import (
 )
 
 func (n *Node) OpenRelaySession(viaPeerID, targetPeerID string, timeout time.Duration) (string, error) {
+	return n.openRelaySession(context.Background(), viaPeerID, targetPeerID, timeout)
+}
+
+func (n *Node) openRelaySession(ctx context.Context, viaPeerID, targetPeerID string, timeout time.Duration) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if viaPeerID == "" || targetPeerID == "" {
 		return "", errors.New("via and target peer IDs are required")
 	}
@@ -42,17 +50,35 @@ func (n *Node) OpenRelaySession(viaPeerID, targetPeerID string, timeout time.Dur
 		n.mu.Unlock()
 		return "", errors.New("relay request send failed")
 	}
+	return n.waitRelaySession(ctx, sessionID, wait, timeout)
+}
+
+// A successful admission owns the session even if cancellation wakes its waiter.
+func (n *Node) waitRelaySession(ctx context.Context, sessionID string, wait <-chan struct{}, timeout time.Duration) (string, error) {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
+	var waitErr error
 	select {
 	case <-wait:
-		return sessionID, nil
+	case <-ctx.Done():
+		waitErr = ctx.Err()
 	case <-timer.C:
-		n.mu.Lock()
-		delete(n.relayLocals, sessionID)
-		n.mu.Unlock()
-		return "", errors.New("relay session open timed out")
+		waitErr = errors.New("relay session open timed out")
 	}
+	n.mu.Lock()
+	// Admission can win the race with cancellation or a timeout. Its session
+	// is already carrying data; a late waiter must not delete that success.
+	session, exists := n.relayLocals[sessionID]
+	if exists && session.established {
+		n.mu.Unlock()
+		return sessionID, nil
+	}
+	delete(n.relayLocals, sessionID)
+	n.mu.Unlock()
+	if waitErr == nil {
+		waitErr = errors.New("relay session closed before establishment")
+	}
+	return "", waitErr
 }
 
 func (n *Node) RelaySend(sessionID string, data []byte) error {
@@ -103,6 +129,10 @@ func (n *Node) RelaySendTo(targetPeerID string, data []byte, timeout time.Durati
 }
 
 func (n *Node) OpenRelaySessionAny(targetPeerID string, timeout time.Duration) (string, error) {
+	return n.openRelaySessionAny(context.Background(), targetPeerID, timeout)
+}
+
+func (n *Node) openRelaySessionAny(ctx context.Context, targetPeerID string, timeout time.Duration) (string, error) {
 	candidates, err := n.selectRelayPeers(targetPeerID)
 	if err != nil {
 		return "", err
@@ -118,14 +148,14 @@ func (n *Node) OpenRelaySessionAny(targetPeerID string, timeout time.Duration) (
 	deadline := time.Now().Add(timeout)
 	for _, viaPeerID := range candidates {
 		remaining := time.Until(deadline)
-		if remaining <= 0 {
+		if remaining <= 0 || ctx.Err() != nil {
 			break
 		}
 		attemptTimeout := perCandidate
 		if remaining < attemptTimeout {
 			attemptTimeout = remaining
 		}
-		sessionID, err := n.OpenRelaySession(viaPeerID, targetPeerID, attemptTimeout)
+		sessionID, err := n.openRelaySession(ctx, viaPeerID, targetPeerID, attemptTimeout)
 		if err == nil {
 			return sessionID, nil
 		}

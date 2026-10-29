@@ -18,6 +18,10 @@ func (n *Node) localPeerID() string {
 }
 
 func (n *Node) advertisedListenAddr() string {
+	return n.advertisedListenAddrWithInterfaces(&interfaceSnapshot{})
+}
+
+func (n *Node) advertisedListenAddrWithInterfaces(interfaces *interfaceSnapshot) string {
 	profile := n.natProfile.Load().(nat.Profile)
 	if profile.ExternalAddress != "" {
 		host, port, err := net.SplitHostPort(profile.ExternalAddress)
@@ -39,10 +43,10 @@ func (n *Node) advertisedListenAddr() string {
 	if host, ok := n.defaultRouteAdvertiseHost(); ok {
 		return net.JoinHostPort(host, strconv.Itoa(n.listenPort))
 	}
-	if host, ok := n.peerSubnetAdvertiseHost(); ok {
+	if host, ok := n.peerSubnetAdvertiseHost(interfaces); ok {
 		return net.JoinHostPort(host, strconv.Itoa(n.listenPort))
 	}
-	if host, ok := bestLocalAdvertiseHost(); ok {
+	if host, ok := bestLocalAdvertiseHostWithInterfaces(interfaces); ok {
 		return net.JoinHostPort(host, strconv.Itoa(n.listenPort))
 	}
 	return net.JoinHostPort("127.0.0.1", strconv.Itoa(n.listenPort))
@@ -90,7 +94,11 @@ func (n *Node) shouldAdvertiseLoopback() bool {
 }
 
 func bestLocalAdvertiseHost() (string, bool) {
-	ifaces, err := net.Interfaces()
+	return bestLocalAdvertiseHostWithInterfaces(&interfaceSnapshot{})
+}
+
+func bestLocalAdvertiseHostWithInterfaces(interfaces *interfaceSnapshot) (string, bool) {
+	ifaces, err := interfaces.list()
 	if err != nil {
 		addrs, err := net.InterfaceAddrs()
 		if err != nil {
@@ -102,7 +110,7 @@ func bestLocalAdvertiseHost() (string, bool) {
 		}
 		return best.String(), true
 	}
-	best, ok := selectAdvertiseHostForInterfaces(ifaces)
+	best, ok := selectAdvertiseHostForInterfacesFunc(ifaces, interfaces.addrs)
 	if !ok {
 		return "", false
 	}
@@ -153,12 +161,6 @@ func selectAdvertiseHost(addrs []net.Addr) (netip.Addr, bool) {
 	default:
 		return netip.Addr{}, false
 	}
-}
-
-func selectAdvertiseHostForInterfaces(ifaces []net.Interface) (netip.Addr, bool) {
-	return selectAdvertiseHostForInterfacesFunc(ifaces, func(iface net.Interface) ([]net.Addr, error) {
-		return iface.Addrs()
-	})
 }
 
 func selectAdvertiseHostForInterfacesFunc(ifaces []net.Interface, addrFn func(net.Interface) ([]net.Addr, error)) (netip.Addr, bool) {
@@ -437,18 +439,16 @@ func (n *Node) snapshotDirectPeerHostAddrs() []netip.Addr {
 // interface the peers cannot route to; matching the interface to the subnet
 // the peers actually come from is what makes the advertised address dialable
 // for them.
-func (n *Node) peerSubnetAdvertiseHost() (string, bool) {
+func (n *Node) peerSubnetAdvertiseHost(interfaces *interfaceSnapshot) (string, bool) {
 	peerHosts := n.snapshotDirectPeerHostAddrs()
 	if len(peerHosts) == 0 {
 		return "", false
 	}
-	ifaces, err := net.Interfaces()
+	ifaces, err := interfaces.list()
 	if err != nil {
 		return "", false
 	}
-	return selectAdvertiseHostForPeersFunc(ifaces, func(iface net.Interface) ([]net.Addr, error) {
-		return iface.Addrs()
-	}, peerHosts)
+	return selectAdvertiseHostForPeersFunc(ifaces, interfaces.addrs, peerHosts)
 }
 
 // selectAdvertiseHostForPeersFunc picks the address of the eligible interface

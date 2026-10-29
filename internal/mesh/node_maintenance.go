@@ -103,8 +103,7 @@ func (n *Node) removePeer(peerID string, session *transport.Session) {
 		if route.initiator != peerID && route.target != peerID {
 			continue
 		}
-		delete(n.relayRoutes, sessionID)
-		n.relaySessions.Release(sessionID)
+		n.retireRelayRouteLocked(sessionID, time.Now())
 	}
 	if info, ok := n.knownPeers[peerID]; ok {
 		info.direct = false
