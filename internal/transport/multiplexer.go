@@ -95,7 +95,7 @@ type Multiplexer struct {
 type Stream struct {
 	id     StreamID
 	mux    *Multiplexer
-	buffer chan []byte
+	queue  *packetQueue
 	mu     sync.RWMutex
 	closed chan struct{}
 	once   sync.Once
@@ -216,7 +216,7 @@ func newStream(id StreamID, mux *Multiplexer) *Stream {
 	return &Stream{
 		id:     id,
 		mux:    mux,
-		buffer: make(chan []byte, mux.bufferSize),
+		queue:  newPacketQueue(mux.bufferSize, maxInboundQueueBytes),
 		closed: make(chan struct{}),
 	}
 }
@@ -230,15 +230,11 @@ func (s *Stream) WritePacket(payload []byte) error {
 }
 
 func (s *Stream) ReadPacket() ([]byte, error) {
-	select {
-	case packet, ok := <-s.buffer:
-		if !ok {
-			return nil, io.EOF
-		}
-		return packet, nil
-	case <-s.closed:
+	packet, ok := s.queue.pop()
+	if !ok {
 		return nil, io.EOF
 	}
+	return packet, nil
 }
 
 func (s *Stream) close() {
@@ -246,14 +242,14 @@ func (s *Stream) close() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		close(s.closed)
-		close(s.buffer)
+		s.queue.close()
 	})
 }
 
 // enqueue hands one inbound payload to the stream's reader. The payload is a
 // subslice of the packet readRawPacket produced this iteration — a buffer
 // that Decrypt/Open allocate fresh per packet and that nothing downstream
-// reuses — so it goes into the buffer channel as-is: one copy fewer per
+// reuses — so it goes into the queue as-is: one copy fewer per
 // inbound packet, and the copy is not load-bearing (the reader may retain the
 // slice past its read; the backing array dies with it).
 func (s *Stream) enqueue(payload []byte) {
@@ -264,37 +260,35 @@ func (s *Stream) enqueue(payload []byte) {
 		return
 	default:
 	}
-	select {
-	case s.buffer <- payload:
-	default:
-		if s.latestWins.Load() {
-			// Latest-wins: evict the oldest buffered payload so the new
-			// one fits. A concurrent reader draining the buffer between
-			// the two selects can starve the re-insert — then the new
-			// payload is lost after all, which is acceptable for a
-			// stream that asked to be treated as unreliable.
-			select {
-			case <-s.buffer:
-			default:
-			}
-			select {
-			case s.buffer <- payload:
-			default:
-			}
-		}
-		s.drops.Add(1)
-		streamDrops.Add(1)
-		if s.id == DefaultStream {
-			streamDropsDefault.Add(1)
-		} else {
-			streamDropsOther.Add(1)
-		}
-		streamOverflowMu.RLock()
-		hook := streamBufferOnOverflow
-		streamOverflowMu.RUnlock()
-		if hook != nil {
-			hook(s.id, len(s.buffer))
-		}
+	var accepted bool
+	var evicted int
+	if s.latestWins.Load() {
+		accepted, evicted = s.queue.pushLatestWins(payload)
+	} else {
+		accepted = s.queue.push(payload)
+	}
+	if accepted && evicted == 0 {
+		return
+	}
+	if !accepted && s.queue.isClosed() {
+		return
+	}
+	lost := uint64(evicted)
+	if !accepted {
+		lost++
+	}
+	s.drops.Add(lost)
+	streamDrops.Add(lost)
+	if s.id == DefaultStream {
+		streamDropsDefault.Add(lost)
+	} else {
+		streamDropsOther.Add(lost)
+	}
+	streamOverflowMu.RLock()
+	hook := streamBufferOnOverflow
+	streamOverflowMu.RUnlock()
+	if hook != nil {
+		hook(s.id, s.queue.len())
 	}
 }
 
