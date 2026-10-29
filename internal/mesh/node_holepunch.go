@@ -292,24 +292,6 @@ func (n *Node) waitForDirectPeer(targetPeerID string, timeout time.Duration) boo
 	return n.waitForDirectPeerContext(context.Background(), targetPeerID, timeout)
 }
 
-func (n *Node) waitForDirectPeerContext(ctx context.Context, targetPeerID string, timeout time.Duration) bool {
-	if timeout <= 0 {
-		return n.directPeerConnected(targetPeerID)
-	}
-	deadline := time.Now().Add(timeout)
-	for ctx.Err() == nil && time.Now().Before(deadline) {
-		if n.directPeerConnected(targetPeerID) {
-			return true
-		}
-		select {
-		case <-ctx.Done():
-			return n.directPeerConnected(targetPeerID)
-		case <-time.After(25 * time.Millisecond):
-		}
-	}
-	return n.directPeerConnected(targetPeerID)
-}
-
 func (n *Node) updateKnownPeer(peerID, addr string, direct bool) {
 	if peerID == "" || addr == "" || peerID == n.localPeerID() {
 		return

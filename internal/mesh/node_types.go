@@ -116,6 +116,7 @@ type Node struct {
 	cancel          context.CancelFunc
 	wg              sync.WaitGroup
 	peers           map[string]*peerConn
+	directWaits     map[string]*directPeerWait // mu; only actively awaited identities
 	// allowlist gates peer registration on every bearer: direct handshakes
 	// (registerPeerFrom) and relayed sessions (registerRelayedPeerLocked).
 	// nil (the default) keeps the open-substrate model; a CREATED map is
