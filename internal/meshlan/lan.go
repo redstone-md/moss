@@ -38,9 +38,8 @@ type LanNode struct {
 	// participant claims it (see rerouteSelfCollision).
 	selfIP net.IP
 
-	// selfSalt counts how many times this node has re-derived its self
-	// address away from a collision; 0 means the plain hash of the peer
-	// ID. Guarded by mu.
+	// selfSalt is the salt behind the current self address; 0 means the
+	// plain hash of the peer ID. Guarded by mu.
 	selfSalt int
 
 	presence *Presence
@@ -264,19 +263,27 @@ func (l *LanNode) rerouteSelfCollision(otherPeerID, otherNick string, claimedIP 
 		l.mu.Unlock()
 		return
 	}
-	salt := l.selfSalt + 1
-	l.selfSalt = salt
+	salt := l.selfSalt
 	l.mu.Unlock()
 
 	prefix, err := netip.ParsePrefix(l.cidr)
 	if err != nil {
 		return
 	}
-	candidate, err := tun.DeterministicAddr(prefix.Masked(), fmt.Sprintf("%s#%d", myID, salt))
-	if err != nil {
-		return
+	// A salted hash can land on the contested address again; keep salting
+	// until it leaves, or the tie survives the move.
+	var newIP net.IP
+	for newIP == nil || newIP.Equal(selfIP) {
+		salt++
+		candidate, err := tun.DeterministicAddr(prefix.Masked(), fmt.Sprintf("%s#%d", myID, salt))
+		if err != nil {
+			return
+		}
+		newIP = net.IP(candidate.AsSlice())
 	}
-	newIP := net.IP(candidate.AsSlice())
+	l.mu.Lock()
+	l.selfSalt = salt
+	l.mu.Unlock()
 	if err := mesh.RegisterPeerAddr(l.node, myID, newIP); err != nil {
 		return
 	}

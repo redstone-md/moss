@@ -128,6 +128,8 @@ func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 		n.handleRelayData(peer, env)
 	case gossip.TypeRelayClose:
 		n.handleRelayClose(peer, env)
+	case gossip.TypeCarrierRetire:
+		n.handleCarrierRetire(peer)
 	case gossip.TypePublish:
 		if peer == nil {
 			return
@@ -172,6 +174,9 @@ func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 			return
 		}
 		n.deliverLocal(env)
+		if n.waitingRequested() {
+			return
+		}
 		if env.TraceID != "" {
 			n.debugBus.Emit(func() inspect.Event {
 				return inspect.Event{
@@ -188,6 +193,9 @@ func (n *Node) handleEnvelope(peer *peerConn, env gossip.Envelope) {
 			n.broadcastIDontWant(env.Channel, []string{env.MessageID}, peer.id)
 		}
 	case gossip.TypeStatDelta:
+		if n.waitingRequested() {
+			return
+		}
 		n.handleStatDelta(peer, env)
 	case gossip.TypePing:
 		n.sendEnvelope(peer, gossip.Envelope{Type: gossip.TypePong, RequestID: env.RequestID})

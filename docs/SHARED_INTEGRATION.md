@@ -44,6 +44,28 @@ The generated header is the source of truth for types and callback signatures.
 
 ## Integration Model
 
+Hosts that explicitly integrate an idle lifecycle may use the optional
+`Moss_SetActivityMode(handle, 0|1)` symbol. Existing hosts stay active. Read actual
+mode/reachability from MeshInfo or event 12; setter success accepts a request,
+not a completed carrier transition. Preserve application authentication across
+transport migration and request active before outgoing user work, calls or
+stream traffic. `ready` means carrier readiness, not a route to every peer.
+The receiver retains one carrier and refreshes only its own provider records
+through it. Foreground origins use normal discovery/identity resolution and
+the receiver replies over the resulting session. Arbitrary waiting-to-waiting
+traffic across distinct carriers is not guaranteed. The foreground retry
+ordering is enabled only after that node calls the lifecycle setter; other
+consumers retain their existing routing behavior. See
+[waiting mode](WAITING_MODE.md) for lifecycle invariants, cold recovery and the
+current limitation on explicit OS network-change signals.
+
+The waiting integration is currently developed on `fcdc338` from the pending
+[direct-peer-wait stack](https://github.com/redstone-md/moss/pull/30), preserving
+the Mosh performance baseline. Maintainers must land or rebase that stack onto
+the accepted upstream base before consumers adopt the waiting revision. The
+default contribution target remains `dev`; this does not authorize merging the
+pending prerequisite or changing a downstream pin without its review.
+
 Typical host lifecycle:
 
 1. Load the native library.

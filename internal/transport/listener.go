@@ -75,6 +75,35 @@ func ListenPair(port int, cfg HandshakeConfig) (*Listener, *UDPListener, int, er
 	return nil, nil, 0, lastErr
 }
 
+// ListenMasqPair brings up the masquerade TCP listener and the UDP listener on
+// one port. An auto port (0) retries a fresh pairing when another process
+// already holds the UDP side of the port the OS chose for TCP, as ListenPair
+// does; a fixed port fails at once.
+func ListenMasqPair(port int, coverSNI string, cfg HandshakeConfig) (*MasqListener, *UDPListener, int, error) {
+	attempts := 1
+	if port == 0 {
+		attempts = 8
+	}
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		masq, err := MasqListen(net.JoinHostPort("", strconv.Itoa(port)), coverSNI)
+		if err == nil {
+			udpListener, actualPort, udpErr := ListenUDP(masq.Addr().(*net.TCPAddr).Port, cfg)
+			if udpErr == nil {
+				return masq, udpListener, actualPort, nil
+			}
+			_ = masq.Close()
+			err = udpErr
+		}
+		lastErr = err
+		if port != 0 {
+			break
+		}
+		time.Sleep(time.Duration(attempt+1) * 5 * time.Millisecond)
+	}
+	return nil, nil, 0, lastErr
+}
+
 func listenHost() string {
 	if host := os.Getenv("MOSS_LISTEN_HOST"); host != "" {
 		return host

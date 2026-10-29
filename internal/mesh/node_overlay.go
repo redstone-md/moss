@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"sync"
 	"time"
 
 	"github.com/redstone-md/moss/internal/gossip"
@@ -34,9 +33,9 @@ const (
 	overlayAlpha = 3
 	// overlayQueryTimeout bounds a single query to one contact.
 	overlayQueryTimeout = 4 * time.Second
-	// overlayLookupRounds caps iterative narrowing. Each round strictly
-	// improves the closest set, so this only guards against a peer feeding us
-	// junk contacts forever.
+	// overlayLookupRounds caps the total RPC budget at this many alpha-sized
+	// rounds. Slots refill individually so a silent peer cannot block progress;
+	// contacts learned from replies cannot grow the total work without bound.
 	overlayLookupRounds = 8
 	// overlayRepublishEvery refreshes our records well inside the store TTL.
 	overlayRepublishEvery = 30 * time.Second
@@ -45,6 +44,9 @@ const (
 // overlayEnabled reports whether this node answers overlay queries. Only a
 // publicly reachable node can: a query to an undialable node never arrives.
 func (n *Node) overlayIsCore() bool {
+	if n.waitingRequested() {
+		return false
+	}
 	profile, ok := n.natProfile.Load().(nat.Profile)
 	return ok && profile.PublicReachable
 }
@@ -131,6 +133,9 @@ func (n *Node) overlaySeedFromKnownPeers() overlaySeedTally {
 
 // handleOverlayFindNode returns the contacts we know nearest the key.
 func (n *Node) handleOverlayFindNode(peer *peerConn, env gossip.Envelope) {
+	if n.waitingRequested() {
+		return
+	}
 	key, ok := overlayKeyOf(env)
 	if !ok || peer == nil {
 		return
@@ -145,6 +150,9 @@ func (n *Node) handleOverlayFindNode(peer *peerConn, env gossip.Envelope) {
 // handleOverlayFindValue returns providers for the key, and the nearer contacts
 // so the asker can narrow if we hold nothing.
 func (n *Node) handleOverlayFindValue(peer *peerConn, env gossip.Envelope) {
+	if n.waitingRequested() {
+		return
+	}
 	key, ok := overlayKeyOf(env)
 	if !ok || peer == nil {
 		return
@@ -244,6 +252,9 @@ func overlayKeyOf(env gossip.Envelope) (overlay.NodeID, bool) {
 // Skipping unconnected contacts costs little: a node's core peers are exactly
 // the ones it is already attached to, so the contacts worth asking are on hand.
 func (n *Node) overlayQuery(ctx context.Context, c overlay.Contact, env gossip.Envelope) (gossip.Envelope, error) {
+	if n.waitingRequested() {
+		return gossip.Envelope{}, errors.New("overlay discovery suspended in waiting mode")
+	}
 	peerID := c.ID.String()
 	peer := n.peerByID(peerID)
 	if peer == nil {
@@ -321,149 +332,11 @@ func (n *Node) overlayReachableContacts(key overlay.NodeID) []overlay.Contact {
 }
 
 func (n *Node) overlayLookup(ctx context.Context, key overlay.NodeID, wantValue bool) ([]gossip.OverlayProvider, []overlay.Contact) {
-	table := n.overlayTable
-	var shortlist []overlay.Contact
-	if table != nil {
-		shortlist = table.Closest(key, overlay.DefaultK)
-	}
-	if len(shortlist) == 0 {
-		return nil, nil
-	}
-
-	queried := make(map[string]bool)
-	var providers []gossip.OverlayProvider
 	queryType := gossip.TypeOverlayFindNode
 	if wantValue {
 		queryType = gossip.TypeOverlayFindValue
 	}
-
-	for round := 0; round < overlayLookupRounds; round++ {
-		batch := make([]overlay.Contact, 0, overlayAlpha)
-		for _, c := range shortlist {
-			if queried[c.ID.String()] {
-				continue
-			}
-			// Spend the alpha budget only on contacts we can actually ask.
-			if !n.overlayCanReach(c) {
-				continue
-			}
-			batch = append(batch, c)
-			if len(batch) == overlayAlpha {
-				break
-			}
-		}
-		if len(batch) == 0 {
-			break
-		}
-		// Query the batch concurrently. alpha means "ask this many at once" —
-		// asking them one after another turned a 4s query timeout into alpha x 4s
-		// per round, which is precisely the 12s p95 and 20s worst case the fleet
-		// measured on lookups that found nothing at all.
-		type overlayQueryResult struct {
-			resp gossip.Envelope
-			err  error
-		}
-		// Results arrive through a buffered channel, not a shared slice. The
-		// outer select below can give up before every query returns (ctx.Done
-		// or the 12s batch bound), and a slice read at that point races the
-		// stragglers still parked inside overlayQuery: the fleet's race census
-		// caught the batch goroutine writing results[i] as the abandon path
-		// ranged over the same slots. The channel decouples sender from reader
-		// — a straggler's send lands in the buffer and is simply never read
-		// late, which the slice could not guarantee.
-		results := make(chan overlayQueryResult, len(batch))
-		var wg sync.WaitGroup
-		// Each query gets its own deadline so one slow peer cannot
-		// hold the whole round hostage: the fleet saw 150-minute
-		// wg.Wait stalls when a single overlayQuery never returned
-		// on node.ctx (which only cancels on Stop). 4s matches the
-		// overlayQuery dial+RPC budget.
-		for _, c := range batch {
-			queried[c.ID.String()] = true
-			wg.Add(1)
-			go func(c overlay.Contact) {
-				defer wg.Done()
-				qctx, cancel := context.WithTimeout(ctx, 4*time.Second)
-				defer cancel()
-				resp, err := n.overlayQuery(qctx, c, gossip.Envelope{
-					Type:       queryType,
-					OverlayKey: append([]byte(nil), key[:]...),
-				})
-				results <- overlayQueryResult{resp: resp, err: err}
-			}(c)
-		}
-		// Bound the whole batch (alpha=3): even with per-query
-		// timeouts, do not wait forever on a wedged goroutine.
-		done := make(chan struct{})
-		go func() { wg.Wait(); close(done) }()
-		batchTimer := time.NewTimer(12 * time.Second)
-		select {
-		case <-done:
-		case <-ctx.Done():
-		case <-batchTimer.C:
-		}
-		batchTimer.Stop()
-		// Take ONLY what has arrived. On the done path that is every result
-		// (wg.Wait returned, so every send completed and the buffer holds the
-		// whole batch); on an abandon the buffer holds exactly the queries
-		// that finished — no slot a straggler still owns is ever read, and
-		// the straggler's late send lands in the buffer harmlessly.
-		arrived := make([]overlayQueryResult, 0, len(batch))
-	drain:
-		for {
-			select {
-			case result := <-results:
-				arrived = append(arrived, result)
-			default:
-				break drain
-			}
-		}
-		for _, result := range arrived {
-			resp, err := result.resp, result.err
-			if err != nil {
-				// Do NOT drop the contact. One timeout is not death: a query can
-				// lose to a busy moment or a slow dial, and evicting on the first
-				// miss made the table drain itself — the fleet reported lookups
-				// that queried three contacts and then reported contacts=0,
-				// having emptied the very table publishing also depends on.
-				// Staleness is already handled: bucket eviction drops the least
-				// recently seen, and every contact is re-learnable from gossip.
-				continue
-			}
-			if len(resp.OverlayProviders) > 0 {
-				providers = append(providers, resp.OverlayProviders...)
-			}
-			for _, rc := range resp.OverlayContacts {
-				cid, ok := contactID(rc)
-				if !ok || rc.Addr == "" {
-					continue
-				}
-				if n.overlayTable != nil {
-					n.overlayTable.Add(overlay.Contact{ID: cid, Addr: rc.Addr, LastSeen: time.Now()})
-				}
-			}
-			if ctx.Err() != nil {
-				return providers, shortlist
-			}
-		}
-		if wantValue && len(providers) > 0 {
-			break
-		}
-		// Do NOT stop because a round learned no new contacts.
-		//
-		// A lookup ends when the closest contacts have all been ASKED — that is
-		// Kademlia's termination rule. Ending it when a round returns nothing new
-		// meant asking the first alpha of them and quitting: with six core
-		// contacts holding the record, a node would query three, learn nothing it
-		// did not already know, give up, and report found=0 while the record sat
-		// on one of the three it never asked. That is every rendezvous the fleet
-		// ran. The batch running out of unqueried contacts below is the real
-		// terminator, and it is bounded by overlayLookupRounds.
-		if n.overlayTable != nil {
-			shortlist = n.overlayTable.Closest(key, overlay.DefaultK)
-		}
-	}
-	return providers, shortlist
+	return n.lookupOverlay(ctx, key, queryType, wantValue)
 }
 
 // anyReachable reports whether at least one contact can be asked at all.
@@ -669,6 +542,9 @@ const overlayTopicDiscoveryEvery = 15 * time.Second
 //
 // It never blocks the caller: maintainTopicMesh runs on the maintenance tick.
 func (n *Node) maybeDiscoverTopicPeers(topic string) {
+	if n.waitingRequested() {
+		return
+	}
 	if !n.topicDiscoveryAutomatic(topic) {
 		return
 	}
@@ -759,7 +635,7 @@ func (n *Node) reachPeerViaHint(ctx context.Context, peerID string, hint reachab
 		if ctx.Err() != nil {
 			return false
 		}
-		via := n.peerIDByAddr(addr)
+		via := n.peerIDByAddr(addr, peerID)
 		if via == "" {
 			dialCtx, cancel := withTimeout(ctx, overlayQueryTimeout)
 			err := n.connectPeer(dialCtx, addr)
@@ -767,7 +643,7 @@ func (n *Node) reachPeerViaHint(ctx context.Context, peerID string, hint reachab
 			if err != nil {
 				continue
 			}
-			if via = n.peerIDByAddr(addr); via == "" {
+			if via = n.peerIDByAddr(addr, peerID); via == "" {
 				continue
 			}
 		}
@@ -781,11 +657,20 @@ func (n *Node) reachPeerViaHint(ctx context.Context, peerID string, hint reachab
 	return false
 }
 
-func (n *Node) peerIDByAddr(addr string) string {
+func (n *Node) peerIDByAddr(addr, targetID string) string {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
+	previous := n.explicitTargets[targetID]
+	reuseHint := n.activity.optedIn || (previous != nil && previous.identityRetry)
 	for id, peer := range n.peers {
-		if peer != nil && !peer.relayed && peer.addr == addr {
+		if peer == nil || peer.relayed {
+			continue
+		}
+		// Inbound sessions use an ephemeral source port. A lifecycle host or
+		// explicit target recovering its lost relay can reuse the live carrier's
+		// authenticated listen address without another duplicate handshake.
+		info := n.knownPeers[id]
+		if peer.addr == addr || (reuseHint && info.verified && info.addr == addr) {
 			return id
 		}
 	}
@@ -857,20 +742,28 @@ func (n *Node) resolveRouteContext(ctx context.Context, peerID string) (Route, e
 	}
 	lookupCtx, cancel := withTimeout(ctx, 20*time.Second)
 	defer cancel()
-	providers, _ := n.overlayLookup(lookupCtx, id, true)
-	for _, p := range providers {
-		if len(p.Peer) != overlay.IDLen {
-			continue
+	if n.activityIdentityFirst(peerID) {
+		providers := n.collectIdentityProviders(lookupCtx, id)
+		previousTried := n.reachIdentityHints(lookupCtx, peerID, providers)
+		if !previousTried && n.peerByID(peerID) == nil && lookupCtx.Err() == nil {
+			n.reachPreviousRelayCarrier(lookupCtx, peerID)
 		}
-		if hex.EncodeToString(p.Peer) != peerID {
-			continue
-		}
-		hint, ok := decodeHint(p.Payload)
-		if !ok {
-			continue
-		}
-		if n.reachPeerViaHint(lookupCtx, peerID, hint) {
-			break
+	} else {
+		providers, _ := n.overlayLookup(lookupCtx, id, true)
+		for _, p := range providers {
+			if len(p.Peer) != overlay.IDLen {
+				continue
+			}
+			if hex.EncodeToString(p.Peer) != peerID {
+				continue
+			}
+			hint, ok := decodeHint(p.Payload)
+			if !ok {
+				continue
+			}
+			if n.reachPeerViaHint(lookupCtx, peerID, hint) {
+				break
+			}
 		}
 	}
 	peer := n.peerByID(peerID)

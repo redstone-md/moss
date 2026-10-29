@@ -742,6 +742,8 @@ func errorCode(code int32) error {
 		return errors.New("moss: listen/bind failed")
 	case mesh.MOSS_ERR_NOT_IN_ROOM:
 		return errors.New("moss: not in room")
+	case mesh.MOSS_ERR_ACTIVITY_MODE_INVALID:
+		return errors.New("moss: invalid activity mode")
 	default:
 		return fmt.Errorf("moss: error code %d", code)
 	}

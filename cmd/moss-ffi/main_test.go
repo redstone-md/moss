@@ -80,6 +80,8 @@ func TestBuildSharedLibrary(t *testing.T) {
 	for _, symbol := range []string{
 		"Moss_JoinRoom",
 		"Moss_SetRoomPeerDiscovery",
+		"Moss_SetActivityMode",
+		"Moss_NotifyNetworkChanged",
 		"Moss_LeaveRoom",
 		"Moss_SubscribeRoom",
 		"Moss_UnsubscribeRoom",
@@ -159,13 +161,24 @@ static void async_completion(uint64_t job_id, int32_t result) {
 }
 
 int main(void) {
-  const char* config = "{\"trackers\":[]}";
+  const char* config = "{\"trackers\":[],\"dht_enabled\":false,\"lan_discovery_enabled\":false}";
   MossHandle handle = Moss_Init("ffi-wave2-validation", NULL, config);
   if (handle <= 0) {
     fprintf(stderr, "Moss_Init failed: %%lld\n", (long long)handle);
     return 2;
   }
+  expect_code("Activity before Start", Moss_SetActivityMode(handle, 1), -3);
+  expect_code("Network hint before Start", Moss_NotifyNetworkChanged(handle), -3);
   expect_code("Moss_Start", Moss_Start(handle), 0);
+  expect_code("Network hint ordinary", Moss_NotifyNetworkChanged(handle), 0);
+
+  expect_code("Activity invalid handle", Moss_SetActivityMode(-99, 1), -1);
+  expect_code("Network hint invalid handle", Moss_NotifyNetworkChanged(-99), -1);
+  expect_code("Activity invalid mode", Moss_SetActivityMode(handle, 2), -15);
+  expect_code("Activity waiting", Moss_SetActivityMode(handle, 1), 0);
+  expect_code("Activity duplicate", Moss_SetActivityMode(handle, 1), 0);
+  expect_code("Network hint waiting", Moss_NotifyNetworkChanged(handle), 0);
+  expect_code("Activity active", Moss_SetActivityMode(handle, 0), 0);
 
   /* Room discovery is optional and validates without changing admission. */
   const char* peers = "[\"abababababababababababababababababababababababababababababababab\"]";
@@ -242,6 +255,9 @@ int main(void) {
     fprintf(stderr, "Moss_Stop failed\n");
     return 3;
   }
+  expect_code("Activity after Stop", Moss_SetActivityMode(handle, 1), -1);
+  expect_code("Network hint after Stop", Moss_NotifyNetworkChanged(handle), -1);
+  if (failures > 0) return 1;
   printf("wave2 validation ok\n");
   return 0;
 }

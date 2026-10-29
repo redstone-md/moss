@@ -107,6 +107,9 @@ func (n *Node) refreshNATClassification(timeout time.Duration) bool {
 const maxBindingRefreshPeers = 3
 
 func (n *Node) refreshExternalAddress(deadline time.Time) bool {
+	if n.waitingRequested() {
+		return false
+	}
 	n.mu.RLock()
 	peerIDs := make([]string, 0, maxBindingRefreshPeers)
 	for peerID := range n.peers {

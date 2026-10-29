@@ -22,6 +22,8 @@ func (n *Node) openRelaySession(ctx context.Context, viaPeerID, targetPeerID str
 	}
 	n.mu.RLock()
 	peer := n.peers[viaPeerID]
+	target := n.peers[targetPeerID]
+	applicationUsed := target != nil && target.applicationUsed.Load()
 	n.mu.RUnlock()
 	if peer == nil || peer.relayed {
 		return "", errors.New("relay peer is not connected")
@@ -30,40 +32,54 @@ func (n *Node) openRelaySession(ctx context.Context, viaPeerID, targetPeerID str
 	if err != nil {
 		return "", err
 	}
+	ctx, cancel := context.WithTimeoutCause(ctx, timeout, errors.New("relay session open timed out"))
+	defer cancel()
+	n.mu.RLock()
+	root := n.rootCtx
+	n.mu.RUnlock()
+	if root != nil {
+		stop := context.AfterFunc(root, cancel)
+		defer stop()
+	}
+	owner := &pendingRelayControl{context: ctx}
 	wait := make(chan struct{})
 	n.mu.Lock()
 	n.relayLocals[sessionID] = relayLocalSession{
-		sessionID:    sessionID,
-		viaPeerID:    viaPeerID,
-		remotePeerID: targetPeerID,
-		wait:         wait,
+		sessionID:       sessionID,
+		viaPeerID:       viaPeerID,
+		remotePeerID:    targetPeerID,
+		wait:            wait,
+		applicationUsed: applicationUsed,
+		pending:         owner,
 	}
 	n.mu.Unlock()
-	if !n.sendRelayControlWithIdentity(peer, n.signRelayRequestEnvelope(gossip.Envelope{
-		Type:         gossip.TypeRelayRequest,
-		RelaySession: sessionID,
-		RelaySource:  n.localPeerID(),
-		RelayTarget:  targetPeerID,
-	})) {
+	if owned, failed := n.transmitPendingRelayRequest(sessionID); !owned {
 		n.mu.Lock()
-		delete(n.relayLocals, sessionID)
+		current := n.relayLocals[sessionID]
+		if current.established {
+			n.mu.Unlock()
+			return sessionID, nil
+		}
+		if current.pending == owner && owner.context.Err() == nil && owner.carrier != failed {
+			n.mu.Unlock()
+			return n.waitRelaySession(ctx, sessionID, wait)
+		}
+		if current.pending == owner {
+			n.retireRelayLocalLocked(sessionID)
+		}
 		n.mu.Unlock()
 		return "", errors.New("relay request send failed")
 	}
-	return n.waitRelaySession(ctx, sessionID, wait, timeout)
+	return n.waitRelaySession(ctx, sessionID, wait)
 }
 
 // A successful admission owns the session even if cancellation wakes its waiter.
-func (n *Node) waitRelaySession(ctx context.Context, sessionID string, wait <-chan struct{}, timeout time.Duration) (string, error) {
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
+func (n *Node) waitRelaySession(ctx context.Context, sessionID string, wait <-chan struct{}) (string, error) {
 	var waitErr error
 	select {
 	case <-wait:
 	case <-ctx.Done():
-		waitErr = ctx.Err()
-	case <-timer.C:
-		waitErr = errors.New("relay session open timed out")
+		waitErr = context.Cause(ctx)
 	}
 	n.mu.Lock()
 	// Admission can win the race with cancellation or a timeout. Its session
@@ -73,7 +89,7 @@ func (n *Node) waitRelaySession(ctx context.Context, sessionID string, wait <-ch
 		n.mu.Unlock()
 		return sessionID, nil
 	}
-	delete(n.relayLocals, sessionID)
+	n.retireRelayLocalLocked(sessionID)
 	n.mu.Unlock()
 	if waitErr == nil {
 		waitErr = errors.New("relay session closed before establishment")
@@ -97,10 +113,25 @@ func (n *Node) RelaySend(sessionID string, data []byte) error {
 	if len(data) > maxRelayPayloadBytes {
 		return fmt.Errorf("relay payload of %d bytes exceeds the %d-byte limit", len(data), maxRelayPayloadBytes)
 	}
+	n.markRelayApplicationUsed(sessionID)
 	if !n.sendRelayPayload(sessionID, data) {
 		return errors.New("relay send failed")
 	}
 	return nil
+}
+
+func (n *Node) markRelayApplicationUsed(sessionID string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	session, ok := n.relayLocals[sessionID]
+	if !ok || !session.established {
+		return
+	}
+	session.applicationUsed = true
+	n.relayLocals[sessionID] = session
+	if peer := n.peers[session.remotePeerID]; peer != nil {
+		peer.applicationUsed.Store(true)
+	}
 }
 
 func (n *Node) RelaySendTo(targetPeerID string, data []byte, timeout time.Duration) error {
@@ -185,6 +216,9 @@ func (n *Node) SendToPeer(peerID string, payload []byte, timeout time.Duration) 
 	}
 	n.mu.RLock()
 	peer := n.peers[peerID]
+	if peer != nil {
+		peer.applicationUsed.Store(true)
+	}
 	n.mu.RUnlock()
 	if peer != nil {
 		env := gossip.Envelope{
@@ -218,6 +252,11 @@ func (n *Node) handleDirectPacket(peer *peerConn, env gossip.Envelope) {
 		n.emitPenalty(peer.id, "direct packet over the message size limit")
 		return
 	}
+	n.mu.RLock()
+	if current := n.peers[peer.id]; current != nil {
+		current.applicationUsed.Store(true)
+	}
+	n.mu.RUnlock()
 	var sender [32]byte
 	copy(sender[:], env.SenderID)
 	// queueKey is the authenticated session identity (peer.id is the 64-char

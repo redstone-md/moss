@@ -40,14 +40,17 @@ func startOverlayNodeWithConfig(t *testing.T, meshID string, cfg Config, maxPeer
 	if len(maxPeers) > 0 && maxPeers[0] > 0 {
 		cfg.MaxPeers = maxPeers[0]
 	}
-	n, err := NewNode(meshID, nil, cfg)
+	n, err := NewNode(meshID, nil, withFixtureListenPort(cfg))
 	if err != nil {
 		t.Fatalf("NewNode: %v", err)
 	}
 	if code := n.Start(); code != MOSS_OK {
-		t.Fatalf("Start: %d", code)
+		t.Fatalf("Start: %d (%s)", code, n.LastError())
 	}
 	t.Cleanup(func() { n.Stop() })
+	if n.listener == nil {
+		t.Fatalf("plain-TCP fixture started UDP-only on port %d", n.ListenPort())
+	}
 	return n
 }
 

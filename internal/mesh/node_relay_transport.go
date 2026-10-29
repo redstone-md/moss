@@ -69,6 +69,12 @@ func (n *Node) sendRelayFrame(sessionID string, data []byte) bool {
 	if !ok || viaPeer == nil || viaPeer.relayed || !session.established {
 		return false
 	}
+	if len(data) > relayDatagramPayloadBytes {
+		viaPeer = n.preferRelayStream(viaPeer)
+		if viaPeer == nil || viaPeer.relayed {
+			return false
+		}
+	}
 	n.mu.Lock()
 	if current, ok := n.relayLocals[sessionID]; ok {
 		current.lastSendAt = time.Now()

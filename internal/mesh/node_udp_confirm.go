@@ -54,8 +54,20 @@ func (n *Node) confirmAndRegisterUDPPeer(ctx context.Context, session *transport
 	if session == nil {
 		return errors.New("mesh: udp registration requires a session")
 	}
-	packet, ok := n.awaitUDPConfirm(ctx, session)
-	if !ok || !n.registerPeerFrom(session, outbound, origin) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	attempt, _ := ctx.Value(waitingAttemptKey{}).(uint64)
+	remoteID := session.RemoteID()
+	n.mu.RLock()
+	allowed := n.started && ctx.Err() == nil && n.waitingAdmissionAllowedLocked(hex.EncodeToString(remoteID[:]), outbound, attempt)
+	n.mu.RUnlock()
+	if !allowed {
+		_ = session.Close()
+		return errUDPUnconfirmed
+	}
+	packet, ok := n.awaitMeshConfirm(ctx, session)
+	if !ok || !n.registerPeerFromPacket(ctx, session, outbound, origin, attempt, packet) {
 		// Either the window expired with the far side silent, or the node
 		// refused its half of the session (capacity, duplicate, stopped) —
 		// registerPeerFrom has already closed the session in that case. For
@@ -68,16 +80,15 @@ func (n *Node) confirmAndRegisterUDPPeer(ctx context.Context, session *transport
 		}
 		return errUDPUnconfirmed
 	}
-	n.dispatchConfirmedPacket(session, packet)
 	return nil
 }
 
-// awaitUDPConfirm writes ping probes and waits for the first mesh packet to
+// awaitMeshConfirm writes existing ping probes and waits for a mesh packet to
 // cross the session. Exactly one read is in flight at a time: the confirming
 // packet is consumed here, everything after it stays queued for the read
 // loop registration starts, and nothing is read twice. A session error means
 // the far side (or Stop) closed underneath — the same verdict as silence.
-func (n *Node) awaitUDPConfirm(ctx context.Context, session *transport.Session) ([]byte, bool) {
+func (n *Node) awaitMeshConfirm(ctx context.Context, session *transport.Session) ([]byte, bool) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -116,7 +127,7 @@ func (n *Node) awaitUDPConfirm(ctx context.Context, session *transport.Session) 
 			}
 			// The confirm gate is "a mesh peer answered", not "anything at
 			// all arrived": the transport layer only promises decryption of
-			// Noise datagrams, and the review flagged that a malformed or
+			// Noise frames, and the review flagged that a malformed or
 			// unrelated packet would satisfy the old any-packet check and
 			// register a session the far side never spoke on. A packet is
 			// confirmation only if it parses as a mesh envelope — every

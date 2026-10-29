@@ -111,6 +111,7 @@ type Node struct {
 	heartbeat        uint64
 
 	mu              sync.RWMutex
+	activity        activityState
 	started         bool
 	supernodeActive bool
 	cancel          context.CancelFunc
@@ -124,11 +125,13 @@ type Node struct {
 	// admission control for future registrations only; DisallowPeer revokes
 	// and tears down live direct and relayed sessions. Guarded by mu;
 	// populated by AllowPeer/DisallowPeer before or during Start.
-	allowlist    map[string]struct{}
-	suppress     map[string]map[string]time.Time
-	relayRoutes  map[string]relayRoute
-	relayLocals  map[string]relayLocalSession
-	relayBuckets map[string]*nat.TokenBucket
+	allowlist      map[string]struct{}
+	suppress       map[string]map[string]time.Time
+	relayRoutes    map[string]relayRoute
+	relayLocals    map[string]relayLocalSession
+	relayAdmission uint64              // ordered first admissions and retirements, guarded by mu
+	relayRetired   map[[32]byte]uint64 // bounded closed-session replay rejection, guarded by mu
+	relayBuckets   map[string]*nat.TokenBucket
 	// relayConsumers tracks each source peer's rolling per-minute byte total
 	// against NAT.RelayConsumerCapBytes — a volunteer's quota guard distinct
 	// from the instantaneous bucket. Keyed by the source peer id (same key as
@@ -167,6 +170,8 @@ type Node struct {
 	rootCtx          context.Context
 
 	directProbes     map[string]time.Time
+	tcpDialMu        sync.Mutex
+	tcpDials         map[tcpDialKey]*tcpDialFlight
 	peerDials        map[string]time.Time
 	peerDialFailures map[string]int
 	// hostDials/hostDialFailures carry the dial budget per HOST: one dead
@@ -224,13 +229,15 @@ type Node struct {
 
 	// Stream-layer state for the mesh API on top of the transport mux:
 	// per-stream handlers and unreliable-stream flags are keyed by
-	// StreamID; streamReaders tracks which (peer, stream) pairs already
+	// StreamID; streamReaders tracks which (session, stream) pairs already
 	// have a reader goroutine so re-registering a handler or resending
-	// never double-spawns. streamMu guards all three maps; it is never
+	// never double-spawns; streamTails orders one identity's incarnations.
+	// streamMu guards all four maps; it is never
 	// held while taking n.mu (snapshot peers first, then lock streamMu).
 	streamMu         sync.RWMutex
 	streamHandlers   map[transport.StreamID]StreamHandler
-	streamReaders    map[string]map[transport.StreamID]bool
+	streamReaders    map[streamReaderKey]struct{}
+	streamTails      map[streamTailKey]chan struct{}
 	streamUnreliable map[transport.StreamID]bool
 
 	// Outbound per-peer envelope queues, drained by dedicated workers so no
@@ -327,10 +334,28 @@ type Node struct {
 	directedQueues map[[32]byte]chan any
 }
 
-type peerConn struct {
-	id      string
-	addr    string
+// A retained handover may have two sessions for one peer identity. Each
+// stream still has exactly one reader on each physical incarnation.
+type streamReaderKey struct {
 	session *transport.Session
+	stream  transport.StreamID
+}
+
+type streamTailKey struct {
+	peer   string
+	stream transport.StreamID
+}
+
+type peerConn struct {
+	readClosed      atomic.Bool
+	replacement     atomic.Pointer[carrierReplacement]
+	streamUpgradeMu sync.Mutex
+	streamUpgradeAt time.Time // guarded by streamUpgradeMu; bounds failed carrier probes
+
+	applicationUsed atomic.Bool // directed host traffic must survive carrier migration
+	id              string
+	addr            string
+	session         *transport.Session
 	// origin names the path that opened this session. A session that dies at
 	// zero seconds was a duplicate the dedup closed on arrival, and knowing
 	// WHICH path keeps producing them is the difference between fixing the
@@ -359,6 +384,7 @@ type peerConn struct {
 	lastRTT          time.Duration
 	relayed          bool
 	meshBlocked      time.Time // peer-wide health exclusion; topic PRUNEs live in pubsub
+	meshScoreBlocked time.Time // score-only mesh backoff must not suppress subscription interest
 	// graftedAt records when we last sent this peer a GRAFT, per channel, so
 	// the maintenance path does not re-graft on every heartbeat tick. See
 	// markMeshGrafted / meshGraftEligible in node_peer_discovery.go.
@@ -449,12 +475,15 @@ func (c *relayConsumer) charge(now time.Time, n int64) int64 {
 }
 
 type relayLocalSession struct {
-	sessionID    string
-	viaPeerID    string
-	remotePeerID string
-	established  bool
-	wait         chan struct{}
-	lastSendAt   time.Time
+	pending         *pendingRelayControl
+	sessionID       string
+	viaPeerID       string
+	remotePeerID    string
+	established     bool
+	wait            chan struct{}
+	lastSendAt      time.Time
+	applicationUsed bool
+	admission       uint64
 }
 
 const (
@@ -493,24 +522,28 @@ type knownPeer struct {
 }
 
 type meshInfo struct {
-	MeshID                string       `json:"mesh_id"`
-	ListenPort            int          `json:"listen_port"`
-	AdvertisedAddr        string       `json:"advertised_addr"`
-	PeerCount             int          `json:"peer_count"`
-	Peers                 []string     `json:"peers"`
-	PeerDetails           []peerDetail `json:"peer_details,omitempty"`
-	KnownPeerCount        int          `json:"known_peer_count"`
-	KnownPeers            []string     `json:"known_peers,omitempty"`
-	DirectPeerCount       int          `json:"direct_peer_count"`
-	RelayedPeerCount      int          `json:"relayed_peer_count"`
-	RelayCapablePeerCount int          `json:"relay_capable_peer_count"`
-	RelaySessionCount     int          `json:"relay_session_count"`
-	RelayRouteCount       int          `json:"relay_route_count"`
-	Channels              []string     `json:"channels"`
-	NATType               string       `json:"nat_type"`
-	PublicKey             string       `json:"public_key"`
-	SupernodeReady        bool         `json:"supernode_ready"`
-	TelemetryEnabled      bool         `json:"telemetry_enabled"`
+	ActivityMode           string       `json:"activity_mode"`
+	RequestedActivityMode  string       `json:"requested_activity_mode"`
+	WaitingReachability    string       `json:"waiting_reachability"`
+	WaitingAttachmentCount int          `json:"waiting_attachment_count"`
+	MeshID                 string       `json:"mesh_id"`
+	ListenPort             int          `json:"listen_port"`
+	AdvertisedAddr         string       `json:"advertised_addr"`
+	PeerCount              int          `json:"peer_count"`
+	Peers                  []string     `json:"peers"`
+	PeerDetails            []peerDetail `json:"peer_details,omitempty"`
+	KnownPeerCount         int          `json:"known_peer_count"`
+	KnownPeers             []string     `json:"known_peers,omitempty"`
+	DirectPeerCount        int          `json:"direct_peer_count"`
+	RelayedPeerCount       int          `json:"relayed_peer_count"`
+	RelayCapablePeerCount  int          `json:"relay_capable_peer_count"`
+	RelaySessionCount      int          `json:"relay_session_count"`
+	RelayRouteCount        int          `json:"relay_route_count"`
+	Channels               []string     `json:"channels"`
+	NATType                string       `json:"nat_type"`
+	PublicKey              string       `json:"public_key"`
+	SupernodeReady         bool         `json:"supernode_ready"`
+	TelemetryEnabled       bool         `json:"telemetry_enabled"`
 	// AxiomShipping tells an operator whether this node is actually reporting.
 	// A host can set the sink config and still ship nothing (the FFI dropped it
 	// silently for the whole client fleet); this makes that visible.
@@ -582,7 +615,7 @@ func (n *Node) OnStream(streamID transport.StreamID, handler StreamHandler) int3
 	n.streamMu.Lock()
 	if n.streamHandlers == nil {
 		n.streamHandlers = make(map[transport.StreamID]StreamHandler)
-		n.streamReaders = make(map[string]map[transport.StreamID]bool)
+		n.streamReaders = make(map[streamReaderKey]struct{})
 		n.streamUnreliable = make(map[transport.StreamID]bool)
 	}
 	n.streamHandlers[streamID] = handler
@@ -623,6 +656,10 @@ func (n *Node) snapshotPeersWithSession() []*peerConn {
 	peers := make([]*peerConn, 0, len(n.peers))
 	for _, peer := range n.peers {
 		if peer.session != nil {
+			// The predecessor first: its reader must own the older tail.
+			if state := peer.replacement.Load(); state != nil && !state.committed.Load() && !state.old.readClosed.Load() {
+				peers = append(peers, state.old)
+			}
 			peers = append(peers, peer)
 		}
 	}
@@ -636,16 +673,27 @@ func (n *Node) snapshotPeersWithSession() []*peerConn {
 // registration still get their inbound streams drained.
 func (n *Node) ensureStreamReaders() {
 	peers := n.snapshotPeersWithSession()
-	n.streamMu.RLock()
-	streamIDs := make([]transport.StreamID, 0, len(n.streamHandlers))
-	for streamID := range n.streamHandlers {
-		streamIDs = append(streamIDs, streamID)
-	}
-	n.streamMu.RUnlock()
+	streamIDs := n.registeredStreamIDs()
 	for _, peer := range peers {
 		for _, streamID := range streamIDs {
 			n.ensureStreamReader(peer, streamID)
 		}
+	}
+}
+
+func (n *Node) registeredStreamIDs() []transport.StreamID {
+	n.streamMu.RLock()
+	defer n.streamMu.RUnlock()
+	streamIDs := make([]transport.StreamID, 0, len(n.streamHandlers))
+	for streamID := range n.streamHandlers {
+		streamIDs = append(streamIDs, streamID)
+	}
+	return streamIDs
+}
+
+func (n *Node) ensureRegisteredStreamReaders(peer *peerConn) {
+	for _, id := range n.registeredStreamIDs() {
+		n.ensureStreamReader(peer, id)
 	}
 }
 
@@ -657,21 +705,19 @@ func (n *Node) ensureStreamReaders() {
 func (n *Node) ensureStreamReader(peer *peerConn, streamID transport.StreamID) {
 	n.streamMu.Lock()
 	if n.streamReaders == nil {
-		n.streamReaders = make(map[string]map[transport.StreamID]bool)
+		n.streamReaders = make(map[streamReaderKey]struct{})
 	}
 	handler, ok := n.streamHandlers[streamID]
 	if !ok || handler == nil {
 		n.streamMu.Unlock()
 		return
 	}
-	if n.streamReaders[peer.id] == nil {
-		n.streamReaders[peer.id] = make(map[transport.StreamID]bool)
-	}
-	if n.streamReaders[peer.id][streamID] {
+	key := streamReaderKey{peer.session, streamID}
+	if _, reading := n.streamReaders[key]; reading {
 		n.streamMu.Unlock()
 		return
 	}
-	n.streamReaders[peer.id][streamID] = true
+	n.streamReaders[key] = struct{}{}
 	unreliable := n.streamUnreliable[streamID]
 	n.streamMu.Unlock()
 
@@ -679,30 +725,63 @@ func (n *Node) ensureStreamReader(peer *peerConn, streamID transport.StreamID) {
 	if stream == nil {
 		// Mux closed: peer is going away; forget the marker so a future
 		// call retries if the session is replaced.
-		n.streamMu.Lock()
-		delete(n.streamReaders[peer.id], streamID)
-		n.streamMu.Unlock()
+		n.forgetStreamReader(peer, streamID)
 		return
 	}
 	if unreliable {
 		stream.SetLatestWins()
 	}
+	previous, done := n.claimStreamTail(peer.id, streamID)
 	n.wg.Add(1)
 	go func() {
 		defer n.wg.Done()
-		defer func() {
-			n.streamMu.Lock()
-			delete(n.streamReaders[peer.id], streamID)
-			n.streamMu.Unlock()
-		}()
+		defer n.forgetStreamReader(peer, streamID)
+		defer n.releaseStreamTail(peer.id, streamID, done)
+		if previous != nil {
+			<-previous
+		}
 		for {
 			data, err := stream.ReadPacket()
 			if err != nil {
 				return
 			}
+			n.mu.RLock()
+			if current := n.peers[peer.id]; current != nil {
+				current.applicationUsed.Store(true)
+			}
+			n.mu.RUnlock()
 			handler(peer.id, data)
 		}
 	}()
+}
+
+// Same-identity incarnations hand one stream to its handler in admission
+// order: a reader delivers only after its predecessor drained and exited.
+func (n *Node) claimStreamTail(peerID string, id transport.StreamID) (previous, done chan struct{}) {
+	n.streamMu.Lock()
+	defer n.streamMu.Unlock()
+	if n.streamTails == nil {
+		n.streamTails = make(map[streamTailKey]chan struct{})
+	}
+	key := streamTailKey{peerID, id}
+	previous, done = n.streamTails[key], make(chan struct{})
+	n.streamTails[key] = done
+	return previous, done
+}
+
+func (n *Node) releaseStreamTail(peerID string, id transport.StreamID, done chan struct{}) {
+	n.streamMu.Lock()
+	if key := (streamTailKey{peerID, id}); n.streamTails[key] == done {
+		delete(n.streamTails, key)
+	}
+	n.streamMu.Unlock()
+	close(done)
+}
+
+func (n *Node) forgetStreamReader(peer *peerConn, id transport.StreamID) {
+	n.streamMu.Lock()
+	defer n.streamMu.Unlock()
+	delete(n.streamReaders, streamReaderKey{peer.session, id})
 }
 
 // OpenStream resolves peerID (overlay lookup + hint dial if unknown — see
@@ -753,6 +832,8 @@ func (n *Node) SendStream(peerID string, streamID transport.StreamID, data []byt
 	if peer.session == nil {
 		return MOSS_ERR_NO_PEERS
 	}
+	peer.applicationUsed.Store(true)
+	peer = carrierWritePeer(peer, "")
 	if err := peer.session.Stream(streamID).WritePacket(data); err != nil {
 		return MOSS_ERR_CONNECT_FAILED
 	}

@@ -238,8 +238,9 @@ func TestLanNodeSelfCollisionReroute(t *testing.T) {
 	if newIP == nil || newIP.Equal(oldIP) {
 		t.Fatalf("self address %s did not move after losing the tie", oldIP)
 	}
-	if lan.SelfSalt() != 1 {
-		t.Fatalf("salt = %d, want 1 after one relocation", lan.SelfSalt())
+	moved := lan.SelfSalt()
+	if moved < 1 {
+		t.Fatalf("salt = %d, want a salted address after relocation", moved)
 	}
 	if !lan.presence.SelfIP().Equal(newIP) {
 		t.Fatalf("presence still announces %s, want the relocated %s", lan.presence.SelfIP(), newIP)
@@ -257,7 +258,7 @@ func TestLanNodeSelfCollisionReroute(t *testing.T) {
 	if !lan.SelfIP().Equal(newIP) {
 		t.Fatalf("moved again on a claim of the abandoned %s", oldIP)
 	}
-	if lan.SelfSalt() != 1 {
-		t.Fatalf("salt = %d after a no-op claim, want 1", lan.selfSalt)
+	if lan.SelfSalt() != moved {
+		t.Fatalf("salt = %d after a no-op claim, want %d", lan.SelfSalt(), moved)
 	}
 }

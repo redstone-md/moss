@@ -18,6 +18,9 @@ import (
 )
 
 func (n *Node) probePortMapping(ctx context.Context, listenAddr string, port int) {
+	if ctx.Err() != nil {
+		return
+	}
 	if observed, ok := n.requestSTUNBindingObservation(3 * time.Second); ok {
 		_ = n.applyExternalObservation(observed, time.Now().Add(n.config.HandshakeTimeout()))
 	}
@@ -25,7 +28,13 @@ func (n *Node) probePortMapping(ctx context.Context, listenAddr string, port int
 	// the profile can only ever be "unknown": one mapping has nothing to differ
 	// from, and "differs per destination" is the entire definition of symmetric
 	// NAT. An unclassified node goes on punching at peers it cannot reach.
+	if ctx.Err() != nil {
+		return
+	}
 	n.refreshNATClassification(4 * time.Second)
+	if ctx.Err() != nil {
+		return
+	}
 	mapper := nat.NewPortMapper(nat.MappingOptions{
 		EnableUPnP:   n.config.NAT.UPnPEnabled,
 		EnableNATPMP: n.config.NAT.NATPMPEnabled,
@@ -59,7 +68,7 @@ func (n *Node) probePortMapping(ctx context.Context, listenAddr string, port int
 	n.natProfile.Store(profile)
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	if !n.started {
+	if !n.started || ctx.Err() != nil {
 		mapper.Close()
 		return
 	}

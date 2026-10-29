@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/redstone-md/moss/internal/transport"
@@ -105,14 +106,18 @@ func (n *Node) handleVeilInbound(ctx context.Context, conn vtransport.Conn) {
 // redialing with backoff whenever it drops, so a client behind DPI keeps a
 // mesh foothold even when its ordinary UDP/TCP paths are throttled. It runs
 // under n.mu held by Start(); it must not re-lock.
-func (n *Node) startVeilDialers(ctx context.Context) {
+func (n *Node) startVeilDialers(ctx context.Context, workers *sync.WaitGroup) {
 	if !n.config.Veil.IsDialer() {
 		return
 	}
 	for _, relay := range n.config.Veil.Relays {
 		relay := relay
 		n.wg.Add(1)
-		go n.veilDialLoop(ctx, relay)
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			n.veilDialLoop(ctx, relay)
+		}()
 	}
 }
 
@@ -224,6 +229,16 @@ func (n *Node) veilDial(ctx context.Context, addr, coverSNI string, remoteStatic
 	}
 	remoteID := session.RemoteID()
 	peerID := hex.EncodeToString(remoteID[:])
-	n.registerPeerFrom(session, true, originVeilDial)
+	attempt, _ := ctx.Value(waitingAttemptKey{}).(uint64)
+	if !n.registerPeerFromContext(hsCtx, session, true, originVeilDial, attempt) {
+		if err := hsCtx.Err(); err != nil {
+			return "", err
+		}
+		// A duplicate yield keeps the peer through its existing session; any
+		// other refusal must back off instead of redialing at once.
+		if !n.peerConnected(peerID) {
+			return "", fmt.Errorf("veil: relay %s refused at registration", peerID)
+		}
+	}
 	return peerID, nil
 }

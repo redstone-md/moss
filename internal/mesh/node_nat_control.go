@@ -44,6 +44,9 @@ func (n *Node) handleBindingResponse(env gossip.Envelope) {
 }
 
 func (n *Node) handleReachabilityRequest(peer *peerConn, env gossip.Envelope) {
+	if n.waitingRequested() {
+		return
+	}
 	if env.RequestID == "" || env.AdvertisedAddr == "" {
 		return
 	}
@@ -128,6 +131,9 @@ func (n *Node) knownPeerNATType(peerID string) nat.Type {
 }
 
 func (n *Node) handleHolePunchCoord(peer *peerConn, env gossip.Envelope) {
+	if n.waitingRequested() {
+		return
+	}
 	if peer == nil || env.RelaySource == "" || env.RelayTarget == "" || env.AdvertisedAddr == "" {
 		return
 	}

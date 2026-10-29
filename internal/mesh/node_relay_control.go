@@ -25,6 +25,9 @@ const relayMigrationGracePeriod = time.Second
 const maxRelayPayloadBytes = 190 * 1024
 
 func (n *Node) handleRelayRequest(peer *peerConn, env gossip.Envelope) {
+	if n.waitingRequested() && env.RelayTarget != n.localPeerID() {
+		return
+	}
 	if env.RelaySession == "" || env.RelaySource == "" || env.RelayTarget == "" {
 		return
 	}
@@ -39,10 +42,19 @@ func (n *Node) handleRelayRequest(peer *peerConn, env gossip.Envelope) {
 			established:  true,
 		}
 		n.mu.Lock()
+		previousAdmission := n.relayLocals[session.sessionID].admission
+		session, admitted := n.admitRelaySessionLocked(session)
+		if !admitted {
+			n.mu.Unlock()
+			return
+		}
 		n.relayLocals[env.RelaySession] = session
 		relayPeer, capped := n.registerRelayedPeerLocked(session)
+		if !capped && session.admission != previousAdmission {
+			n.confirmExplicitRelayRecoveryLocked(session.remotePeerID)
+		}
 		if capped {
-			delete(n.relayLocals, env.RelaySession)
+			n.retireRelayLocalLocked(env.RelaySession)
 		}
 		n.mu.Unlock()
 		if capped {
@@ -89,6 +101,9 @@ func (n *Node) handleRelayRequest(peer *peerConn, env gossip.Envelope) {
 }
 
 func (n *Node) handleRelayAccept(peer *peerConn, env gossip.Envelope) {
+	if n.waitingRequested() && env.RelayTarget != n.localPeerID() {
+		return
+	}
 	if env.RelaySession == "" || env.RelaySource == "" || env.RelayTarget == "" {
 		return
 	}
@@ -104,9 +119,20 @@ func (n *Node) handleRelayAccept(peer *peerConn, env gossip.Envelope) {
 		n.mu.Lock()
 		session, ok := n.relayLocals[env.RelaySession]
 		if ok && session.viaPeerID == peer.id && session.remotePeerID == env.RelaySource {
+			previousAdmission := session.admission
+			var admitted bool
+			session, admitted = n.admitRelaySessionLocked(session)
+			if !admitted {
+				n.mu.Unlock()
+				return
+			}
 			session.established = true
+			session.pending = nil
 			relayPeer, capped = n.registerRelayedPeerLocked(session)
 			if !capped {
+				if session.admission != previousAdmission {
+					n.confirmExplicitRelayRecoveryLocked(session.remotePeerID)
+				}
 				n.relayLocals[env.RelaySession] = session
 				if session.wait != nil {
 					close(session.wait)
@@ -144,6 +170,9 @@ func (n *Node) handleRelayAccept(peer *peerConn, env gossip.Envelope) {
 }
 
 func (n *Node) handleRelayData(peer *peerConn, env gossip.Envelope) {
+	if n.waitingRequested() && env.RelayTarget != n.localPeerID() {
+		return
+	}
 	if env.RelaySession == "" || env.RelaySource == "" || env.RelayTarget == "" {
 		return
 	}
@@ -163,6 +192,7 @@ func (n *Node) handleRelayData(peer *peerConn, env gossip.Envelope) {
 		// cannot open is counted and dropped, never handed to the
 		// application unread.
 		if plaintext, err := n.openDMPayload(env.RelaySource, env.Payload); err == nil {
+			n.markRelayApplicationUsed(session.sessionID)
 			var sender [32]byte
 			if raw, err := hex.DecodeString(env.RelaySource); err == nil {
 				copy(sender[:], raw)
@@ -373,17 +403,25 @@ func (n *Node) handleRelayClose(peer *peerConn, env gossip.Envelope) {
 	if env.RelaySession == "" {
 		return
 	}
+	recovering := false
 	n.mu.Lock()
 	if session, ok := n.relayLocals[env.RelaySession]; ok && peer != nil && session.viaPeerID == peer.id {
+		if n.waitingRequested() {
+			n.retainWaitingApplicationPathLocked(session)
+			recovering = n.activity.recovering[session.remotePeerID] != nil
+		}
 		if n.removeRelayedPeerLocked(session) {
 			n.pubsub.RemovePeer(session.remotePeerID)
 		}
 	}
-	delete(n.relayLocals, env.RelaySession)
+	n.retireRelayLocalLocked(env.RelaySession)
 	delete(n.relayRoutes, env.RelaySession)
 	// The session was torn down explicitly — no expiry reply is owed.
 	delete(n.relayRouteExpiry, env.RelaySession)
 	n.mu.Unlock()
+	if recovering {
+		n.wakeActivity()
+	}
 	n.relaySessions.Release(env.RelaySession)
 	n.refreshSupernodeStatus()
 	if env.RelayTarget == "" || env.RelayTarget == n.localPeerID() {
@@ -430,7 +468,7 @@ func (n *Node) deferRelayMigration(session relayLocalSession) {
 		started := n.started
 		current, ok := n.relayLocals[session.sessionID]
 		n.mu.RUnlock()
-		if !started || !ok || current.remotePeerID != session.remotePeerID {
+		if !started || !ok || current.remotePeerID != session.remotePeerID || !n.directPeerConnected(session.remotePeerID) {
 			return
 		}
 		n.closeRelaySession(current)
@@ -451,12 +489,12 @@ func (n *Node) closeRelaySession(session relayLocalSession) {
 	}
 	n.mu.Lock()
 	removedPeer := n.removeRelayedPeerLocked(session)
-	delete(n.relayLocals, session.sessionID)
+	n.retireRelayLocalLocked(session.sessionID)
 	delete(n.directProbes, session.remotePeerID)
-	n.mu.Unlock()
 	if removedPeer {
 		n.pubsub.RemovePeer(session.remotePeerID)
 	}
+	n.mu.Unlock()
 	n.enqueueEvent(EventRelayMigrated, map[string]string{
 		"peer":    session.remotePeerID,
 		"session": session.sessionID,
@@ -562,7 +600,13 @@ func (n *Node) registerRelayedPeerLocked(session relayLocalSession) (*peerConn, 
 		return nil, false
 	}
 	existing := n.peers[session.remotePeerID]
-	if existing != nil && !existing.relayed {
+	if existing != nil && existing.relayed {
+		current := n.relayLocals[existing.relaySessionID]
+		if current.admission > session.admission {
+			return existing, false
+		}
+	}
+	if existing != nil && !existing.relayed && (!n.waitingRequested() || session.remotePeerID == n.activity.attachment || session.remotePeerID == n.activity.candidate) {
 		return nil, false
 	}
 	if len(n.knownPeers[session.remotePeerID].noiseStatic) != 32 {
@@ -596,7 +640,13 @@ func (n *Node) registerRelayedPeerLocked(session relayLocalSession) (*peerConn, 
 		relaySessionID: session.sessionID,
 		connectedAt:    time.Now(),
 	}
+	if existing != nil {
+		peer.applicationUsed.Store(existing.applicationUsed.Load())
+	} else {
+		peer.applicationUsed.Store(session.applicationUsed)
+	}
 	n.peers[session.remotePeerID] = peer
+	n.deferDirectMigrationLocked(existing)
 	info := n.knownPeers[session.remotePeerID]
 	info.id = session.remotePeerID
 	info.direct = false
@@ -628,10 +678,23 @@ func (n *Node) relayPeerForSession(session relayLocalSession) *peerConn {
 	return &peerConn{id: session.remotePeerID, addr: "relay:" + session.viaPeerID, relayed: true, viaPeerID: session.viaPeerID, relaySessionID: session.sessionID}
 }
 
+// Return true only when the matching current incarnation leaves. Historical
+// sessions are not evidence that their remote endpoint is still reachable.
 func (n *Node) removeRelayedPeerLocked(session relayLocalSession) bool {
 	peer := n.peers[session.remotePeerID]
 	if peer == nil || !peer.relayed || peer.relaySessionID != session.sessionID {
 		return false
+	}
+	// An explicit application target reached by relay may now be waiting on
+	// another carrier. Refresh that identity before a refused direct handshake
+	// can repeatedly look successful to an ordinary, non-opted-in caller.
+	if session.established {
+		if target := n.explicitTargets[session.remotePeerID]; target != nil {
+			target.identityRetry = true
+			if n.peers[session.viaPeerID] == nil {
+				target.recoveryVia = session.viaPeerID
+			}
+		}
 	}
 	delete(n.peers, session.remotePeerID)
 	return true
@@ -683,7 +746,15 @@ func (n *Node) relayConsumerCapped(consumerID string, bytes int64, now time.Time
 // explicit close on both legs is the only thing that propagates past the
 // relay itself.
 func (n *Node) closeRelayRouteWithClose(sessionID, source, target string) {
+	n.closeRelayRouteForPolicy(sessionID, source, target, nil)
+}
+
+func (n *Node) closeRelayRouteForPolicy(sessionID, source, target string, waitingAttempt *uint64) {
 	n.mu.Lock()
+	if waitingAttempt != nil && (!n.started || !n.waitingRequested() || n.activity.attempt != *waitingAttempt) {
+		n.mu.Unlock()
+		return
+	}
 	_, hadRoute := n.relayRoutes[sessionID]
 	delete(n.relayRoutes, sessionID)
 	sourcePeer := n.peers[source]
@@ -705,5 +776,16 @@ func (n *Node) closeRelayRouteWithClose(sessionID, source, target string) {
 	}
 	if targetPeer != nil && targetPeer != sourcePeer {
 		n.sendEnvelope(targetPeer, msg)
+	}
+}
+
+// Fresh authenticated relay control consumes the remembered carrier and
+// ordinary identity recovery; old local state is not current remote admission.
+func (n *Node) confirmExplicitRelayRecoveryLocked(peerID string) {
+	if target := n.explicitTargets[peerID]; target != nil {
+		target.recoveryVia = ""
+		if !n.activity.optedIn {
+			target.identityRetry = false
+		}
 	}
 }

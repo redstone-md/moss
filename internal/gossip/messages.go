@@ -25,6 +25,12 @@ const (
 	TypePong                 EnvelopeType = "pong"
 	TypeStatDelta            EnvelopeType = "stat_delta"
 
+	// TypeCarrierRetire is sent on a direct session its sender is about to
+	// close after moving the peer to a relay. The receiver stops writing to
+	// that session while the sender still drains it. Older nodes ignore the
+	// type and observe the close as before.
+	TypeCarrierRetire EnvelopeType = "carrier_retire"
+
 	// TypeDirect carries raw directed data between two peers: one payload,
 	// one recipient, no room. SendToPeer sends it down a direct Noise
 	// session — already encrypted on the wire — so the payload rides the

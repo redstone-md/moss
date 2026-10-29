@@ -104,20 +104,20 @@ func TestExplicitOfflineBackoffIsOptIn(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			caller, err := NewNode("mesh-explicit-target", nil, cfg)
+			caller, err := NewNode("mesh-explicit-target", nil, withFixtureListenPort(cfg))
 			if err != nil {
 				t.Fatal(err)
 			}
 			if code := caller.Start(); code != MOSS_OK {
-				t.Fatal(code)
+				t.Fatalf("caller Start: %d (%s)", code, caller.LastError())
 			}
 			t.Cleanup(func() { caller.Stop() })
-			neighbor, err := NewNode("mesh-explicit-target", nil, cfg)
+			neighbor, err := NewNode("mesh-explicit-target", nil, withFixtureListenPort(cfg))
 			if err != nil {
 				t.Fatal(err)
 			}
 			if code := neighbor.Start(); code != MOSS_OK {
-				t.Fatal(code)
+				t.Fatalf("neighbor Start: %d (%s)", code, neighbor.LastError())
 			}
 			t.Cleanup(func() { neighbor.Stop() })
 			if code := caller.Connect(nodeAddr(neighbor)); code != MOSS_OK {

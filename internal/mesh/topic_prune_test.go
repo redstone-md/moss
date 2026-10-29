@@ -275,13 +275,16 @@ func TestRetiredPreferredRelayCannotChangeTopic(t *testing.T) {
 	if !node.pubsub.InMesh("alpha", peer.id) {
 		t.Fatal("a live preferred relay must be admitted")
 	}
+	// Live admission may send a reciprocal claim. Retirement must not
+	// advance its existing marker or recreate any topic state.
+	lastGraft := peer.graftedAt["alpha"]
 	delete(node.relayLocals, "preferred")
 	node.pubsub.RemovePeer(peer.id)
 	node.handleEnvelope(peer, gossip.Envelope{Type: gossip.TypeGraft, Channel: "alpha"})
 	node.handleEnvelope(peer, gossip.Envelope{Type: gossip.TypePrune, Channel: "alpha"})
 	node.markMeshGrafted(peer, "alpha", time.Now())
 	if node.pubsub.HasPeerSubscription(peer.id, "alpha") ||
-		node.pubsub.InBackoff("alpha", peer.id, time.Now()) || len(peer.graftedAt) != 0 {
+		node.pubsub.InBackoff("alpha", peer.id, time.Now()) || !peer.graftedAt["alpha"].Equal(lastGraft) {
 		t.Fatal("a retired preferred relay recreated topic state")
 	}
 }

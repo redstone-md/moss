@@ -16,10 +16,11 @@ const (
 	// dispatches these yet — hosts that want them carry their own protocol
 	// inside the payload and emit their own events. Values are pinned here so
 	// every host agrees on the numbering when that layer exists.
-	EventMessageDelivered = 8
-	EventMessageRead      = 9
-	EventTyping           = 10
-	EventPresence         = 11
+	EventMessageDelivered    = 8
+	EventMessageRead         = 9
+	EventTyping              = 10
+	EventPresence            = 11
+	EventActivityModeChanged = 12
 )
 
 type MessageCallback func(channel string, senderID [32]byte, data []byte)

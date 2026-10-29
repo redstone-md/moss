@@ -5,9 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"net"
 	"sort"
-	"strconv"
 	"time"
 
 	"github.com/redstone-md/moss/internal/bootstrap"
@@ -179,50 +177,25 @@ func (n *Node) Start() int32 {
 	var ln *transport.Listener
 	var udpListener *transport.UDPListener
 	var port int
+	handshake := transport.HandshakeConfig{
+		MeshID:      n.networkID,
+		PSK:         n.transportHandshakePSK(),
+		Identity:    n.identity,
+		Buffers:     transportBufferConfig(n.config.Transport),
+		BindIfIndex: n.bindIfIndex,
+		ObfsPadMax:  n.config.obfsPadMax(),
+		ObfsPadData: !n.config.Transport.HighThroughput,
+	}
+	var listenErr error
 	if masqEnabled {
-		listenAddr := net.JoinHostPort("", strconv.Itoa(n.config.ListenPort))
-		l, err := transport.MasqListen(listenAddr, n.config.MasqConfig.CoverSNI)
-		if err != nil {
-			n.setLastError(err.Error())
-			n.reportErrorToAxiom("listen_failed", err.Error(), nil)
-			return MOSS_ERR_LISTEN_FAILED
-		}
-		masqLn = l
-		// Port 0 asked the OS to choose; the masquerade's port is now THE
-		// node port, and the UDP half must share it so discovery and NAT
-		// mapping stay consistent.
-		masqPort := l.Addr().(*net.TCPAddr).Port
-		udpListener, port, err = transport.ListenUDP(masqPort, transport.HandshakeConfig{
-			MeshID:      n.networkID,
-			PSK:         n.transportHandshakePSK(),
-			Identity:    n.identity,
-			Buffers:     transportBufferConfig(n.config.Transport),
-			BindIfIndex: n.bindIfIndex,
-			ObfsPadMax:  n.config.obfsPadMax(),
-			ObfsPadData: !n.config.Transport.HighThroughput,
-		})
-		if err != nil {
-			_ = l.Close()
-			n.setLastError(err.Error())
-			n.reportErrorToAxiom("listen_failed", err.Error(), nil)
-			return MOSS_ERR_LISTEN_FAILED
-		}
+		masqLn, udpListener, port, listenErr = transport.ListenMasqPair(n.config.ListenPort, n.config.MasqConfig.CoverSNI, handshake)
 	} else {
-		var err error
-		ln, udpListener, port, err = transport.ListenPair(n.config.ListenPort, transport.HandshakeConfig{
-			MeshID:      n.networkID,
-			PSK:         n.transportHandshakePSK(),
-			Identity:    n.identity,
-			Buffers:     transportBufferConfig(n.config.Transport),
-			BindIfIndex: n.bindIfIndex,
-			ObfsPadMax:  n.config.obfsPadMax(),
-			ObfsPadData: !n.config.Transport.HighThroughput,
-		})
-		if err != nil {
-			n.setLastError(err.Error())
-			n.reportErrorToAxiom("listen_failed", err.Error(), nil)
-			return MOSS_ERR_LISTEN_FAILED
-		}
+		ln, udpListener, port, listenErr = transport.ListenPair(n.config.ListenPort, handshake)
+	}
+	if listenErr != nil {
+		n.setLastError(listenErr.Error())
+		n.reportErrorToAxiom("listen_failed", listenErr.Error(), nil)
+		return MOSS_ERR_LISTEN_FAILED
 	}
 	if masqLn != nil {
 		n.masqListener = masqLn
@@ -240,6 +213,27 @@ func (n *Node) Start() int32 {
 	n.startedAt = time.Now()
 	n.cancel = cancel
 	n.rootCtx = ctx
+	n.activity.wake = make(chan struct{}, 1)
+	n.activity.maintenanceWake = make(chan struct{}, 1)
+	n.activity.networkWake = make(chan struct{}, 1)
+	n.activity.networkPending = false
+	n.activity.networkDue = time.Time{}
+	n.activity.networkLast = time.Time{}
+	n.activity.reachability = "unavailable"
+	n.activity.actual = ActivityActive
+	n.activity.optedIn = false
+	n.activity.requested.Store(int32(ActivityActive))
+	n.activity.attachment = ""
+	n.activity.candidate = ""
+	n.activity.candidateAddr = ""
+	n.activity.retry = 0
+	n.activity.lastCandidate = ""
+	n.activity.lastReport = activityReport{}
+	n.activity.presenceAt = time.Time{}
+	n.activity.presencePeers = [2]*peerConn{}
+	n.activity.rendezvous = nil
+	n.activity.recovering = nil
+	n.activity.migrationOwned = false
 	// Per-channel local delivery queues hold no state worth carrying across a
 	// restart: each is bound to a worker goroutine from the PREVIOUS run,
 	// whose rootCtx is cancelled. Reusing them would enqueue messages into a
@@ -265,14 +259,11 @@ func (n *Node) Start() int32 {
 	// Loops that call n.wg.Done(): acceptUDPLoop, dispatchLoop, bootstrapLoop,
 	// maintenanceLoop, and — when the plain or masqueraded TCP ear is up —
 	// the matching accept loop.
-	wgCount := 4
+	wgCount := 3
 	if ln != nil {
 		wgCount++
 	}
 	if masqLn != nil {
-		wgCount++
-	}
-	if n.config.LANDiscoveryEnabled && !transport.RunningGoTest() {
 		wgCount++
 	}
 	n.wg.Add(wgCount)
@@ -284,55 +275,18 @@ func (n *Node) Start() int32 {
 	}
 	go n.acceptUDPLoop(ctx)
 	go n.dispatchLoop(ctx)
-	go n.bootstrapLoop(ctx)
 	go n.maintenanceLoop(ctx)
-	if n.config.LANDiscoveryEnabled && !transport.RunningGoTest() {
-		go n.lanDiscoveryLoop(ctx)
-	}
-	if n.statAgg != nil {
-		n.wg.Add(1)
-		go n.statLoop(ctx)
-	}
-	n.startVeilBearer(ctx)
-	n.startVeilDialers(ctx)
 	n.wg.Add(1)
-	go n.overlayPublishLoop(ctx)
-	go n.probePortMapping(ctx, listenAddrStr, port)
+	go n.activityLoop(ctx)
+	n.startVeilBearer(ctx)
+	n.startActiveWorkersLocked()
 	n.startDebugPlane()
 	go func() {
 		if addrs := loadPeerCache(n.config.PeerCachePath, n.config.peerCacheTTL()); len(addrs) > 0 {
 			n.rememberTrackerSeeds(addrs)
+			n.wakeActivity()
 		}
 	}()
-	// Never run the real BitTorrent DHT under `go test`: it would announce the
-	// (now NetworkID-derived) infohash to the public DHT and pull real
-	// production nodes into the test, breaking topology/peer-count assertions.
-	// Mirrors the LAN-discovery guard above.
-	if n.config.DHTEnabled && !transport.RunningGoTest() {
-		n.wg.Add(1)
-		go func() {
-			defer n.wg.Done()
-			src, err := startDHTSource(n.infoHash, n.config.DHTPort, n.bindIfIndex, n.config.AnnounceInterval(), n.announcePort, func(addrs []string) {
-				n.rememberTrackerSeeds(addrs)
-				n.kickBootstrapPeers(ctx, addrs)
-			})
-			if err != nil {
-				return // best-effort: DHT bind/announce failure must not affect the node
-			}
-			n.mu.Lock()
-			stopped := !n.started
-			if !stopped {
-				n.dht = src
-			}
-			n.mu.Unlock()
-			if stopped {
-				src.Close() // Stop() already ran; don't orphan the source
-				return
-			}
-			<-ctx.Done() // run until shutdown
-			src.Close()
-		}()
-	}
 	return MOSS_OK
 }
 
@@ -361,6 +315,18 @@ func (n *Node) Stop() int32 {
 		return MOSS_ERR_NOT_STARTED
 	}
 	n.started = false
+	n.activity.rendezvous = nil
+	n.activity.presencePeers = [2]*peerConn{}
+	n.activity.presenceAt = time.Time{}
+	n.activity.requested.Store(int32(ActivityActive))
+	n.activity.actual = ActivityActive
+	n.activity.activeCancel = nil
+	n.activity.reachability = "unavailable"
+	n.activity.attachment = ""
+	n.activity.candidate = ""
+	n.activity.candidateAddr = ""
+	n.activity.recovering = nil
+	n.activity.migrationOwned = false
 	cancel := n.cancel
 	listener := n.listener
 	udpListener := n.udpListener.Load()
@@ -389,6 +355,8 @@ func (n *Node) Stop() int32 {
 	}
 	n.relayRoutes = make(map[string]relayRoute)
 	n.relayLocals = make(map[string]relayLocalSession)
+	n.relayRetired = nil
+	n.relayAdmission = 0
 	n.relayBuckets = make(map[string]*nat.TokenBucket)
 	n.relayConsumers = make(map[string]*relayConsumer)
 	n.suppress = make(map[string]map[string]time.Time)
@@ -737,6 +705,13 @@ func (n *Node) MeshInfoJSON() string {
 		AxiomShipping:    n.AxiomEnabled(),
 	}
 	n.mu.RLock()
+	info.ActivityMode = n.activity.actual.String()
+	info.RequestedActivityMode = ActivityMode(n.activity.requested.Load()).String()
+	info.WaitingReachability = n.activity.reachability
+	if info.WaitingReachability == "" {
+		info.WaitingReachability = "unavailable"
+	}
+	info.WaitingAttachmentCount = n.waitingAttachmentCountLocked()
 	info.PeerCount = len(n.peers)
 	for peerID, peer := range n.peers {
 		if peer.relayed {

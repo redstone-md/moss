@@ -111,7 +111,7 @@ func (n *Node) handleInbound(ctx context.Context, conn net.Conn) {
 		_ = conn.Close()
 		return
 	}
-	n.registerPeerFrom(session, false, originInboundTCP)
+	n.registerPeerFromContext(hsCtx, session, false, originInboundTCP, 0)
 }
 
 // masqAcceptLoop drains the uTLS-masquerade listener: each accepted conn is
@@ -169,7 +169,7 @@ func (n *Node) handleMasqInbound(ctx context.Context, conn net.Conn) {
 		_ = conn.Close()
 		return
 	}
-	n.registerPeerFrom(session, false, originInboundMasq)
+	n.registerPeerFromContext(hsCtx, session, false, originInboundMasq, 0)
 }
 
 func (n *Node) bootstrapLoop(ctx context.Context) {
@@ -339,6 +339,7 @@ func (n *Node) readPeer(peer *peerConn) {
 	for {
 		packet, err := peer.session.ReadPacket()
 		if err != nil {
+			peer.readClosed.Store(true)
 			return
 		}
 		peer.inboundPackets.Add(1)
@@ -521,6 +522,12 @@ func (n *Node) connectPeer(ctx context.Context, addr string) error {
 }
 
 func (n *Node) connectPeerWithHint(ctx context.Context, addr, peerID string) error {
+	if ctx == nil {
+		return errors.New("mesh: peer dial requires a non-nil context")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if addr == "" {
 		return errors.New("peer address is required")
 	}
@@ -532,7 +539,14 @@ func (n *Node) connectPeerWithHint(ctx context.Context, addr, peerID string) err
 		return nil
 	}
 	n.mu.RLock()
-	if n.directPeerCountLocked() >= n.config.MaxPeers {
+	attempt, _ := ctx.Value(waitingAttemptKey{}).(uint64)
+	waitingDial := n.waitingRequested() && ((peerID != "" && (peerID == n.activity.candidate || peerID == n.activity.attachment)) ||
+		(attempt != 0 && attempt == n.activity.attempt && addr == n.activity.candidateAddr))
+	if n.waitingRequested() && !waitingDial {
+		n.mu.RUnlock()
+		return errors.New("direct dialing suspended in waiting mode")
+	}
+	if n.directPeerCountLocked() >= n.config.MaxPeers && !(waitingDial && n.physicalPeerCountLocked() < 2) {
 		n.mu.RUnlock()
 		return errors.New("max peers reached")
 	}
@@ -567,7 +581,7 @@ func (n *Node) connectPeerWithHint(ctx context.Context, addr, peerID string) err
 	return n.connectPeerTCPWithHint(ctx, addr, peerID)
 }
 
-func (n *Node) connectPeerTCPWithHint(ctx context.Context, addr, peerID string) error {
+func (n *Node) dialPeerTCPWithHint(ctx context.Context, addr, peerID string) error {
 	remoteStatic := n.cachedRemoteStatic(peerID, addr)
 	if err := n.connectPeerOnce(ctx, addr, remoteStatic); err != nil {
 		if len(remoteStatic) == 32 && ctx.Err() == nil {
@@ -655,7 +669,13 @@ func (n *Node) clientHandshakeAndRegister(ctx context.Context, conn net.Conn, ad
 		return err
 	}
 	n.emitDial(addr, "", "handshake", nil, time.Since(started))
-	n.registerPeerFrom(session, true, originDialTCP)
+	attempt, _ := ctx.Value(waitingAttemptKey{}).(uint64)
+	if n.relayUpgradeNeedsConfirmation(session, attempt) {
+		return n.confirmAndRegisterRelayUpgrade(hsCtx, session, attempt)
+	}
+	if !n.registerPeerFromContext(hsCtx, session, true, originDialTCP, attempt) && hsCtx.Err() != nil {
+		return hsCtx.Err()
+	}
 	return nil
 }
 
@@ -678,6 +698,18 @@ const (
 // peer from a candidate whose far side silently refused — a datagram carrier
 // never signals the refusal to the dialer across the wire.
 func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origin string) bool {
+	return n.registerPeerFromAttempt(session, outbound, origin, 0)
+}
+
+func (n *Node) registerPeerFromAttempt(session *transport.Session, outbound bool, origin string, attempt uint64) bool {
+	return n.registerPeerFromContext(context.Background(), session, outbound, origin, attempt)
+}
+
+func (n *Node) registerPeerFromContext(ctx context.Context, session *transport.Session, outbound bool, origin string, attempt uint64) bool {
+	return n.registerPeerFromPacket(ctx, session, outbound, origin, attempt, nil)
+}
+
+func (n *Node) registerPeerFromPacket(ctx context.Context, session *transport.Session, outbound bool, origin string, attempt uint64, packet []byte) bool {
 	remoteID := session.RemoteID()
 	peerID := hex.EncodeToString(remoteID[:])
 	addr := session.RemoteAddr().String()
@@ -686,10 +718,18 @@ func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origi
 	var overflowPeer *peerConn
 	var replacedPeer *peerConn
 	n.mu.Lock()
-	if !n.started {
+	if !n.started || ctx.Err() != nil {
 		n.mu.Unlock()
 		_ = session.Close()
 		return false
+	}
+	if !n.waitingAdmissionAllowedLocked(peerID, outbound, attempt) {
+		n.mu.Unlock()
+		_ = session.Close()
+		return false
+	}
+	if n.waitingRequested() && peerID != n.activity.attachment && peerID != n.activity.candidate {
+		n.activity.candidate = peerID
 	}
 	if peerID == n.localPeerID() {
 		delete(n.trackerSeeds, addr)
@@ -765,11 +805,12 @@ func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origi
 	// different connection). The scores themselves are knowingly a
 	// microsecond stale; re-scoring under the lock would re-break the
 	// invariant the scan just fixed.
-	if replacedPeer == nil && n.directPeerCountLocked() >= n.config.MaxPeers {
+	waitingSlot := n.waitingRequested() && peerID == n.activity.candidate && n.physicalPeerCountLocked() < 2
+	if replacedPeer == nil && n.directPeerCountLocked() >= n.config.MaxPeers && !waitingSlot {
 		n.mu.Unlock()
 		victim := n.selectOverflowPrunePeerLocked()
 		n.mu.Lock()
-		if !n.started || n.peers[peerID] != replacedPeer {
+		if !n.started || n.peers[peerID] != replacedPeer || !n.waitingAdmissionAllowedLocked(peerID, outbound, attempt) {
 			n.mu.Unlock()
 			_ = session.Close()
 			return false
@@ -786,11 +827,24 @@ func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origi
 		// Capacity freed while the lock was down (a peer left): the
 		// newcomer is admitted without evicting anyone.
 	}
+	replacement, accepted := n.prepareCarrierReplacementLocked(replacedPeer)
+	if !accepted {
+		n.mu.Unlock()
+		_ = session.Close()
+		return false
+	}
 	bootstrapSeed := !n.trackerSeeds[addr].IsZero()
 	peer := &peerConn{
 		id: peerID, addr: addr, session: session, origin: origin,
 		outbound: outbound, bootstrap: bootstrapSeed, connectedAt: time.Now(),
 		announceBudget: nat.NewTokenBucket(announceBurst, announceRatePerSecond),
+	}
+	peer.replacement.Store(replacement)
+	if n.activity.rendezvous == replacedPeer && replacement != nil {
+		n.activity.rendezvous = peer
+	}
+	if replacedPeer != nil {
+		peer.applicationUsed.Store(replacedPeer.applicationUsed.Load())
 	}
 	current := n.knownPeers[peerID]
 	knownAddr := addr
@@ -833,7 +887,7 @@ func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origi
 	// here, outside n.mu: enqueueEvent is non-blocking (a full dispatch
 	// queue drops, counted), so the accept path never waits on dispatch
 	// backpressure — and events stay out of the node lock regardless.
-	if replacedPeer != nil && replacedPeer.session != nil {
+	if replacedPeer != nil && replacedPeer.session != nil && replacement == nil {
 		replacedPeer.closeSession()
 	}
 	if overflowPeer != nil {
@@ -873,11 +927,14 @@ func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origi
 		n.introduceSelfTo(peer)
 		n.announceSelfToPeers(peerID)
 		n.migrateRelaySessions(peerID)
+		n.ensureRegisteredStreamReaders(peer)
 		for _, channel := range n.pubsub.SnapshotLocal() {
 			n.maintainTopicMesh(channel)
 		}
 	}()
-	go n.refreshExternalAddress(time.Now().Add(n.config.HandshakeTimeout()))
+	if !n.waitingRequested() {
+		go n.refreshExternalAddress(time.Now().Add(n.config.HandshakeTimeout()))
+	}
 	n.mu.Lock()
 	delete(n.directProbes, peerID)
 	delete(n.peerDials, peerID)
@@ -885,6 +942,13 @@ func (n *Node) registerPeerFrom(session *transport.Session, outbound bool, origi
 	if replacedPeer == nil {
 		n.enqueueEvent(EventPeerJoined, map[string]string{"peer": peerID, "addr": addr})
 	}
+	if packet != nil {
+		n.dispatchConfirmedPacket(session, packet)
+	}
+	if !n.awaitCarrierReplacement(ctx, peer, replacement) {
+		return false
+	}
+	n.replayPendingRelayRequests(peer)
 	return true
 }
 
@@ -976,7 +1040,7 @@ func (n *Node) evictPeerLocked(victim *peerConn) {
 	for sessionID, relaySession := range n.relayLocals {
 		if relaySession.viaPeerID == victim.id || relaySession.remotePeerID == victim.id {
 			n.removeRelayedPeerLocked(relaySession)
-			delete(n.relayLocals, sessionID)
+			n.retireRelayLocalLocked(sessionID)
 			delete(n.directProbes, relaySession.remotePeerID)
 		}
 	}

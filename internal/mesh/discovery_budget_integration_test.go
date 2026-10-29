@@ -14,7 +14,7 @@ func startDiscoveryBudgetNode(t *testing.T) *Node {
 	cfg := isolatedTestConfig(t.Name())
 	cfg.GossipSub.D, cfg.GossipSub.DLo, cfg.GossipSub.DHigh, cfg.GossipSub.DOut = 1, 1, 1, 1
 	cfg.Security.HandshakeTimeoutSec = 1
-	node, err := NewNode("discovery-budget-contact", nil, cfg)
+	node, err := NewNode("discovery-budget-contact", nil, withFixtureListenPort(cfg))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,5 +92,29 @@ func TestAutomaticRelayFallbackRespectsDiscoveryGoal(t *testing.T) {
 			}
 			assertRelayMessages(t, caller, target)
 		})
+	}
+}
+
+// A discovery dial still in flight when Waiting begins must not grow the mesh
+// through its relay fallback.
+func TestDiscoveryRelayFallbackStopsOnceWaitingBegins(t *testing.T) {
+	core := startCappedOverlayNode(t, "waiting-relay-core")
+	makeCore(core)
+	cfg := overlayTestConfig()
+	cfg.GossipSub.D, cfg.GossipSub.DLo, cfg.GossipSub.DOut = 1, 1, 1
+	cfg.GossipSub.DHigh = 2
+	cfg.Security.HandshakeTimeoutSec = 1
+	caller := startOverlayNodeWithConfig(t, "waiting-relay-caller", cfg, 1)
+	target := startCappedOverlayNode(t, "waiting-relay-target", 1)
+	attachLeaf(t, caller, core)
+	attachLeaf(t, target, core)
+	caller.handleEnvelope(caller.peerByID(core.localPeerID()), core.signSupernodeEnvelope(gossip.Envelope{
+		Type: gossip.TypeSupernodeAnnounce, AdvertisedPeerID: core.localPeerID(), AdvertisedAddr: nodeAddr(core),
+		AdvertisedNATType: string(nat.TypePublic), AdvertisedReachable: true, AdvertisedRelayCapable: true,
+	}))
+	caller.activity.requested.Store(int32(ActivityWaiting))
+	caller.dialKnownPeer(target.localPeerID(), nodeAddr(target))
+	if caller.peerByID(target.localPeerID()) != nil {
+		t.Fatal("a discovery dial added a relayed peer after Waiting began")
 	}
 }

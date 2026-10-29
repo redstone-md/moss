@@ -405,6 +405,11 @@ func (n *Node) dialKnownPeer(peerID, addr string) {
 		// record on that machine is immediately worth a dial again.
 		n.noteHostDialOutcome(dialAddr, true)
 	} else {
+		// Waiting began while this discovery dial was in flight: that is
+		// neither a host failure nor a reason to grow through the carrier.
+		if n.waitingRequested() {
+			return
+		}
 		// The direct leg burned and produced nothing, so the host gets the
 		// failure — charged here and not after the relay attempts, because a
 		// relayed session proves the PEER is reachable, never that the host's
@@ -463,6 +468,9 @@ func (n *Node) rememberSuppression(peerID string, ids []string, fallback string)
 }
 
 func (n *Node) maintainTopicMesh(channel string) {
+	if n.waitingRequested() {
+		return
+	}
 	if !n.pubsub.IsLocalSubscriber(channel) {
 		return
 	}
@@ -607,14 +615,15 @@ func (n *Node) pruneTopicMeshExcess(channel string) {
 // mesh-blocked, and (relayed OR responsive-and-low-latency) — so a snapshot
 // can be assessed without going back for either lock.
 type meshCandidateSnapshot struct {
-	id          string
-	score       float64
-	outbound    bool
-	alive       bool
-	blocked     bool
-	relayed     bool
-	highLatency bool
-	pingMiss    bool
+	id           string
+	score        float64
+	outbound     bool
+	alive        bool
+	blocked      bool
+	scoreBlocked bool
+	relayed      bool
+	highLatency  bool
+	pingMiss     bool
 }
 
 // The caller holds n.mu while capturing connection health; scoring runs outside it.
@@ -624,14 +633,18 @@ func snapshotMeshCandidate(peer *peerConn, now time.Time) meshCandidateSnapshot 
 	}
 	return meshCandidateSnapshot{
 		id: peer.id, alive: true, outbound: peer.outbound,
-		blocked: now.Before(peer.meshBlocked), relayed: peer.relayed,
+		blocked: now.Before(peer.meshBlocked), scoreBlocked: now.Before(peer.meshScoreBlocked), relayed: peer.relayed,
 		highLatency: peer.lastRTT > peerLatencyPruneThreshold,
 		pingMiss:    peer.pingMisses != 0,
 	}
 }
 
 func (c meshCandidateSnapshot) eligible() bool {
-	if !c.alive || c.blocked || c.score < gossip.BaselineThreshold {
+	return !c.scoreBlocked && c.score >= gossip.BaselineThreshold && c.healthy()
+}
+
+func (c meshCandidateSnapshot) healthy() bool {
+	if !c.alive || c.blocked {
 		return false
 	}
 	if c.relayed {

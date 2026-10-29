@@ -223,6 +223,9 @@ func (n *Node) supernodeReady(profile nat.Profile) bool {
 // refreshSupernodeStatus needs it because its verdict and its state
 // transition must commit inside one lock hold — see there.
 func (n *Node) supernodeReadyLocked(profile nat.Profile) bool {
+	if n.waitingRequested() {
+		return false
+	}
 	overloaded := time.Now().Before(n.overloadedUntil)
 	active := n.supernodeActive
 	if overloaded {

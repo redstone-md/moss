@@ -10,19 +10,21 @@ import (
 func startExplicitTargetNode(t *testing.T, name string, retryMax ...int) *Node {
 	t.Helper()
 	cfg := isolatedTestConfig(name)
-	cfg.ListenPort = 0
 	cfg.Security.HandshakeTimeoutSec = 2
 	if len(retryMax) != 0 {
 		cfg.ExplicitRetryMaxSec = retryMax[0]
 	}
-	node, err := NewNode("mesh-explicit-target", nil, cfg)
+	node, err := NewNode("mesh-explicit-target", nil, withFixtureListenPort(cfg))
 	if err != nil {
 		t.Fatalf("NewNode failed: %v", err)
 	}
 	if code := node.Start(); code != MOSS_OK {
-		t.Fatalf("Start failed: %d", code)
+		t.Fatalf("Start failed: %d (%s)", code, node.LastError())
 	}
 	t.Cleanup(func() { node.Stop() })
+	if node.listener == nil {
+		t.Fatalf("plain-TCP fixture started UDP-only on port %d", node.ListenPort())
+	}
 	return node
 }
 
@@ -55,7 +57,7 @@ func waitForConnectedPeer(t *testing.T, node *Node, peerID string, dur time.Dura
 
 func TestConnectToPeerValidatesInput(t *testing.T) {
 	cfg := isolatedTestConfig("explicit-validate")
-	node, err := NewNode("mesh-explicit-target", nil, cfg)
+	node, err := NewNode("mesh-explicit-target", nil, withFixtureListenPort(cfg))
 	if err != nil {
 		t.Fatalf("NewNode failed: %v", err)
 	}

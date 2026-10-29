@@ -11,7 +11,7 @@ import (
 func startIsolatedNode(t *testing.T, name, meshID string, psk []byte) *Node {
 	t.Helper()
 	cfg := isolatedTestConfig(name)
-	node, err := NewNode(meshID, psk, cfg)
+	node, err := NewNode(meshID, psk, withFixtureListenPort(cfg))
 	if err != nil {
 		t.Fatalf("NewNode %s failed: %v", name, err)
 	}
