@@ -1,5 +1,18 @@
 # Contributing
 
+## Branch layout
+
+`dev` is the integration branch. It carries `main` plus the work in flight, and every pull request targets it.
+
+`main` only receives merges from `dev`. A release promotes `dev`:
+
+```bash
+git checkout main && git merge --no-ff dev && git push origin main
+git push origin main:dev
+```
+
+The second command fast-forwards `dev` to `main`. Run it after every promotion; skipping it is what makes the branches drift apart.
+
 ## Before you start
 
 - use `dev` for active work
