@@ -3,6 +3,7 @@ package mesh
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/redstone-md/moss/internal/transport"
 )
@@ -51,29 +52,70 @@ func (n *Node) startActiveWorkersLocked() {
 	go func() { workers.Wait(); close(done) }()
 }
 
+// dhtRestartDelay is the first wait before a DHT source whose socket died is
+// replaced; the wait doubles while replacements keep failing or dying within
+// dhtSteadyAfter of their start.
+const (
+	dhtRestartDelay = 10 * time.Second
+	dhtSteadyAfter  = time.Minute
+)
+
+// activeDHT keeps a DHT source while the node is active. One whose socket
+// died (iOS kills a suspended app's sockets) is replaced. A first start that
+// fails leaves the node without DHT, as on a network that has none.
 func (n *Node) activeDHT(ctx context.Context) {
 	defer n.wg.Done()
-	if ctx.Err() != nil {
-		return
-	}
-	src, err := startDHTSource(n.infoHash, n.config.DHTPort, n.bindIfIndex, n.config.AnnounceInterval(), n.announcePort, func(addrs []string) {
-		if ctx.Err() != nil {
+	failures := 0
+	for first := true; ctx.Err() == nil; first = false {
+		src, err := startDHTSource(n.infoHash, n.config.DHTPort, n.bindIfIndex, n.config.AnnounceInterval(), n.announcePort, func(addrs []string) {
+			if ctx.Err() != nil {
+				return
+			}
+			n.rememberTrackerSeeds(addrs)
+			n.kickBootstrapPeers(ctx, addrs)
+		})
+		if err == nil {
+			started := time.Now()
+			if !n.holdDHT(ctx, src) {
+				return
+			}
+			if time.Since(started) < dhtSteadyAfter {
+				failures++
+			} else {
+				failures = 0
+			}
+		} else if first {
 			return
+		} else {
+			failures++
 		}
-		n.rememberTrackerSeeds(addrs)
-		n.kickBootstrapPeers(ctx, addrs)
-	})
-	if err != nil {
-		return
+		timer := time.NewTimer(AnnounceWait(dhtRestartDelay, 0, failures))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
 	}
+}
+
+// holdDHT runs src until the node stops, answering false, or its socket dies,
+// answering true.
+func (n *Node) holdDHT(ctx context.Context, src *dhtSource) bool {
+	defer src.Close()
 	n.mu.Lock()
 	stopped := !n.started || ctx.Err() != nil
 	if !stopped {
 		n.dht = src
 	}
 	n.mu.Unlock()
-	if !stopped {
-		<-ctx.Done()
+	if stopped {
+		return false
 	}
-	src.Close()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-src.failed:
+		return true
+	}
 }
