@@ -53,8 +53,12 @@ func (n *Node) startActiveWorkersLocked() {
 }
 
 // dhtRestartDelay is the first wait before a DHT source whose socket died is
-// replaced; the wait doubles while replacements keep failing.
-const dhtRestartDelay = 10 * time.Second
+// replaced; the wait doubles while replacements keep failing or dying within
+// dhtSteadyAfter of their start.
+const (
+	dhtRestartDelay = 10 * time.Second
+	dhtSteadyAfter  = time.Minute
+)
 
 // activeDHT keeps a DHT source while the node is active. One whose socket
 // died (iOS kills a suspended app's sockets) is replaced. A first start that
@@ -71,10 +75,15 @@ func (n *Node) activeDHT(ctx context.Context) {
 			n.kickBootstrapPeers(ctx, addrs)
 		})
 		if err == nil {
+			started := time.Now()
 			if !n.holdDHT(ctx, src) {
 				return
 			}
-			failures = 0
+			if time.Since(started) < dhtSteadyAfter {
+				failures++
+			} else {
+				failures = 0
+			}
 		} else if first {
 			return
 		} else {
