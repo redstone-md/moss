@@ -7,6 +7,7 @@ import (
 	"math/rand/v2"
 	"net"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/redstone-md/moss/internal/transport"
@@ -18,6 +19,10 @@ import (
 // so tests can point the source at a local fake router instead of the public
 // network.
 var dhtBootstrapAddrs = dht.GlobalBootstrapAddrs
+
+// dhtListenPacket opens the DHT's socket; a var so tests can hand the source
+// a socket that dies under it.
+var dhtListenPacket = net.ListenPacket
 
 // errDHTUnreachable means outbound UDP is blackholed: the source bound its
 // socket, but no bootstrap router answered a probe inside dhtProbeTimeout.
@@ -65,6 +70,41 @@ type dhtSource struct {
 	server *dht.Server
 	stop   chan struct{}
 	done   chan struct{}
+	// failed closes when the socket dies under the server (see dhtConn);
+	// the server is stopped by then, and the owner starts a new source.
+	failed chan struct{}
+}
+
+// dhtConn is the DHT server's socket. The anacrolix server panics on a read
+// error it meets while open, forgiving none on Unix, and iOS kills the
+// sockets of a suspended app. So the read that finds the socket dead stops
+// the server first, which then returns quietly, and closes failed.
+type dhtConn struct {
+	net.PacketConn
+	server chan *dht.Server // the server once it exists; read once, by fail
+	once   sync.Once
+	failed chan struct{}
+}
+
+func newDHTConn(conn net.PacketConn) *dhtConn {
+	return &dhtConn{PacketConn: conn, server: make(chan *dht.Server, 1), failed: make(chan struct{})}
+}
+
+func (c *dhtConn) ReadFrom(b []byte) (int, net.Addr, error) {
+	n, addr, err := c.PacketConn.ReadFrom(b)
+	if err != nil && !errors.Is(err, net.ErrClosed) {
+		c.once.Do(c.fail)
+	}
+	return n, addr, err
+}
+
+func (c *dhtConn) fail() {
+	// The server's own read can fail before NewServer has returned it, so
+	// wait for it: it must be closed before that read returns.
+	if server := <-c.server; server != nil {
+		server.Close()
+	}
+	close(c.failed)
 }
 
 // startDHTSource joins the mainline DHT on its own plaintext UDP socket and
@@ -84,7 +124,7 @@ type dhtSource struct {
 // source fails fast with errDHTUnreachable instead of starting a loop that
 // would spin its wheels on every interval.
 func startDHTSource(infoHash [20]byte, dhtPort int, bindIfIndex int, interval time.Duration, announcePort func() int, onPeers func([]string)) (*dhtSource, error) {
-	conn, err := net.ListenPacket("udp", ":"+strconv.Itoa(dhtPort))
+	conn, err := dhtListenPacket("udp", ":"+strconv.Itoa(dhtPort))
 	if err != nil {
 		return nil, err
 	}
@@ -92,13 +132,15 @@ func startDHTSource(infoHash [20]byte, dhtPort int, bindIfIndex int, interval ti
 		_ = conn.Close()
 		return nil, err
 	}
+	socket := newDHTConn(conn)
 	cfg := dht.NewDefaultServerConfig()
-	cfg.Conn = conn
+	cfg.Conn = socket
 	// Same routers the probe pings, so a test that overrides
 	// dhtBootstrapAddrs gets a fully hermetic source — probe and traversal
 	// both stay on the local fake.
 	cfg.StartingNodes = func() ([]dht.Addr, error) { return dhtBootstrapAddrs("udp") }
 	server, err := dht.NewServer(cfg)
+	socket.server <- server
 	if err != nil {
 		_ = conn.Close()
 		return nil, err
@@ -107,7 +149,7 @@ func startDHTSource(infoHash [20]byte, dhtPort int, bindIfIndex int, interval ti
 		server.Close() // also closes our conn (the server owns the socket)
 		return nil, err
 	}
-	s := &dhtSource{server: server, stop: make(chan struct{}), done: make(chan struct{})}
+	s := &dhtSource{server: server, stop: make(chan struct{}), done: make(chan struct{}), failed: socket.failed}
 	go s.run(infoHash, interval, announcePort, onPeers)
 	return s, nil
 }

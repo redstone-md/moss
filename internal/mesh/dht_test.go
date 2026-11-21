@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"errors"
 	"net"
+	"os"
 	"strconv"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -260,4 +263,58 @@ func TestAnnounceWaitBounds(t *testing.T) {
 	if w := AnnounceWait(0, jitter, 5); w != 0 {
 		t.Fatalf("zero base amplified: %v", w)
 	}
+}
+
+// dyingConn is a UDP socket that can die the way iOS kills a suspended app's
+// sockets: every read after die() fails with ENOTCONN.
+type dyingConn struct {
+	net.PacketConn
+	dead atomic.Bool
+}
+
+func (c *dyingConn) die() {
+	c.dead.Store(true)
+	_ = c.SetReadDeadline(time.Now()) // wake the blocked read
+}
+
+func (c *dyingConn) ReadFrom(b []byte) (int, net.Addr, error) {
+	n, addr, err := c.PacketConn.ReadFrom(b)
+	if c.dead.Load() {
+		return 0, nil, &net.OpError{Op: "read", Net: "udp", Err: os.NewSyscallError("recvfrom", syscall.ENOTCONN)}
+	}
+	return n, addr, err
+}
+
+// The anacrolix server panics on a read error it meets while open, which took
+// the whole process down when iOS killed the socket of a suspended app. The
+// source must instead stop its server and report the dead socket.
+func TestDHTSourceReportsADeadSocketWithoutPanicking(t *testing.T) {
+	router, err := startFakeDHTRouter()
+	if err != nil {
+		t.Fatalf("fake router: %v", err)
+	}
+	defer router.Close()
+	overrideDhtBootstrap(t, router.addr)
+	var socket *dyingConn
+	dhtListenPacket = func(network, address string) (net.PacketConn, error) {
+		conn, err := net.ListenPacket(network, address)
+		socket = &dyingConn{PacketConn: conn}
+		return socket, err
+	}
+	t.Cleanup(func() { dhtListenPacket = net.ListenPacket })
+
+	var ih [20]byte
+	copy(ih[:], []byte("moss-dht-dead-socket"))
+	src, err := startDHTSource(ih, 0, 0, time.Hour, func() int { return 41010 }, func([]string) {})
+	if err != nil {
+		t.Fatalf("start dht: %v", err)
+	}
+	socket.die()
+
+	select {
+	case <-src.failed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the source did not report its dead socket")
+	}
+	src.Close()
 }
