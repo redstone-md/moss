@@ -9,7 +9,9 @@ require (
 	github.com/flynn/noise v1.1.0
 	github.com/huin/goupnp v1.3.0
 	github.com/jackpal/go-nat-pmp v1.0.2
+	github.com/oschwald/maxminddb-golang v1.13.1
 	github.com/redstone-md/veil/core v0.1.0
+	github.com/refraction-networking/utls v1.8.2
 	golang.org/x/crypto v0.50.0
 	golang.org/x/net v0.53.0
 	golang.org/x/sys v0.43.0
@@ -24,9 +26,9 @@ require (
 	github.com/anacrolix/missinggo v1.3.0 // indirect
 	github.com/anacrolix/missinggo/perf v1.0.0 // indirect
 	github.com/anacrolix/missinggo/v2 v2.7.1 // indirect
-	github.com/anacrolix/multiless v0.3.1-0.20221221005021-2d12701f83f7 // indirect
+	github.com/anacrolix/multiless v0.4.0 // indirect
 	github.com/anacrolix/stm v0.4.1-0.20221221005312-96d17df0e496 // indirect
-	github.com/anacrolix/sync v0.4.0 // indirect
+	github.com/anacrolix/sync v0.5.0 // indirect
 	github.com/anacrolix/torrent v1.48.1-0.20230103142631-c20f73d53e9f // indirect
 	github.com/andybalholm/brotli v1.0.6 // indirect
 	github.com/benbjohnson/immutable v0.4.1-0.20221220213129-8932b999621d // indirect
@@ -36,9 +38,7 @@ require (
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/huandu/xstrings v1.3.2 // indirect
 	github.com/klauspost/compress v1.18.1 // indirect
-	github.com/oschwald/maxminddb-golang v1.13.1 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
-	github.com/refraction-networking/utls v1.8.2 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/rs/dnscache v0.0.0-20211102005908-e0241e321417 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
