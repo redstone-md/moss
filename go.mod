@@ -26,9 +26,9 @@ require (
 	github.com/anacrolix/missinggo v1.3.0 // indirect
 	github.com/anacrolix/missinggo/perf v1.0.0 // indirect
 	github.com/anacrolix/missinggo/v2 v2.7.1 // indirect
-	github.com/anacrolix/multiless v0.3.1-0.20221221005021-2d12701f83f7 // indirect
+	github.com/anacrolix/multiless v0.4.0 // indirect
 	github.com/anacrolix/stm v0.4.1-0.20221221005312-96d17df0e496 // indirect
-	github.com/anacrolix/sync v0.4.0 // indirect
+	github.com/anacrolix/sync v0.5.0 // indirect
 	github.com/anacrolix/torrent v1.48.1-0.20230103142631-c20f73d53e9f // indirect
 	github.com/andybalholm/brotli v1.0.6 // indirect
 	github.com/benbjohnson/immutable v0.4.1-0.20221220213129-8932b999621d // indirect
